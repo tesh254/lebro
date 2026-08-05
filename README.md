@@ -72,6 +72,13 @@ The storage example exercises the repository contracts and in-memory adapter:
 go run ./examples/storage-memory
 ```
 
+The model-fixtures example runs a deterministic tool-using model conversation,
+stream, failure, and cancellation without making a network request:
+
+```sh
+go run ./examples/model-fixtures
+```
+
 ## Development
 
 ```sh
