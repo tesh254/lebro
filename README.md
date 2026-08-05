@@ -60,8 +60,13 @@ func main() {
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per
-feature set. The storage example exercises the repository contracts and the
-in-memory adapter:
+feature set. The schema-validation example validates both tool input and output:
+
+```sh
+go run ./examples/schema-validation
+```
+
+The storage example exercises the repository contracts and in-memory adapter:
 
 ```sh
 go run ./examples/storage-memory

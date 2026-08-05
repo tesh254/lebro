@@ -560,4 +560,36 @@ func TestMemoryStoreRejectsRecordsThatCannotRoundTripThroughJSON(t *testing.T) {
 	if _, err := store.Threads().GetThread(ctx, "thread-1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetThread invalid timestamp error = %v, want ErrNotFound", err)
 	}
+
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Threads().UpdateThread(ctx, ThreadRecord{ID: "thread-1", UpdatedAt: invalidTime}); err == nil {
+		t.Fatal("UpdateThread invalid timestamp error = nil")
+	}
+	if err := store.Messages().AppendMessages(ctx, []MessageRecord{{
+		ID: "message-1", ThreadID: "thread-1", Message: Message{Role: RoleUser}, CreatedAt: invalidTime,
+	}}); err == nil {
+		t.Fatal("AppendMessages invalid timestamp error = nil")
+	}
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, WorkflowRunRecord{
+		ID: "run-invalid", WorkflowID: "workflow-1", StartedAt: invalidTime,
+	}); err == nil {
+		t.Fatal("SaveWorkflowRun invalid timestamp error = nil")
+	}
+
+	finishedAt := time.Now().UTC()
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, WorkflowRunRecord{
+		ID: "run-1", WorkflowID: "workflow-1", FinishedAt: &finishedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, WorkflowSnapshotRecord{
+		ID: "snapshot-1", RunID: "run-1", CreatedAt: invalidTime,
+	}); err == nil {
+		t.Fatal("SaveWorkflowSnapshot invalid timestamp error = nil")
+	}
+	if _, err := store.Messages().ListMessages(ctx, "thread-1", PageRequest{Limit: -1}); !errors.Is(err, ErrInvalidPage) {
+		t.Fatalf("ListMessages negative limit error = %v, want ErrInvalidPage", err)
+	}
 }
