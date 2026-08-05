@@ -30,10 +30,10 @@ const (
 // Tool-call fields are intentionally included in the foundation contract so
 // model adapters and agent execution can evolve without changing history data.
 type Message struct {
-	Role       Role
-	Content    string
-	Name       string
-	ToolCallID string
+	Role       Role   `json:"role"`
+	Content    string `json:"content"`
+	Name       string `json:"name,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // Validate checks invariants that every provider adapter must preserve.

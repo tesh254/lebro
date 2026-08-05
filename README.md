@@ -57,6 +57,16 @@ func main() {
 }
 ```
 
+## Examples
+
+Runnable examples live in [examples](examples/README.md), one directory per
+feature set. The storage example exercises the repository contracts and the
+in-memory adapter:
+
+```sh
+go run ./examples/storage-memory
+```
+
 ## Development
 
 ```sh
