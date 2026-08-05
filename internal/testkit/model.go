@@ -35,12 +35,8 @@ const (
 	FixtureCancellation FixtureKind = "cancellation"
 )
 
-// ToolCall is the test harness's provider-neutral view of a requested tool.
-type ToolCall struct {
-	ID        string
-	Name      string
-	Arguments json.RawMessage
-}
+// ToolCall aliases the public provider-neutral tool-call contract.
+type ToolCall = lebro.ModelToolCall
 
 // StreamChunk describes one item in a scripted stream.
 type StreamChunk struct {
@@ -52,11 +48,11 @@ type StreamChunk struct {
 
 // Fixture describes the result of one model invocation.
 type Fixture struct {
-	kind       FixtureKind
-	response   lebro.ModelResponse
-	stream     []StreamChunk
-	err        error
-	structured bool
+	kind      FixtureKind
+	response  lebro.ModelResponse
+	toolCalls []ToolCall
+	stream    []StreamChunk
+	err       error
 }
 
 // Response returns an exact synchronous response fixture.
@@ -72,27 +68,25 @@ func Text(content string) Fixture {
 	})
 }
 
-// ToolCallResponse returns a tool-call fixture. A blank ID is filled with a
-// deterministic tool-call ID when the fixture is consumed.
-func ToolCallResponse(call ToolCall) Fixture {
-	return Response(lebro.ModelResponse{
-		Message: lebro.Message{
-			Role:       lebro.RoleAssistant,
-			Content:    string(call.Arguments),
-			Name:       call.Name,
-			ToolCallID: call.ID,
+// ToolCallResponse returns a tool-call fixture. Blank IDs are filled with
+// deterministic tool-call IDs when the fixture is consumed.
+func ToolCallResponse(calls ...ToolCall) Fixture {
+	return Fixture{
+		kind: FixtureResponse,
+		response: lebro.ModelResponse{
+			Message:      lebro.Message{Role: lebro.RoleAssistant},
+			FinishReason: lebro.FinishReasonToolCalls,
 		},
-		FinishReason: lebro.FinishReasonToolCalls,
-	})
+		toolCalls: cloneToolCalls(calls),
+	}
 }
 
 // StructuredOutput returns a successful JSON response fixture.
 func StructuredOutput(value json.RawMessage) Fixture {
 	fixture := Response(lebro.ModelResponse{
-		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: string(value)},
+		Message:      lebro.Message{Role: lebro.RoleAssistant, StructuredOutput: lebro.NewModelStructuredOutput(value)},
 		FinishReason: lebro.FinishReasonStop,
 	})
-	fixture.structured = true
 	return fixture
 }
 
@@ -205,15 +199,29 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	switch fixture.kind {
 	case FixtureResponse:
 		response := cloneResponse(fixture.response)
-		if response.FinishReason == lebro.FinishReasonToolCalls && response.Message.ToolCallID == "" {
-			response.Message.ToolCallID = m.nextToolCallID()
+		toolCalls := cloneToolCalls(fixture.toolCalls)
+		if fixture.toolCalls == nil {
+			toolCalls = response.Message.ToolCalls.Values()
 		}
-		if fixture.structured && !json.Valid([]byte(response.Message.Content)) {
-			err := fmt.Errorf("%w: structured output is not valid JSON", ErrInvalidFixture)
+		for i := range toolCalls {
+			if toolCalls[i].ID == "" {
+				toolCalls[i].ID = m.nextToolCallID()
+			}
+		}
+		if fixture.toolCalls != nil || !response.Message.ToolCalls.IsZero() {
+			encoded, encodingErr := lebro.NewModelToolCalls(toolCalls...)
+			if encodingErr != nil {
+				err := fmt.Errorf("%w: %v", ErrInvalidFixture, encodingErr)
+				m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, err)
+				return lebro.ModelResponse{}, err
+			}
+			response.Message.ToolCalls = encoded
+		}
+		if err := response.Validate(); err != nil {
+			err := fmt.Errorf("%w: %v", ErrInvalidFixture, err)
 			m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, err)
 			return lebro.ModelResponse{}, err
 		}
-		toolCalls := toolCallsFromResponse(response)
 		m.finish(call.ID, RunEventModelCompleted, response.Message, toolCalls, nil)
 		return response, nil
 	case FixtureFailure:
@@ -330,6 +338,11 @@ func (m *Model) begin(ctx context.Context, request lebro.ModelRequest) (Fixture,
 		m.appendEventLocked(RunEvent{Type: RunEventModelCancelled, CallID: call.ID, Err: err})
 		return Fixture{}, call, err
 	}
+	if validationErr := request.Validate(); validationErr != nil {
+		err := &lebro.ModelError{Kind: lebro.ModelErrorInvalidRequest, Message: validationErr.Error(), Err: validationErr}
+		m.appendEventLocked(RunEvent{Type: RunEventModelFailed, CallID: call.ID, Err: err})
+		return Fixture{}, call, err
+	}
 	if m.next == len(m.fixtures) {
 		m.appendEventLocked(RunEvent{Type: RunEventModelFailed, CallID: call.ID, Err: ErrScriptExhausted})
 		return Fixture{}, call, ErrScriptExhausted
@@ -420,28 +433,22 @@ func (m *Model) nextTimeLocked() time.Time {
 }
 
 func toolCallsFromResponse(response lebro.ModelResponse) []ToolCall {
-	if response.FinishReason != lebro.FinishReasonToolCalls {
-		return nil
-	}
-	return []ToolCall{{
-		ID:        response.Message.ToolCallID,
-		Name:      response.Message.Name,
-		Arguments: json.RawMessage(response.Message.Content),
-	}}
+	return response.Message.ToolCalls.Values()
 }
 
 func cloneFixture(fixture Fixture) Fixture {
 	return Fixture{
-		kind:       fixture.kind,
-		response:   cloneResponse(fixture.response),
-		stream:     cloneChunks(fixture.stream),
-		err:        fixture.err,
-		structured: fixture.structured,
+		kind:      fixture.kind,
+		response:  cloneResponse(fixture.response),
+		toolCalls: cloneToolCalls(fixture.toolCalls),
+		stream:    cloneChunks(fixture.stream),
+		err:       fixture.err,
 	}
 }
 
 func cloneResponse(response lebro.ModelResponse) lebro.ModelResponse {
 	response.Message = cloneMessage(response.Message)
+	response.Extension = append(json.RawMessage(nil), response.Extension...)
 	return response
 }
 
@@ -449,11 +456,20 @@ func cloneMessage(message lebro.Message) lebro.Message { return message }
 
 func cloneRequest(request lebro.ModelRequest) lebro.ModelRequest {
 	request.Messages = append([]lebro.Message(nil), request.Messages...)
+	for i := range request.Messages {
+		request.Messages[i] = cloneMessage(request.Messages[i])
+	}
 	request.Tools = append([]lebro.ToolDefinition(nil), request.Tools...)
 	for i := range request.Tools {
 		request.Tools[i].InputSchema = append(json.RawMessage(nil), request.Tools[i].InputSchema...)
 		request.Tools[i].OutputSchema = append(json.RawMessage(nil), request.Tools[i].OutputSchema...)
 	}
+	if request.OutputSchema != nil {
+		outputSchema := *request.OutputSchema
+		outputSchema.Schema = append(json.RawMessage(nil), request.OutputSchema.Schema...)
+		request.OutputSchema = &outputSchema
+	}
+	request.Extension = append(json.RawMessage(nil), request.Extension...)
 	return request
 }
 

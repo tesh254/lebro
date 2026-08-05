@@ -21,7 +21,7 @@ type scriptedModel interface {
 func main() {
 	must(run(os.Stdout,
 		testkit.NewModel(
-			testkit.ToolCallResponse(testkit.ToolCall{Name: "weather", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}),
+			testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}),
 			testkit.StructuredOutput(json.RawMessage(`{"temperature_c":24.5}`)),
 		),
 		testkit.NewModel(testkit.Stream(testkit.TextChunk("forecast "), testkit.TextChunk("ready"))),
@@ -36,23 +36,40 @@ func run(output *os.File, agent, stream, failing, cancelling scriptedModel) erro
 		Model:    "fixture-model",
 		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "What is the temperature in Nairobi?"}},
 		Tools:    []lebro.ToolDefinition{{ID: "weather"}},
+		OutputSchema: &lebro.ModelOutputSchema{
+			Name: "weather_result", Schema: json.RawMessage(`{"type":"object"}`), Strict: true,
+		},
 	}
 
 	toolResponse, err := agent.Generate(ctx, request)
 	if err != nil {
 		return err
 	}
-	writef(output, "tool call %s: %s %s\n", toolResponse.Message.ToolCallID, toolResponse.Message.Name, toolResponse.Message.Content)
+	if validationErr := toolResponse.Validate(); validationErr != nil {
+		return &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Message: validationErr.Error(), Err: validationErr}
+	}
+	toolCalls := toolResponse.Message.ToolCalls.Values()
+	if len(toolCalls) != 1 {
+		return fmt.Errorf("first response returned %d tool calls, want 1", len(toolCalls))
+	}
+	call := toolCalls[0]
+	writef(output, "tool call %s: %s %s\n", call.ID, call.ToolID, call.Arguments)
 
 	request.Messages = append(request.Messages,
 		toolResponse.Message,
-		lebro.Message{Role: lebro.RoleTool, ToolCallID: toolResponse.Message.ToolCallID, Content: `{"temperature_c":24.5}`},
+		lebro.Message{Role: lebro.RoleTool, ToolCallID: call.ID, Content: `{"temperature_c":24.5}`},
 	)
 	finalResponse, err := agent.Generate(ctx, request)
 	if err != nil {
 		return err
 	}
-	writef(output, "final: %s\n", finalResponse.Message.Content)
+	if validationErr := finalResponse.Validate(); validationErr != nil {
+		return &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Message: validationErr.Error(), Err: validationErr}
+	}
+	if finalResponse.Message.StructuredOutput == "" {
+		return &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Message: "structured output is missing"}
+	}
+	writef(output, "final: %s\n", finalResponse.Message.StructuredOutput.Raw())
 
 	events, err := stream.Stream(ctx, request)
 	if err != nil {
@@ -83,20 +100,20 @@ func run(output *os.File, agent, stream, failing, cancelling scriptedModel) erro
 	return nil
 }
 
-func write(w io.Writer, a ...any) {
-	if _, err := fmt.Fprint(w, a...); err != nil {
+func write(writer io.Writer, values ...any) {
+	if _, err := fmt.Fprint(writer, values...); err != nil {
 		panic(err)
 	}
 }
 
-func writeln(w io.Writer, a ...any) {
-	if _, err := fmt.Fprintln(w, a...); err != nil {
+func writeln(writer io.Writer, values ...any) {
+	if _, err := fmt.Fprintln(writer, values...); err != nil {
 		panic(err)
 	}
 }
 
-func writef(w io.Writer, format string, a ...any) {
-	if _, err := fmt.Fprintf(w, format, a...); err != nil {
+func writef(writer io.Writer, format string, values ...any) {
+	if _, err := fmt.Fprintf(writer, format, values...); err != nil {
 		panic(err)
 	}
 }

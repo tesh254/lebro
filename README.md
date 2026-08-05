@@ -57,6 +57,35 @@ func main() {
 }
 ```
 
+## Provider-neutral model protocol
+
+Model adapters implement `lebro.Model` and exchange only neutral request and
+response values. The protocol supports assistant text, multiple tool calls,
+schema-constrained JSON, normalized usage and finish reasons, typed provider
+errors, and opaque JSON extensions for vendor metadata:
+
+```go
+request := lebro.ModelRequest{
+	Model:    "example/model",
+	Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Return the weather as JSON"}},
+	OutputSchema: &lebro.ModelOutputSchema{
+		Name:   "weather",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Strict: true,
+	},
+}
+
+if err := request.Validate(); err != nil {
+	panic(err)
+}
+```
+
+Tool calls and structured JSON are recorded on the assistant `Message`, so the
+same canonical transcript can be persisted and replayed on the next turn.
+
+Provider failures can be inspected with `errors.As` as `*lebro.ModelError` or
+with `errors.Is` against sentinels such as `lebro.ErrModelRateLimited`.
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per

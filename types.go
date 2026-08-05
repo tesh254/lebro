@@ -1,6 +1,7 @@
 package lebro
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -27,13 +28,15 @@ const (
 )
 
 // Message is the provider-neutral representation of a conversation message.
-// Tool-call fields are intentionally included in the foundation contract so
-// model adapters and agent execution can evolve without changing history data.
+// Assistant tool requests use ToolCalls; tool results use ToolCallID. Name is
+// the optional author name and is not a tool-call representation.
 type Message struct {
-	Role       Role   `json:"role"`
-	Content    string `json:"content"`
-	Name       string `json:"name,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	Role             Role                  `json:"role"`
+	Content          string                `json:"content"`
+	Name             string                `json:"name,omitempty"`
+	ToolCallID       string                `json:"tool_call_id,omitempty"`
+	ToolCalls        ModelToolCalls        `json:"tool_calls,omitempty,omitzero"`
+	StructuredOutput ModelStructuredOutput `json:"structured_output,omitempty"`
 }
 
 // Validate checks invariants that every provider adapter must preserve.
@@ -46,6 +49,21 @@ func (m Message) Validate() error {
 
 	if m.Role == RoleTool && m.ToolCallID == "" {
 		return errors.New("lebro: tool messages require a tool call ID")
+	}
+	if m.Role != RoleTool && m.ToolCallID != "" {
+		return errors.New("lebro: only tool messages can contain a tool call ID")
+	}
+	toolCalls := m.ToolCalls.Values()
+	if len(toolCalls) > 0 && m.Role != RoleAssistant {
+		return errors.New("lebro: only assistant messages can contain tool calls")
+	}
+	if m.StructuredOutput != "" {
+		if m.Role != RoleAssistant {
+			return errors.New("lebro: only assistant messages can contain structured output")
+		}
+		if !json.Valid(m.StructuredOutput.Raw()) {
+			return errors.New("lebro: message structured output must be valid JSON")
+		}
 	}
 
 	return nil

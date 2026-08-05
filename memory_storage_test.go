@@ -71,7 +71,7 @@ func TestMemoryStoreRepositoryContract(t *testing.T) {
 
 	messages := []MessageRecord{
 		{ID: "message-1", ThreadID: "thread-1", Message: Message{Role: RoleUser, Content: "one"}, CreatedAt: now},
-		{ID: "message-2", ThreadID: "thread-1", Message: Message{Role: RoleAssistant, Content: "two"}, CreatedAt: now},
+		{ID: "message-2", ThreadID: "thread-1", Message: Message{Role: RoleAssistant, Content: "two", ToolCalls: modelToolCallsForTest(ModelToolCall{ID: "call-1", ToolID: "echo", Arguments: json.RawMessage(`{"value":1}`)}), StructuredOutput: NewModelStructuredOutput(json.RawMessage(`{"ok":true}`))}, CreatedAt: now},
 		{ID: "message-3", ThreadID: "thread-1", Message: Message{Role: RoleTool, Content: "three", ToolCallID: "call-1"}, CreatedAt: now},
 	}
 	if err := store.Messages().AppendMessages(ctx, messages); err != nil {
@@ -91,6 +91,17 @@ func TestMemoryStoreRepositoryContract(t *testing.T) {
 	}
 	if got := again.Records[0].Message.Content; got != "one" {
 		t.Fatalf("stored message = %q, want one", got)
+	}
+	againCalls, err := store.Messages().ListMessages(ctx, "thread-1", PageRequest{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedCalls := againCalls.Records[1].Message.ToolCalls.Values()
+	if got := string(storedCalls[0].Arguments); got != `{"value":1}` {
+		t.Fatalf("stored tool call arguments = %s, want original value", got)
+	}
+	if got := string(againCalls.Records[1].Message.StructuredOutput.Raw()); got != `{"ok":true}` {
+		t.Fatalf("stored structured output = %s, want original value", got)
 	}
 	second, err := store.Messages().ListMessages(ctx, "thread-1", PageRequest{Cursor: first.NextCursor, Limit: 2})
 	if err != nil {

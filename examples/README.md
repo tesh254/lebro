@@ -17,7 +17,7 @@ Run the in-memory storage example:
 go run ./examples/storage-memory
 ```
 
-Run the deterministic, network-free model fixture example:
+Run the deterministic, network-free model protocol and fixture example:
 
 ```sh
 go run ./examples/model-fixtures

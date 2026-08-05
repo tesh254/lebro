@@ -436,8 +436,11 @@ func cloneMemoryState(s memoryState) memoryState {
 	return out
 }
 
-func cloneThreadRecord(v ThreadRecord) ThreadRecord    { v.Metadata = cloneJSON(v.Metadata); return v }
-func cloneMessageRecord(v MessageRecord) MessageRecord { v.Metadata = cloneJSON(v.Metadata); return v }
+func cloneThreadRecord(v ThreadRecord) ThreadRecord { v.Metadata = cloneJSON(v.Metadata); return v }
+func cloneMessageRecord(v MessageRecord) MessageRecord {
+	v.Metadata = cloneJSON(v.Metadata)
+	return v
+}
 func cloneWorkflowRunRecord(v WorkflowRunRecord) WorkflowRunRecord {
 	v.Input = cloneJSON(v.Input)
 	v.Output = cloneJSON(v.Output)
