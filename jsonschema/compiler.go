@@ -31,7 +31,7 @@ func NewCompiler() Compiler {
 	return Compiler{}
 }
 
-// Compile parses, checks, and compiles a JSON Schema document.
+// Compile concurrently parses, checks, and compiles a JSON Schema document.
 func (Compiler) Compile(raw json.RawMessage) (lebro.CompiledSchema, error) {
 	if len(raw) == 0 {
 		return nil, &lebro.SchemaError{Message: "schema must not be empty"}

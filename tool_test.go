@@ -25,6 +25,12 @@ func (*pointerTool) Execute(context.Context, json.RawMessage) (json.RawMessage, 
 	return nil, nil
 }
 
+type pointerSchemaCompiler struct{}
+
+func (*pointerSchemaCompiler) Compile(json.RawMessage) (CompiledSchema, error) {
+	return stubCompiledSchema{}, nil
+}
+
 func (t toolFunc) Definition() ToolDefinition { return t.definition }
 
 func (t toolFunc) Execute(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
@@ -212,6 +218,31 @@ func TestToolRegistryHonorsContextCancellation(t *testing.T) {
 	})
 	result = registry.Execute(ctx, "during", ToolExecutionRequest{})
 	assertToolState(t, result, ToolExecutionCancelled)
+
+	ctx, cancel = context.WithCancel(context.Background())
+	registry = registryForToolTest(t, validatingSchema{validate: func(json.RawMessage) *ValidationError {
+		cancel()
+		return nil
+	}}, nil)
+	called = false
+	registerToolForTest(t, registry, ToolDefinition{ID: "input-validation", InputSchema: json.RawMessage(`{}`)}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		called = true
+		return nil, nil
+	})
+	result = registry.Execute(ctx, "input-validation", ToolExecutionRequest{})
+	assertToolState(t, result, ToolExecutionCancelled)
+	if called {
+		t.Fatal("handler called after cancellation during input validation")
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	registry = registryForToolTest(t, validatingSchema{validate: func(json.RawMessage) *ValidationError {
+		cancel()
+		return nil
+	}}, nil)
+	registerToolForTest(t, registry, ToolDefinition{ID: "output-validation", OutputSchema: json.RawMessage(`{}`)}, echoToolHandler)
+	result = registry.Execute(ctx, "output-validation", ToolExecutionRequest{})
+	assertToolState(t, result, ToolExecutionCancelled)
 }
 
 func TestToolRegistryRegistrationAndLookup(t *testing.T) {
@@ -219,6 +250,10 @@ func TestToolRegistryRegistrationAndLookup(t *testing.T) {
 
 	if _, err := NewToolRegistry(nil); err == nil {
 		t.Fatal("nil compiler accepted")
+	}
+	var typedNilCompiler *pointerSchemaCompiler
+	if _, err := NewToolRegistry(typedNilCompiler); err == nil {
+		t.Fatal("typed nil compiler accepted")
 	}
 	registry := registryForToolTest(t, nil, nil)
 	registerToolForTest(t, registry, ToolDefinition{ID: "z"}, echoToolHandler)
@@ -265,27 +300,13 @@ func TestToolRegistryRegistrationAndLookup(t *testing.T) {
 	}
 }
 
-func TestToolRegistrySerializesCompilerAccess(t *testing.T) {
+func TestToolRegistrySupportsConcurrentRegistration(t *testing.T) {
 	t.Parallel()
 
-	var compilerMu sync.Mutex
-	activeCompiles := 0
-	overlapped := false
 	registry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
-		compilerMu.Lock()
-		activeCompiles++
-		if activeCompiles > 1 {
-			overlapped = true
-		}
-		compilerMu.Unlock()
-
 		for range 100 {
 			runtime.Gosched()
 		}
-
-		compilerMu.Lock()
-		activeCompiles--
-		compilerMu.Unlock()
 		return stubCompiledSchema{}, nil
 	}})
 	if err != nil {
@@ -312,8 +333,8 @@ func TestToolRegistrySerializesCompilerAccess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if overlapped {
-		t.Fatal("schema compiler was called concurrently")
+	if definitions := registry.Definitions(); len(definitions) != toolCount {
+		t.Fatalf("registered %d tools, want %d", len(definitions), toolCount)
 	}
 }
 

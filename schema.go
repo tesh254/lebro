@@ -13,7 +13,8 @@ import (
 const JSONSchemaDraft202012 = "https://json-schema.org/draft/2020-12/schema"
 
 // SchemaCompiler separates the Tool API from a concrete JSON Schema engine.
-// Implementations should return SchemaError for invalid or unsupported schemas.
+// Implementations should return SchemaError for invalid or unsupported schemas
+// and must be safe for concurrent calls.
 type SchemaCompiler interface {
 	Compile(json.RawMessage) (CompiledSchema, error)
 }
