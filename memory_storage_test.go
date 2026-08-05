@@ -515,7 +515,7 @@ func TestMemoryStoreTransactionDetectsConcurrentWrites(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreConcurrentReadOnlyTransactionsDoNotConflict(t *testing.T) {
+func TestMemoryStoreReadOnlyTransactionIgnoresConcurrentWrite(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryStore()
@@ -523,28 +523,29 @@ func TestMemoryStoreConcurrentReadOnlyTransactionsDoNotConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	started := make(chan struct{}, 2)
+	started := make(chan struct{})
 	release := make(chan struct{})
-	results := make(chan error, 2)
-	for range 2 {
-		go func() {
-			results <- store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
-				if _, err := repositories.Threads().GetThread(ctx, "thread-1"); err != nil {
-					return err
-				}
-				started <- struct{}{}
-				<-release
-				return nil
-			})
-		}()
+	result := make(chan error, 1)
+	go func() {
+		result <- store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
+			if _, err := repositories.Threads().GetThread(ctx, "thread-1"); err != nil {
+				return err
+			}
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	<-started
+	if err := store.Threads().UpdateThread(ctx, ThreadRecord{
+		ID:       "thread-1",
+		Metadata: json.RawMessage(`{"source":"concurrent"}`),
+	}); err != nil {
+		t.Fatal(err)
 	}
-	<-started
-	<-started
 	close(release)
-	for range 2 {
-		if err := <-results; err != nil {
-			t.Fatalf("read-only Transaction() error = %v", err)
-		}
+	if err := <-result; err != nil {
+		t.Fatalf("read-only Transaction() error = %v", err)
 	}
 }
 
