@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -162,9 +163,10 @@ func (t *RegisteredTool) Execute(ctx context.Context, request ToolExecutionReque
 // ToolRegistry compiles tool schemas once and resolves immutable safe execution
 // boundaries by stable ID. Registration and resolution are concurrency-safe.
 type ToolRegistry struct {
-	compiler SchemaCompiler
-	mu       sync.RWMutex
-	tools    map[ToolID]*RegisteredTool
+	compiler   SchemaCompiler
+	compilerMu sync.Mutex
+	mu         sync.RWMutex
+	tools      map[ToolID]*RegisteredTool
 }
 
 // NewToolRegistry creates an empty registry using compiler for both schema
@@ -182,7 +184,7 @@ func (r *ToolRegistry) Register(tool Tool) error {
 	if r == nil {
 		return errors.New("lebro: tool registry is nil")
 	}
-	if tool == nil {
+	if tool == nil || isNilTool(tool) {
 		return errors.New("lebro: tool is required")
 	}
 
@@ -194,16 +196,17 @@ func (r *ToolRegistry) Register(tool Tool) error {
 		return fmt.Errorf("lebro: tool ID %q must not have surrounding whitespace", definition.ID)
 	}
 
+	validator, err := r.compileToolSchemas(definition)
+	if err != nil {
+		return fmt.Errorf("lebro: register tool %q: %w", definition.ID, err)
+	}
+	registered := &RegisteredTool{definition: definition, handler: tool, validator: validator}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.tools[definition.ID]; exists {
 		return fmt.Errorf("lebro: tool ID %q is already registered", definition.ID)
 	}
-	validator, err := NewToolSchemaValidator(r.compiler, definition)
-	if err != nil {
-		return fmt.Errorf("lebro: register tool %q: %w", definition.ID, err)
-	}
-	registered := &RegisteredTool{definition: definition, handler: tool, validator: validator}
 	r.tools[definition.ID] = registered
 	return nil
 }
@@ -241,6 +244,12 @@ func (r *ToolRegistry) Execute(ctx context.Context, id ToolID, request ToolExecu
 		return failedToolExecution(id, ToolExecutionNotFound, ErrToolNotFound)
 	}
 	return tool.Execute(ctx, request)
+}
+
+func (r *ToolRegistry) compileToolSchemas(definition ToolDefinition) (*ToolSchemaValidator, error) {
+	r.compilerMu.Lock()
+	defer r.compilerMu.Unlock()
+	return NewToolSchemaValidator(r.compiler, definition)
 }
 
 type toolMetadataContextKey struct{}
@@ -295,4 +304,14 @@ func cloneMetadata(metadata map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
+}
+
+func isNilTool(tool Tool) bool {
+	value := reflect.ValueOf(tool)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }

@@ -9,11 +9,20 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type toolFunc struct {
 	definition ToolDefinition
 	execute    func(context.Context, json.RawMessage) (json.RawMessage, error)
+}
+
+type pointerTool struct{}
+
+func (*pointerTool) Definition() ToolDefinition { return ToolDefinition{ID: "pointer"} }
+
+func (*pointerTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return nil, nil
 }
 
 func (t toolFunc) Definition() ToolDefinition { return t.definition }
@@ -240,6 +249,10 @@ func TestToolRegistryRegistrationAndLookup(t *testing.T) {
 	if err := registry.Register(nil); err == nil {
 		t.Fatal("nil tool accepted")
 	}
+	var typedNil *pointerTool
+	if err := registry.Register(typedNil); err == nil {
+		t.Fatal("typed nil tool accepted")
+	}
 
 	badRegistry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
 		return nil, errors.New("cannot compile")
@@ -301,6 +314,50 @@ func TestToolRegistrySerializesCompilerAccess(t *testing.T) {
 	}
 	if overlapped {
 		t.Fatal("schema compiler was called concurrently")
+	}
+}
+
+func TestToolRegistryKeepsLookupsAvailableDuringCompilation(t *testing.T) {
+	t.Parallel()
+
+	compileStarted := make(chan struct{})
+	finishCompile := make(chan struct{})
+	registry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		close(compileStarted)
+		<-finishCompile
+		return stubCompiledSchema{}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry.tools["existing"] = &RegisteredTool{definition: ToolDefinition{ID: "existing"}}
+
+	registered := make(chan error, 1)
+	go func() {
+		registered <- registry.Register(toolFunc{
+			definition: ToolDefinition{ID: "slow", InputSchema: json.RawMessage(`{}`)},
+			execute:    echoToolHandler,
+		})
+	}()
+	<-compileStarted
+
+	resolved := make(chan bool, 1)
+	go func() {
+		_, ok := registry.Resolve("existing")
+		resolved <- ok
+	}()
+	select {
+	case ok := <-resolved:
+		if !ok {
+			t.Fatal("existing tool was not resolved")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lookup blocked during schema compilation")
+	}
+
+	close(finishCompile)
+	if err := <-registered; err != nil {
+		t.Fatal(err)
 	}
 }
 
