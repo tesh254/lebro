@@ -1,0 +1,25 @@
+model.go
+  s_7aaac26d99dd6b::t_6811d8878be775 9,19-30,33-35
+.github/workflows/release.yml
+  s_7aaac26d99dd6b::t_6811d8878be775 15-16
+model_test.go
+  s_7aaac26d99dd6b::t_6811d8878be775 1-24
+.github/workflows/ci.yml
+  s_7aaac26d99dd6b::t_6811d8878be775 16-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "08bd7f9932368a8ab0f5847d25c8700c3e5a3c55",
+  "prompts": {},
+  "sessions": {
+    "s_7aaac26d99dd6b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd227-aab2-7ad0-b34a-28d96f89e524",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <31078302+tesh254@users.noreply.github.com>"
+    }
+  }
+}
