@@ -48,6 +48,12 @@ func TestAssertionsReportUsefulMismatches(t *testing.T) {
 		{name: "response", call: func(spy *assertionSpy) {
 			assertResponse(spy, lebro.ModelResponse{}, lebro.ModelResponse{FinishReason: lebro.FinishReasonStop})
 		}, want: "Generate() response"},
+		{name: "valid JSON", call: func(spy *assertionSpy) {
+			assertValidJSON(spy, `{"ok":true}`)
+		}, want: ""},
+		{name: "invalid JSON", call: func(spy *assertionSpy) {
+			assertValidJSON(spy, `{`)
+		}, want: "structured output content is not valid JSON"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

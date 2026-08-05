@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"runtime"
 	"testing"
@@ -188,6 +189,9 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 	if got := string(events[2].StructuredOutput); got != `{"temperature":24.5}` {
 		t.Fatalf("structured stream output = %s", got)
 	}
+	if got := model.Events()[3].Message.Content; got != `{"temperature":24.5}` {
+		t.Fatalf("structured stream chunk message = %q", got)
+	}
 	if !errors.Is(events[3].Err, streamErr) {
 		t.Fatalf("stream error = %v", events[3].Err)
 	}
@@ -204,6 +208,25 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 	}
 	if got := model.Events()[len(model.Events())-1].Type; got != RunEventModelCompleted {
 		t.Fatalf("empty stream terminal event = %q, want completed", got)
+	}
+}
+
+func TestModelStreamFailureChunkNilTerminatesStream(t *testing.T) {
+	t.Parallel()
+	model := NewModel(Stream(FailureChunk(nil)))
+	stream, err := model.Stream(context.Background(), lebro.ModelRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := collectStream(stream)
+	if got, want := len(events), 1; got != want {
+		t.Fatalf("stream event count = %d, want %d", got, want)
+	}
+	if !errors.Is(events[0].Err, ErrInvalidFixture) {
+		t.Fatalf("stream error = %v, want %v", events[0].Err, ErrInvalidFixture)
+	}
+	if got := model.Events()[len(model.Events())-1].Type; got != RunEventModelFailed {
+		t.Fatalf("terminal stream event = %q, want failed", got)
 	}
 }
 
@@ -307,7 +330,7 @@ func waitFor(t *testing.T, condition func() bool) {
 }
 
 func formatID(prefix string, sequence int) string {
-	return prefix + "-" + []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"}[sequence-1]
+	return fmt.Sprintf("%s-%04d", prefix, sequence)
 }
 
 func TestFixtureCloneHelpers(t *testing.T) {

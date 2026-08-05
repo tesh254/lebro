@@ -118,8 +118,14 @@ func StructuredOutputChunk(value json.RawMessage) StreamChunk {
 	return StreamChunk{StructuredOutput: append(json.RawMessage(nil), value...)}
 }
 
-// FailureChunk terminates a stream with err.
-func FailureChunk(err error) StreamChunk { return StreamChunk{Err: err} }
+// FailureChunk terminates a stream with err. A nil error is normalized to
+// ErrInvalidFixture so the chunk always terminates the stream.
+func FailureChunk(err error) StreamChunk {
+	if err == nil {
+		err = ErrInvalidFixture
+	}
+	return StreamChunk{Err: err}
+}
 
 // ModelCall records one invocation of the scripted model.
 type ModelCall struct {
@@ -351,7 +357,11 @@ func (m *Model) emitStream(ctx context.Context, call ModelCall, chunks []StreamC
 		if event.ToolCall != nil {
 			toolCalls = []ToolCall{cloneToolCall(*event.ToolCall)}
 		}
-		m.finish(call.ID, RunEventStreamChunk, lebro.Message{Role: lebro.RoleAssistant, Content: event.Text}, toolCalls, nil)
+		message := lebro.Message{Role: lebro.RoleAssistant, Content: event.Text}
+		if event.StructuredOutput != nil {
+			message.Content = string(event.StructuredOutput)
+		}
+		m.finish(call.ID, RunEventStreamChunk, message, toolCalls, nil)
 	}
 	m.finish(call.ID, RunEventModelCompleted, lebro.Message{}, nil, nil)
 }
@@ -455,6 +465,9 @@ func cloneToolCall(call ToolCall) ToolCall {
 }
 
 func cloneToolCalls(calls []ToolCall) []ToolCall {
+	if calls == nil {
+		return nil
+	}
 	result := make([]ToolCall, len(calls))
 	for i, call := range calls {
 		result[i] = cloneToolCall(call)

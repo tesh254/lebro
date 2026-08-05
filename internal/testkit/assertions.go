@@ -2,6 +2,7 @@ package testkit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -68,6 +69,13 @@ func assertResponse(t TestingT, got, want lebro.ModelResponse) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Generate() response = %#v, want %#v", got, want)
+	}
+}
+
+func assertValidJSON(t TestingT, content string) {
+	t.Helper()
+	if !json.Valid([]byte(content)) {
+		t.Fatalf("structured output content is not valid JSON: %q", content)
 	}
 }
 

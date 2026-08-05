@@ -1,6 +1,7 @@
 package testkit
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -13,6 +14,8 @@ func TestScriptedModelPassesProviderContract(t *testing.T) {
 		switch contractCase.Mode {
 		case ContractResponse:
 			return NewModel(Response(contractCase.Response))
+		case ContractStructuredOutput:
+			return NewModel(StructuredOutput(json.RawMessage(contractCase.Response.Message.Content)))
 		case ContractFailure:
 			return NewModel(Failure(errors.New("contract provider failure")))
 		case ContractCancellation:

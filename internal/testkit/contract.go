@@ -12,9 +12,10 @@ import (
 type ContractMode string
 
 const (
-	ContractResponse     ContractMode = "response"
-	ContractFailure      ContractMode = "failure"
-	ContractCancellation ContractMode = "cancellation"
+	ContractResponse         ContractMode = "response"
+	ContractStructuredOutput ContractMode = "structured_output"
+	ContractFailure          ContractMode = "failure"
+	ContractCancellation     ContractMode = "cancellation"
 )
 
 // ProviderCase is one adapter-neutral provider behavior.
@@ -58,8 +59,8 @@ func ProviderContractCases() []ProviderCase {
 		},
 		{
 			Name:    "structured output",
-			Mode:    ContractResponse,
-			Request: lebro.ModelRequest{Model: "contract-model", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "return JSON"}}},
+			Mode:    ContractStructuredOutput,
+			Request: lebro.ModelRequest{Model: "contract-model", ResponseFormat: "json", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "return JSON"}}},
 			Response: lebro.ModelResponse{
 				Message:      lebro.Message{Role: lebro.RoleAssistant, Content: `{"ok":true}`},
 				FinishReason: lebro.FinishReasonStop,
@@ -93,16 +94,20 @@ func RunProviderContract(t *testing.T, factory ProviderFactory) {
 				ctx = cancelled
 			}
 
-			response, err := model.Generate(ctx, cloneRequest(contractCase.Request))
-			switch contractCase.Mode {
-			case ContractResponse:
-				assertNoError(t, err)
-				assertResponse(t, response, contractCase.Response)
-			case ContractFailure:
-				assertError(t, err)
-			case ContractCancellation:
-				AssertCancellation(t, err)
-			}
+		response, err := model.Generate(ctx, cloneRequest(contractCase.Request))
+		switch contractCase.Mode {
+		case ContractResponse:
+			assertNoError(t, err)
+			assertResponse(t, response, contractCase.Response)
+		case ContractStructuredOutput:
+			assertNoError(t, err)
+			assertValidJSON(t, response.Message.Content)
+			assertResponse(t, response, contractCase.Response)
+		case ContractFailure:
+			assertError(t, err)
+		case ContractCancellation:
+			AssertCancellation(t, err)
+		}
 		})
 	}
 }

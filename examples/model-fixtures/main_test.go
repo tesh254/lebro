@@ -51,12 +51,12 @@ func TestExampleMain(t *testing.T) {
 	}
 	original := os.Stdout
 	os.Stdout = write
+	t.Cleanup(func() { os.Stdout = original })
 
 	main()
 	if err := write.Close(); err != nil {
 		t.Fatal(err)
 	}
-	os.Stdout = original
 	t.Cleanup(func() { _ = read.Close() })
 	content, err := io.ReadAll(read)
 	if err != nil {
