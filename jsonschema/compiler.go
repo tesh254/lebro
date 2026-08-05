@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -70,7 +71,7 @@ func (s compiledSchema) Validate(raw json.RawMessage) *lebro.ValidationError {
 
 	if err := s.schema.Validate(value); err != nil {
 		validationErr := err.(*jsonschema.ValidationError)
-		return &lebro.ValidationError{Issues: validationIssues(validationErr)}
+		return &lebro.ValidationError{Issues: validationIssues(validationErr, value)}
 	}
 	return nil
 }
@@ -99,7 +100,7 @@ func normalizeSchemaError(err error) error {
 	if errors.As(err, &schemaValidationErr) {
 		var validationErr *jsonschema.ValidationError
 		if errors.As(schemaValidationErr.Err, &validationErr) {
-			issues := validationIssues(validationErr)
+			issues := validationIssues(validationErr, nil)
 			if len(issues) != 0 {
 				return &lebro.SchemaError{Path: issues[0].Path, Message: issues[0].Message}
 			}
@@ -114,9 +115,9 @@ func normalizeSchemaError(err error) error {
 	return &lebro.SchemaError{Message: "schema could not be compiled"}
 }
 
-func validationIssues(validationErr *jsonschema.ValidationError) []lebro.ValidationIssue {
+func validationIssues(validationErr *jsonschema.ValidationError, instance any) []lebro.ValidationIssue {
 	issues := make([]lebro.ValidationIssue, 0, 1)
-	collectValidationIssues(validationErr, &issues)
+	collectValidationIssues(validationErr, instance, &issues)
 	sort.SliceStable(issues, func(i, j int) bool {
 		if issues[i].Path != issues[j].Path {
 			return issues[i].Path < issues[j].Path
@@ -129,10 +130,17 @@ func validationIssues(validationErr *jsonschema.ValidationError) []lebro.Validat
 	return issues
 }
 
-func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *[]lebro.ValidationIssue) {
+func collectValidationIssues(validationErr *jsonschema.ValidationError, instance any, issues *[]lebro.ValidationIssue) {
+	instanceLocation := validationErr.InstanceLocation
 	if errorKind, ok := validationErr.ErrorKind.(*kind.PropertyNames); ok {
+		path := appendPath(instanceLocation, errorKind.Property)
+		if len(validationErr.InstanceLocation) == 0 {
+			if located, found := findPropertyPath(instance, errorKind.Property); found {
+				path = located
+			}
+		}
 		*issues = append(*issues, lebro.ValidationIssue{
-			Path:    jsonPointer(appendPath(validationErr.InstanceLocation, errorKind.Property)),
+			Path:    jsonPointer(path),
 			Keyword: "propertyNames",
 			Message: "property name is not allowed",
 		})
@@ -140,7 +148,7 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *
 	}
 	if len(validationErr.Causes) != 0 {
 		for _, cause := range validationErr.Causes {
-			collectValidationIssues(cause, issues)
+			collectValidationIssues(cause, instance, issues)
 		}
 		return
 	}
@@ -148,7 +156,7 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *
 	keyword := ""
 	keywordPath := validationErr.ErrorKind.KeywordPath()
 	if len(keywordPath) != 0 {
-		keyword = keywordPath[len(keywordPath)-1]
+		keyword = keywordPath[0]
 	}
 
 	switch errorKind := validationErr.ErrorKind.(type) {
@@ -157,7 +165,7 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *
 		sort.Strings(properties)
 		for _, property := range properties {
 			*issues = append(*issues, lebro.ValidationIssue{
-				Path:    jsonPointer(appendPath(validationErr.InstanceLocation, property)),
+				Path:    jsonPointer(appendPath(instanceLocation, property)),
 				Keyword: keyword,
 				Message: "required property is missing",
 			})
@@ -167,7 +175,7 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *
 		sort.Strings(properties)
 		for _, property := range properties {
 			*issues = append(*issues, lebro.ValidationIssue{
-				Path:    jsonPointer(appendPath(validationErr.InstanceLocation, property)),
+				Path:    jsonPointer(appendPath(instanceLocation, property)),
 				Keyword: keyword,
 				Message: "property is required when " + strconvQuote(errorKind.Prop) + " is present",
 			})
@@ -177,7 +185,7 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *
 		sort.Strings(properties)
 		for _, property := range properties {
 			*issues = append(*issues, lebro.ValidationIssue{
-				Path:    jsonPointer(appendPath(validationErr.InstanceLocation, property)),
+				Path:    jsonPointer(appendPath(instanceLocation, property)),
 				Keyword: keyword,
 				Message: "additional property is not allowed",
 			})
@@ -185,11 +193,43 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, issues *
 	default:
 		output := validationErr.BasicOutput()
 		*issues = append(*issues, lebro.ValidationIssue{
-			Path:    jsonPointer(validationErr.InstanceLocation),
+			Path:    jsonPointer(instanceLocation),
 			Keyword: keyword,
 			Message: output.Error.String(),
 		})
 	}
+}
+
+func findPropertyPath(value any, property string) ([]string, bool) {
+	switch value := value.(type) {
+	case map[string]any:
+		if _, ok := value[property]; ok {
+			return []string{property}, true
+		}
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if path, found := findPropertyPath(value[key], property); found {
+				return prependPath(key, path), true
+			}
+		}
+	case []any:
+		for index, item := range value {
+			if path, found := findPropertyPath(item, property); found {
+				return prependPath(strconv.Itoa(index), path), true
+			}
+		}
+	}
+	return nil, false
+}
+
+func prependPath(token string, path []string) []string {
+	prepended := make([]string, 1, len(path)+1)
+	prepended[0] = token
+	return append(prepended, path...)
 }
 
 func appendPath(path []string, token string) []string {

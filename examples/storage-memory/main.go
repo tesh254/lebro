@@ -18,38 +18,44 @@ func main() {
 	now := time.Now().UTC()
 
 	must(store.Transaction(ctx, func(ctx context.Context, repositories lebro.Repositories) error {
-		must(repositories.Threads().CreateThread(ctx, lebro.ThreadRecord{
-			ID:        "support-42",
-			Metadata:  json.RawMessage(`{"customer":"acme"}`),
-			CreatedAt: now,
-			UpdatedAt: now,
-		}))
-
-		must(repositories.Messages().AppendMessages(ctx, []lebro.MessageRecord{{
-			ID:        "message-1",
-			ThreadID:  "support-42",
-			Message:   lebro.Message{Role: lebro.RoleUser, Content: "Where is my order?"},
-			CreatedAt: now,
-		}}))
-
-		must(repositories.WorkflowRuns().SaveWorkflowRun(ctx, lebro.WorkflowRunRecord{
-			ID:         "run-1",
-			WorkflowID: "support-triage",
-			ThreadID:   "support-42",
-			Status:     lebro.RunStatusRunning,
-			Input:      json.RawMessage(`{"priority":"normal"}`),
-			StartedAt:  now,
-			UpdatedAt:  now,
-		}))
-
-		must(repositories.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, lebro.WorkflowSnapshotRecord{
-			ID:        "snapshot-1",
-			RunID:     "run-1",
-			Sequence:  1,
-			State:     json.RawMessage(`{"step":"classify"}`),
-			CreatedAt: now,
-		}))
-		return nil
+		return runSteps(
+			func() error {
+				return repositories.Threads().CreateThread(ctx, lebro.ThreadRecord{
+					ID:        "support-42",
+					Metadata:  json.RawMessage(`{"customer":"acme"}`),
+					CreatedAt: now,
+					UpdatedAt: now,
+				})
+			},
+			func() error {
+				return repositories.Messages().AppendMessages(ctx, []lebro.MessageRecord{{
+					ID:        "message-1",
+					ThreadID:  "support-42",
+					Message:   lebro.Message{Role: lebro.RoleUser, Content: "Where is my order?"},
+					CreatedAt: now,
+				}})
+			},
+			func() error {
+				return repositories.WorkflowRuns().SaveWorkflowRun(ctx, lebro.WorkflowRunRecord{
+					ID:         "run-1",
+					WorkflowID: "support-triage",
+					ThreadID:   "support-42",
+					Status:     lebro.RunStatusRunning,
+					Input:      json.RawMessage(`{"priority":"normal"}`),
+					StartedAt:  now,
+					UpdatedAt:  now,
+				})
+			},
+			func() error {
+				return repositories.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, lebro.WorkflowSnapshotRecord{
+					ID:        "snapshot-1",
+					RunID:     "run-1",
+					Sequence:  1,
+					State:     json.RawMessage(`{"step":"classify"}`),
+					CreatedAt: now,
+				})
+			},
+		)
 	}))
 
 	messages := mustValue(store.Messages().ListMessages(ctx, "support-42", lebro.PageRequest{}))
@@ -65,4 +71,13 @@ func must(err error) {
 func mustValue[T any](value T, err error) T {
 	must(err)
 	return value
+}
+
+func runSteps(steps ...func() error) error {
+	for _, step := range steps {
+		if err := step(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

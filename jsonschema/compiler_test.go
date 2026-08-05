@@ -223,22 +223,29 @@ func TestCompilerReportsDependentAndPropertyNamePaths(t *testing.T) {
 
 	compiler := lebrojsonschema.NewCompiler()
 	tests := []struct {
-		name     string
-		schema   json.RawMessage
-		value    json.RawMessage
-		wantPath string
+		name        string
+		schema      json.RawMessage
+		value       json.RawMessage
+		wantPath    string
+		wantKeyword string
 	}{
 		{
-			name:     "dependent required",
-			schema:   json.RawMessage(`{"dependentRequired":{"credit_card":["billing_address"]}}`),
-			value:    json.RawMessage(`{"credit_card":"1234"}`),
-			wantPath: "/billing_address",
+			name:        "dependent required",
+			schema:      json.RawMessage(`{"dependentRequired":{"credit_card":["billing_address"]}}`),
+			value:       json.RawMessage(`{"credit_card":"1234"}`),
+			wantPath:    "/billing_address",
+			wantKeyword: "dependentRequired",
 		},
 		{
-			name:     "property name",
-			schema:   json.RawMessage(`{"propertyNames":{"pattern":"^[a-z]+$"}}`),
-			value:    json.RawMessage(`{"BadName":true}`),
-			wantPath: "/BadName",
+			name: "nested property name",
+			schema: json.RawMessage(`{
+				"properties":{
+					"payload":{"type":"array","items":{"type":"object","propertyNames":{"pattern":"^[a-z]+$"}}}
+				}
+			}`),
+			value:       json.RawMessage(`{"a":0,"payload":[0,{"BadName":true}]}`),
+			wantPath:    "/payload/1/BadName",
+			wantKeyword: "propertyNames",
 		},
 	}
 	for _, tt := range tests {
@@ -248,8 +255,18 @@ func TestCompilerReportsDependentAndPropertyNamePaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			validationErr := schema.Validate(tt.value)
-			if validationErr == nil || len(validationErr.Issues) == 0 || validationErr.Issues[0].Path != tt.wantPath {
-				t.Fatalf("validation error = %#v, want path %q", validationErr, tt.wantPath)
+			if validationErr == nil {
+				t.Fatalf("validation error = nil, want path %q keyword %q", tt.wantPath, tt.wantKeyword)
+			}
+			found := false
+			for _, issue := range validationErr.Issues {
+				if issue.Path == tt.wantPath && issue.Keyword == tt.wantKeyword {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("validation error = %#v, want path %q keyword %q", validationErr, tt.wantPath, tt.wantKeyword)
 			}
 		})
 	}
