@@ -7,3 +7,4 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - Initial public contracts for agent-runtime primitives.
+- Replaceable JSON Schema Draft 2020-12 validation for tool inputs and outputs.
