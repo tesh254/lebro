@@ -484,12 +484,25 @@ func TestMemoryStoreTransactionDetectsConcurrentWrites(t *testing.T) {
 	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-1"}); err != nil {
 		t.Fatal(err)
 	}
-	err := store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
-		if err := repositories.Messages().AppendMessages(ctx, []MessageRecord{{ID: "message-1", ThreadID: "thread-1", Message: Message{Role: RoleUser}}}); err != nil {
-			return err
-		}
-		return store.Threads().UpdateThread(ctx, ThreadRecord{ID: "thread-1", Metadata: json.RawMessage(`{"source":"outer"}`)})
-	})
+	transactionReady := make(chan struct{})
+	concurrentWriteDone := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		result <- store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
+			if err := repositories.Messages().AppendMessages(ctx, []MessageRecord{{ID: "message-1", ThreadID: "thread-1", Message: Message{Role: RoleUser}}}); err != nil {
+				return err
+			}
+			close(transactionReady)
+			<-concurrentWriteDone
+			return nil
+		})
+	}()
+	<-transactionReady
+	if err := store.Threads().UpdateThread(ctx, ThreadRecord{ID: "thread-1", Metadata: json.RawMessage(`{"source":"concurrent"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	close(concurrentWriteDone)
+	err := <-result
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("Transaction conflict error = %v, want ErrConflict", err)
 	}
@@ -499,6 +512,39 @@ func TestMemoryStoreTransactionDetectsConcurrentWrites(t *testing.T) {
 	}
 	if len(messages.Records) != 0 {
 		t.Fatalf("conflicted transaction committed messages: %#v", messages)
+	}
+}
+
+func TestMemoryStoreConcurrentReadOnlyTransactionsDoNotConflict(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			results <- store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
+				if _, err := repositories.Threads().GetThread(ctx, "thread-1"); err != nil {
+					return err
+				}
+				started <- struct{}{}
+				<-release
+				return nil
+			})
+		}()
+	}
+	<-started
+	<-started
+	close(release)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("read-only Transaction() error = %v", err)
+		}
 	}
 }
 

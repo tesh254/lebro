@@ -52,8 +52,9 @@ func (s *MemoryStore) Migrate(context.Context) error { return nil }
 
 // Transaction runs fn against an isolated copy and commits it only if fn
 // succeeds without a concurrent write. Callers may retry ErrConflict. The
-// callback may read the outer store, but must not retain repositories after it
-// returns.
+// callback may read the outer store, but must not write to it or retain
+// repositories after it returns. Outer-store writes are not transactional and
+// persist even when fn returns an error or the transaction reports ErrConflict.
 func (s *MemoryStore) Transaction(ctx context.Context, fn func(context.Context, Repositories) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -67,6 +68,9 @@ func (s *MemoryStore) Transaction(ctx context.Context, fn func(context.Context, 
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if !tx.dirty {
+		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,35 +148,58 @@ func (s *MemoryStore) ListWorkflowSnapshots(ctx context.Context, id RunID, page 
 	return listWorkflowSnapshots(ctx, s.state, id, page)
 }
 
-type memoryRepositories struct{ state memoryState }
+type memoryRepositories struct {
+	state memoryState
+	dirty bool
+}
 
 func (r *memoryRepositories) Threads() ThreadRepository                     { return r }
 func (r *memoryRepositories) Messages() MessageRepository                   { return r }
 func (r *memoryRepositories) WorkflowRuns() WorkflowRunRepository           { return r }
 func (r *memoryRepositories) WorkflowSnapshots() WorkflowSnapshotRepository { return r }
 func (r *memoryRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
-	return createThread(ctx, &r.state, v)
+	err := createThread(ctx, &r.state, v)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
 }
 func (r *memoryRepositories) GetThread(ctx context.Context, id ThreadID) (ThreadRecord, error) {
 	return getThread(ctx, r.state, id)
 }
 func (r *memoryRepositories) UpdateThread(ctx context.Context, v ThreadRecord) error {
-	return updateThread(ctx, &r.state, v)
+	err := updateThread(ctx, &r.state, v)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
 }
 func (r *memoryRepositories) AppendMessages(ctx context.Context, v []MessageRecord) error {
-	return appendMessages(ctx, &r.state, v)
+	err := appendMessages(ctx, &r.state, v)
+	if err == nil && len(v) > 0 {
+		r.dirty = true
+	}
+	return err
 }
 func (r *memoryRepositories) ListMessages(ctx context.Context, id ThreadID, p PageRequest) (Page[MessageRecord], error) {
 	return listMessages(ctx, r.state, id, p)
 }
 func (r *memoryRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunRecord) error {
-	return saveWorkflowRun(ctx, &r.state, v)
+	err := saveWorkflowRun(ctx, &r.state, v)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
 }
 func (r *memoryRepositories) GetWorkflowRun(ctx context.Context, id RunID) (WorkflowRunRecord, error) {
 	return getWorkflowRun(ctx, r.state, id)
 }
 func (r *memoryRepositories) SaveWorkflowSnapshot(ctx context.Context, v WorkflowSnapshotRecord) error {
-	return saveWorkflowSnapshot(ctx, &r.state, v)
+	err := saveWorkflowSnapshot(ctx, &r.state, v)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
 }
 func (r *memoryRepositories) ListWorkflowSnapshots(ctx context.Context, id RunID, p PageRequest) (Page[WorkflowSnapshotRecord], error) {
 	return listWorkflowSnapshots(ctx, r.state, id, p)
