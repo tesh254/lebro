@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -117,7 +118,12 @@ func normalizeSchemaError(err error) error {
 
 func validationIssues(validationErr *jsonschema.ValidationError, instance any) []lebro.ValidationIssue {
 	issues := make([]lebro.ValidationIssue, 0, 1)
-	collectValidationIssues(validationErr, instance, &issues)
+	collector := validationIssueCollector{
+		instance:        instance,
+		propertyPaths:   map[string][][]string{},
+		propertyOffsets: map[string]int{},
+	}
+	collector.collect(validationErr, nil, &issues)
 	sort.SliceStable(issues, func(i, j int) bool {
 		if issues[i].Path != issues[j].Path {
 			return issues[i].Path < issues[j].Path
@@ -130,14 +136,21 @@ func validationIssues(validationErr *jsonschema.ValidationError, instance any) [
 	return issues
 }
 
-func collectValidationIssues(validationErr *jsonschema.ValidationError, instance any, issues *[]lebro.ValidationIssue) {
+type validationIssueCollector struct {
+	instance        any
+	propertyPaths   map[string][][]string
+	propertyOffsets map[string]int
+}
+
+func (c *validationIssueCollector) collect(validationErr *jsonschema.ValidationError, parentLocation []string, issues *[]lebro.ValidationIssue) {
 	instanceLocation := validationErr.InstanceLocation
+	if len(instanceLocation) == 0 && len(parentLocation) != 0 {
+		instanceLocation = parentLocation
+	}
 	if errorKind, ok := validationErr.ErrorKind.(*kind.PropertyNames); ok {
 		path := appendPath(instanceLocation, errorKind.Property)
-		if len(validationErr.InstanceLocation) == 0 {
-			if located, found := findPropertyPath(instance, errorKind.Property); found {
-				path = located
-			}
+		if len(instanceLocation) == 0 {
+			path = c.nextPropertyPath(validationErr.SchemaURL, errorKind.Property, path)
 		}
 		*issues = append(*issues, lebro.ValidationIssue{
 			Path:    jsonPointer(path),
@@ -148,7 +161,7 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, instance
 	}
 	if len(validationErr.Causes) != 0 {
 		for _, cause := range validationErr.Causes {
-			collectValidationIssues(cause, instance, issues)
+			c.collect(cause, instanceLocation, issues)
 		}
 		return
 	}
@@ -200,36 +213,87 @@ func collectValidationIssues(validationErr *jsonschema.ValidationError, instance
 	}
 }
 
-func findPropertyPath(value any, property string) ([]string, bool) {
-	switch value := value.(type) {
-	case map[string]any:
-		if _, ok := value[property]; ok {
-			return []string{property}, true
-		}
-		keys := make([]string, 0, len(value))
-		for key := range value {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if path, found := findPropertyPath(value[key], property); found {
-				return prependPath(key, path), true
-			}
-		}
-	case []any:
-		for index, item := range value {
-			if path, found := findPropertyPath(item, property); found {
-				return prependPath(strconv.Itoa(index), path), true
-			}
-		}
+func (c *validationIssueCollector) nextPropertyPath(schemaURL, property string, fallback []string) []string {
+	key := schemaURL + "\x00" + property
+	paths, ok := c.propertyPaths[key]
+	if !ok {
+		paths = findPropertyPaths(c.instance, schemaURL, property)
+		c.propertyPaths[key] = paths
 	}
-	return nil, false
+	offset := c.propertyOffsets[key]
+	if offset >= len(paths) {
+		return fallback
+	}
+	c.propertyOffsets[key] = offset + 1
+	return paths[offset]
 }
 
-func prependPath(token string, path []string) []string {
-	prepended := make([]string, 1, len(path)+1)
-	prepended[0] = token
-	return append(prepended, path...)
+type instanceCandidate struct {
+	value any
+	path  []string
+}
+
+func findPropertyPaths(instance any, schemaURL, property string) [][]string {
+	candidates := []instanceCandidate{{value: instance}}
+	tokens := schemaLocationTokens(schemaURL)
+	for index := 0; index < len(tokens); index++ {
+		switch tokens[index] {
+		case "properties":
+			index++
+			propertyName := tokens[index]
+			next := make([]instanceCandidate, 0, len(candidates))
+			for _, candidate := range candidates {
+				object, ok := candidate.value.(map[string]any)
+				if !ok {
+					continue
+				}
+				value, ok := object[propertyName]
+				if !ok {
+					continue
+				}
+				next = append(next, instanceCandidate{value: value, path: appendPath(candidate.path, propertyName)})
+			}
+			candidates = next
+		case "items":
+			next := make([]instanceCandidate, 0, len(candidates))
+			for _, candidate := range candidates {
+				items, ok := candidate.value.([]any)
+				if !ok {
+					continue
+				}
+				for itemIndex, item := range items {
+					next = append(next, instanceCandidate{value: item, path: appendPath(candidate.path, strconv.Itoa(itemIndex))})
+				}
+			}
+			candidates = next
+		}
+	}
+
+	paths := make([][]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		object, ok := candidate.value.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := object[property]; ok {
+			paths = append(paths, appendPath(candidate.path, property))
+		}
+	}
+	return paths
+}
+
+func schemaLocationTokens(schemaURL string) []string {
+	_, fragment, found := strings.Cut(schemaURL, "#")
+	if !found || fragment == "" {
+		return nil
+	}
+	fragment, _ = url.PathUnescape(fragment)
+	parts := strings.Split(strings.TrimPrefix(fragment, "/"), "/")
+	for index, part := range parts {
+		part = strings.ReplaceAll(part, "~1", "/")
+		parts[index] = strings.ReplaceAll(part, "~0", "~")
+	}
+	return parts
 }
 
 func appendPath(path []string, token string) []string {

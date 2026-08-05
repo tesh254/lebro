@@ -243,8 +243,8 @@ func TestCompilerReportsDependentAndPropertyNamePaths(t *testing.T) {
 					"payload":{"type":"array","items":{"type":"object","propertyNames":{"pattern":"^[a-z]+$"}}}
 				}
 			}`),
-			value:       json.RawMessage(`{"a":0,"payload":[0,{"BadName":true}]}`),
-			wantPath:    "/payload/1/BadName",
+			value:       json.RawMessage(`{"other":{"BadName":"allowed here"},"payload":[{"BadName":1},{"BadName":2}]}`),
+			wantPath:    "/payload/0/BadName",
 			wantKeyword: "propertyNames",
 		},
 	}
@@ -267,6 +267,18 @@ func TestCompilerReportsDependentAndPropertyNamePaths(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("validation error = %#v, want path %q keyword %q", validationErr, tt.wantPath, tt.wantKeyword)
+			}
+			if tt.name == "nested property name" {
+				wantPaths := []string{"/payload/0/BadName", "/payload/1/BadName"}
+				var gotPaths []string
+				for _, issue := range validationErr.Issues {
+					if issue.Keyword == "propertyNames" {
+						gotPaths = append(gotPaths, issue.Path)
+					}
+				}
+				if !reflect.DeepEqual(gotPaths, wantPaths) {
+					t.Fatalf("propertyNames paths = %q, want %q", gotPaths, wantPaths)
+				}
 			}
 		})
 	}
