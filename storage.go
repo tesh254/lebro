@@ -10,6 +10,14 @@ import (
 // ErrNotFound is returned when a repository has no record for an identifier.
 var ErrNotFound = errors.New("lebro: record not found")
 
+// ErrConflict is returned when an optimistic transaction observes a concurrent
+// write before it can commit. Callers may retry the transaction.
+var ErrConflict = errors.New("lebro: storage conflict")
+
+// ErrInvalidPage is returned when a pagination request has an invalid cursor
+// or limit.
+var ErrInvalidPage = errors.New("lebro: invalid page request")
+
 // PageRequest specifies a bounded, cursor-based repository query. A zero
 // Limit lets an adapter choose its default page size.
 type PageRequest struct {

@@ -14,15 +14,17 @@ import (
 // It preserves the same validation, pagination, and transaction semantics
 // expected from durable adapters.
 type MemoryStore struct {
-	mu    sync.RWMutex
-	state memoryState
+	mu      sync.RWMutex
+	state   memoryState
+	version uint64
 }
 
 type memoryState struct {
-	threads   map[ThreadID]ThreadRecord
-	messages  map[ThreadID][]MessageRecord
-	runs      map[RunID]WorkflowRunRecord
-	snapshots map[RunID][]WorkflowSnapshotRecord
+	threads     map[ThreadID]ThreadRecord
+	messages    map[ThreadID][]MessageRecord
+	runs        map[RunID]WorkflowRunRecord
+	snapshots   map[RunID][]WorkflowSnapshotRecord
+	snapshotIDs map[RunID]map[string]struct{}
 }
 
 // NewMemoryStore creates an empty in-memory storage implementation.
@@ -31,7 +33,13 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func newMemoryState() memoryState {
-	return memoryState{map[ThreadID]ThreadRecord{}, map[ThreadID][]MessageRecord{}, map[RunID]WorkflowRunRecord{}, map[RunID][]WorkflowSnapshotRecord{}}
+	return memoryState{
+		threads:     map[ThreadID]ThreadRecord{},
+		messages:    map[ThreadID][]MessageRecord{},
+		runs:        map[RunID]WorkflowRunRecord{},
+		snapshots:   map[RunID][]WorkflowSnapshotRecord{},
+		snapshotIDs: map[RunID]map[string]struct{}{},
+	}
 }
 
 func (s *MemoryStore) Threads() ThreadRepository                     { return s }
@@ -43,28 +51,41 @@ func (s *MemoryStore) WorkflowSnapshots() WorkflowSnapshotRepository { return s 
 func (s *MemoryStore) Migrate(context.Context) error { return nil }
 
 // Transaction runs fn against an isolated copy and commits it only if fn
-// succeeds. The callback must not retain its repositories after it returns.
+// succeeds without a concurrent write. Callers may retry ErrConflict. The
+// callback may read the outer store, but must not retain repositories after it
+// returns.
 func (s *MemoryStore) Transaction(ctx context.Context, fn func(context.Context, Repositories) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
 	tx := &memoryRepositories{state: cloneMemoryState(s.state)}
+	version := s.version
+	s.mu.RUnlock()
 	if err := fn(ctx, tx); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.version != version {
+		return ErrConflict
+	}
 	s.state = tx.state
+	s.version++
 	return nil
 }
 
 func (s *MemoryStore) CreateThread(ctx context.Context, record ThreadRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return createThread(ctx, &s.state, record)
+	err := createThread(ctx, &s.state, record)
+	if err == nil {
+		s.version++
+	}
+	return err
 }
 func (s *MemoryStore) GetThread(ctx context.Context, id ThreadID) (ThreadRecord, error) {
 	s.mu.RLock()
@@ -74,12 +95,20 @@ func (s *MemoryStore) GetThread(ctx context.Context, id ThreadID) (ThreadRecord,
 func (s *MemoryStore) UpdateThread(ctx context.Context, record ThreadRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return updateThread(ctx, &s.state, record)
+	err := updateThread(ctx, &s.state, record)
+	if err == nil {
+		s.version++
+	}
+	return err
 }
 func (s *MemoryStore) AppendMessages(ctx context.Context, records []MessageRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return appendMessages(ctx, &s.state, records)
+	err := appendMessages(ctx, &s.state, records)
+	if err == nil {
+		s.version++
+	}
+	return err
 }
 func (s *MemoryStore) ListMessages(ctx context.Context, id ThreadID, page PageRequest) (Page[MessageRecord], error) {
 	s.mu.RLock()
@@ -89,7 +118,11 @@ func (s *MemoryStore) ListMessages(ctx context.Context, id ThreadID, page PageRe
 func (s *MemoryStore) SaveWorkflowRun(ctx context.Context, record WorkflowRunRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return saveWorkflowRun(ctx, &s.state, record)
+	err := saveWorkflowRun(ctx, &s.state, record)
+	if err == nil {
+		s.version++
+	}
+	return err
 }
 func (s *MemoryStore) GetWorkflowRun(ctx context.Context, id RunID) (WorkflowRunRecord, error) {
 	s.mu.RLock()
@@ -99,7 +132,11 @@ func (s *MemoryStore) GetWorkflowRun(ctx context.Context, id RunID) (WorkflowRun
 func (s *MemoryStore) SaveWorkflowSnapshot(ctx context.Context, record WorkflowSnapshotRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return saveWorkflowSnapshot(ctx, &s.state, record)
+	err := saveWorkflowSnapshot(ctx, &s.state, record)
+	if err == nil {
+		s.version++
+	}
+	return err
 }
 func (s *MemoryStore) ListWorkflowSnapshots(ctx context.Context, id RunID, page PageRequest) (Page[WorkflowSnapshotRecord], error) {
 	s.mu.RLock()
@@ -151,10 +188,13 @@ func createThread(ctx context.Context, s *memoryState, v ThreadRecord) error {
 	if err := validateJSON(v.Metadata); err != nil {
 		return fmt.Errorf("lebro: thread metadata: %w", err)
 	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: thread: %w", err)
+	}
 	if _, ok := s.threads[v.ID]; ok {
 		return fmt.Errorf("lebro: thread %q already exists", v.ID)
 	}
-	s.threads[v.ID] = clone(v)
+	s.threads[v.ID] = cloneThreadRecord(v)
 	return nil
 }
 func getThread(ctx context.Context, s memoryState, id ThreadID) (ThreadRecord, error) {
@@ -165,7 +205,7 @@ func getThread(ctx context.Context, s memoryState, id ThreadID) (ThreadRecord, e
 	if !ok {
 		return ThreadRecord{}, ErrNotFound
 	}
-	return clone(v), nil
+	return cloneThreadRecord(v), nil
 }
 func updateThread(ctx context.Context, s *memoryState, v ThreadRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -177,7 +217,10 @@ func updateThread(ctx context.Context, s *memoryState, v ThreadRecord) error {
 	if err := validateJSON(v.Metadata); err != nil {
 		return fmt.Errorf("lebro: thread metadata: %w", err)
 	}
-	s.threads[v.ID] = clone(v)
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: thread: %w", err)
+	}
+	s.threads[v.ID] = cloneThreadRecord(v)
 	return nil
 }
 func appendMessages(ctx context.Context, s *memoryState, vs []MessageRecord) error {
@@ -185,6 +228,7 @@ func appendMessages(ctx context.Context, s *memoryState, vs []MessageRecord) err
 		return err
 	}
 	seen := make(map[ThreadID]map[string]struct{}, len(vs))
+	existing := make(map[ThreadID]map[string]struct{}, len(vs))
 	for _, v := range vs {
 		if v.ID == "" || v.ThreadID == "" {
 			return fmt.Errorf("lebro: message and thread IDs are required")
@@ -198,10 +242,17 @@ func appendMessages(ctx context.Context, s *memoryState, vs []MessageRecord) err
 		if err := validateJSON(v.Metadata); err != nil {
 			return fmt.Errorf("lebro: message metadata: %w", err)
 		}
-		for _, existing := range s.messages[v.ThreadID] {
-			if existing.ID == v.ID {
-				return fmt.Errorf("lebro: message %q already exists", v.ID)
+		if err := validateRecord(v); err != nil {
+			return fmt.Errorf("lebro: message: %w", err)
+		}
+		if existing[v.ThreadID] == nil {
+			existing[v.ThreadID] = make(map[string]struct{}, len(s.messages[v.ThreadID]))
+			for _, message := range s.messages[v.ThreadID] {
+				existing[v.ThreadID][message.ID] = struct{}{}
 			}
+		}
+		if _, ok := existing[v.ThreadID][v.ID]; ok {
+			return fmt.Errorf("lebro: message %q already exists", v.ID)
 		}
 		if seen[v.ThreadID] == nil {
 			seen[v.ThreadID] = map[string]struct{}{}
@@ -212,7 +263,7 @@ func appendMessages(ctx context.Context, s *memoryState, vs []MessageRecord) err
 		seen[v.ThreadID][v.ID] = struct{}{}
 	}
 	for _, v := range vs {
-		s.messages[v.ThreadID] = append(s.messages[v.ThreadID], clone(v))
+		s.messages[v.ThreadID] = append(s.messages[v.ThreadID], cloneMessageRecord(v))
 	}
 	return nil
 }
@@ -223,7 +274,7 @@ func listMessages(ctx context.Context, s memoryState, id ThreadID, p PageRequest
 	if _, ok := s.threads[id]; !ok {
 		return Page[MessageRecord]{}, ErrNotFound
 	}
-	return paginate(s.messages[id], p), nil
+	return paginate(s.messages[id], p, cloneMessageRecord)
 }
 func saveWorkflowRun(ctx context.Context, s *memoryState, v WorkflowRunRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -237,7 +288,10 @@ func saveWorkflowRun(ctx context.Context, s *memoryState, v WorkflowRunRecord) e
 			return fmt.Errorf("lebro: workflow run %s: %w", name, err)
 		}
 	}
-	s.runs[v.ID] = clone(v)
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: workflow run: %w", err)
+	}
+	s.runs[v.ID] = cloneWorkflowRunRecord(v)
 	return nil
 }
 func getWorkflowRun(ctx context.Context, s memoryState, id RunID) (WorkflowRunRecord, error) {
@@ -248,7 +302,7 @@ func getWorkflowRun(ctx context.Context, s memoryState, id RunID) (WorkflowRunRe
 	if !ok {
 		return WorkflowRunRecord{}, ErrNotFound
 	}
-	return clone(v), nil
+	return cloneWorkflowRunRecord(v), nil
 }
 func saveWorkflowSnapshot(ctx context.Context, s *memoryState, v WorkflowSnapshotRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -260,16 +314,28 @@ func saveWorkflowSnapshot(ctx context.Context, s *memoryState, v WorkflowSnapsho
 	if err := validateJSON(v.State); err != nil {
 		return fmt.Errorf("lebro: workflow snapshot state: %w", err)
 	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: workflow snapshot: %w", err)
+	}
 	if _, ok := s.runs[v.RunID]; !ok {
 		return ErrNotFound
 	}
-	for _, e := range s.snapshots[v.RunID] {
-		if e.ID == v.ID || e.Sequence == v.Sequence {
-			return fmt.Errorf("lebro: workflow snapshot already exists")
-		}
+	if s.snapshotIDs[v.RunID] == nil {
+		s.snapshotIDs[v.RunID] = map[string]struct{}{}
 	}
-	s.snapshots[v.RunID] = append(s.snapshots[v.RunID], clone(v))
-	sort.SliceStable(s.snapshots[v.RunID], func(i, j int) bool { return s.snapshots[v.RunID][i].Sequence < s.snapshots[v.RunID][j].Sequence })
+	if _, ok := s.snapshotIDs[v.RunID][v.ID]; ok {
+		return fmt.Errorf("lebro: workflow snapshot already exists")
+	}
+	snapshots := s.snapshots[v.RunID]
+	index := sort.Search(len(snapshots), func(i int) bool { return snapshots[i].Sequence >= v.Sequence })
+	if index < len(snapshots) && snapshots[index].Sequence == v.Sequence {
+		return fmt.Errorf("lebro: workflow snapshot already exists")
+	}
+	snapshots = append(snapshots, WorkflowSnapshotRecord{})
+	copy(snapshots[index+1:], snapshots[index:])
+	snapshots[index] = cloneWorkflowSnapshotRecord(v)
+	s.snapshots[v.RunID] = snapshots
+	s.snapshotIDs[v.RunID][v.ID] = struct{}{}
 	return nil
 }
 func listWorkflowSnapshots(ctx context.Context, s memoryState, id RunID, p PageRequest) (Page[WorkflowSnapshotRecord], error) {
@@ -279,66 +345,98 @@ func listWorkflowSnapshots(ctx context.Context, s memoryState, id RunID, p PageR
 	if _, ok := s.runs[id]; !ok {
 		return Page[WorkflowSnapshotRecord]{}, ErrNotFound
 	}
-	return paginate(s.snapshots[id], p), nil
+	return paginate(s.snapshots[id], p, cloneWorkflowSnapshotRecord)
 }
 
-func paginate[T any](records []T, request PageRequest) Page[T] {
-	start, _ := strconv.Atoi(request.Cursor)
-	if start < 0 {
-		start = 0
+func paginate[T any](records []T, request PageRequest, cloneRecord func(T) T) (Page[T], error) {
+	start := 0
+	if request.Cursor != "" {
+		var err error
+		start, err = strconv.Atoi(request.Cursor)
+		if err != nil || start < 0 {
+			return Page[T]{}, ErrInvalidPage
+		}
 	}
 	limit := request.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 100
 	}
-	if start >= len(records) {
-		return Page[T]{Records: []T{}}
+	if limit < 0 {
+		return Page[T]{}, ErrInvalidPage
 	}
-	end := start + limit
-	if end > len(records) {
-		end = len(records)
+	if start >= len(records) {
+		return Page[T]{Records: []T{}}, nil
+	}
+	end := len(records)
+	if limit < len(records)-start {
+		end = start + limit
 	}
 	page := Page[T]{Records: make([]T, 0, end-start)}
 	for _, record := range records[start:end] {
-		page.Records = append(page.Records, clone(record))
+		page.Records = append(page.Records, cloneRecord(record))
 	}
 	if end < len(records) {
 		page.NextCursor = strconv.Itoa(end)
 	}
-	return page
+	return page, nil
 }
 func cloneMemoryState(s memoryState) memoryState {
 	out := newMemoryState()
 	for k, v := range s.threads {
-		out.threads[k] = clone(v)
+		out.threads[k] = cloneThreadRecord(v)
 	}
 	for k, v := range s.messages {
 		out.messages[k] = append([]MessageRecord(nil), v...)
 		for i := range out.messages[k] {
-			out.messages[k][i] = clone(out.messages[k][i])
+			out.messages[k][i] = cloneMessageRecord(out.messages[k][i])
 		}
 	}
 	for k, v := range s.runs {
-		out.runs[k] = clone(v)
+		out.runs[k] = cloneWorkflowRunRecord(v)
 	}
 	for k, v := range s.snapshots {
 		out.snapshots[k] = append([]WorkflowSnapshotRecord(nil), v...)
 		for i := range out.snapshots[k] {
-			out.snapshots[k][i] = clone(out.snapshots[k][i])
+			out.snapshots[k][i] = cloneWorkflowSnapshotRecord(out.snapshots[k][i])
+		}
+	}
+	for runID, ids := range s.snapshotIDs {
+		out.snapshotIDs[runID] = make(map[string]struct{}, len(ids))
+		for id := range ids {
+			out.snapshotIDs[runID][id] = struct{}{}
 		}
 	}
 	return out
 }
-func clone[T any](v T) T {
-	bytes, _ := json.Marshal(v)
-	var copy T
-	_ = json.Unmarshal(bytes, &copy)
-	return copy
+
+func cloneThreadRecord(v ThreadRecord) ThreadRecord    { v.Metadata = cloneJSON(v.Metadata); return v }
+func cloneMessageRecord(v MessageRecord) MessageRecord { v.Metadata = cloneJSON(v.Metadata); return v }
+func cloneWorkflowRunRecord(v WorkflowRunRecord) WorkflowRunRecord {
+	v.Input = cloneJSON(v.Input)
+	v.Output = cloneJSON(v.Output)
+	v.Metadata = cloneJSON(v.Metadata)
+	if v.FinishedAt != nil {
+		finished := *v.FinishedAt
+		v.FinishedAt = &finished
+	}
+	return v
 }
+func cloneWorkflowSnapshotRecord(v WorkflowSnapshotRecord) WorkflowSnapshotRecord {
+	v.State = cloneJSON(v.State)
+	return v
+}
+func cloneJSON(v json.RawMessage) json.RawMessage { return append(json.RawMessage(nil), v...) }
 
 func validateJSON(value json.RawMessage) error {
 	if len(value) == 0 || json.Valid(value) {
 		return nil
 	}
 	return errors.New("must be valid JSON")
+}
+
+func validateRecord(record any) error {
+	if _, err := json.Marshal(record); err != nil {
+		return fmt.Errorf("must be JSON serializable: %w", err)
+	}
+	return nil
 }

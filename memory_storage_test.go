@@ -388,11 +388,21 @@ func TestMemoryStorePaginationBounds(t *testing.T) {
 		t.Fatalf("out-of-range page = %#v", page)
 	}
 	page, err = store.Messages().ListMessages(ctx, "thread-1", PageRequest{Cursor: "-1", Limit: -1})
+	if !errors.Is(err, ErrInvalidPage) {
+		t.Fatalf("negative page error = %v, want ErrInvalidPage", err)
+	}
+	if _, err := store.Messages().ListMessages(ctx, "thread-1", PageRequest{Cursor: "not-a-cursor"}); !errors.Is(err, ErrInvalidPage) {
+		t.Fatalf("malformed cursor error = %v, want ErrInvalidPage", err)
+	}
+	if err := store.Messages().AppendMessages(ctx, []MessageRecord{{ID: "message-2", ThreadID: "thread-1", Message: Message{Role: RoleAssistant}}}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.Messages().ListMessages(ctx, "thread-1", PageRequest{Cursor: "1", Limit: int(^uint(0) >> 1)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Records) != 1 || page.NextCursor != "" {
-		t.Fatalf("default page = %#v", page)
+	if len(page.Records) != 1 || page.Records[0].ID != "message-2" {
+		t.Fatalf("large-limit page = %#v", page)
 	}
 }
 
@@ -437,5 +447,70 @@ func TestMemoryStoreRepositoriesHonorCanceledContext(t *testing.T) {
 				t.Fatalf("error = %v, want context.Canceled", err)
 			}
 		})
+	}
+}
+
+func TestMemoryStoreTransactionAllowsOuterStoreReads(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
+			if _, err := store.Threads().GetThread(ctx, "thread-1"); err != nil {
+				return err
+			}
+			return repositories.Messages().AppendMessages(ctx, []MessageRecord{{ID: "message-1", ThreadID: "thread-1", Message: Message{Role: RoleUser}}})
+		})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Transaction deadlocked after outer-store read")
+	}
+}
+
+func TestMemoryStoreTransactionDetectsConcurrentWrites(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-1"}); err != nil {
+		t.Fatal(err)
+	}
+	err := store.Transaction(ctx, func(ctx context.Context, repositories Repositories) error {
+		if err := repositories.Messages().AppendMessages(ctx, []MessageRecord{{ID: "message-1", ThreadID: "thread-1", Message: Message{Role: RoleUser}}}); err != nil {
+			return err
+		}
+		return store.Threads().UpdateThread(ctx, ThreadRecord{ID: "thread-1", Metadata: json.RawMessage(`{"source":"outer"}`)})
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Transaction conflict error = %v, want ErrConflict", err)
+	}
+	messages, err := store.Messages().ListMessages(ctx, "thread-1", PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages.Records) != 0 {
+		t.Fatalf("conflicted transaction committed messages: %#v", messages)
+	}
+}
+
+func TestMemoryStoreRejectsRecordsThatCannotRoundTripThroughJSON(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	invalidTime := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-1", CreatedAt: invalidTime}); err == nil {
+		t.Fatal("CreateThread invalid timestamp error = nil")
+	}
+	if _, err := store.Threads().GetThread(ctx, "thread-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetThread invalid timestamp error = %v, want ErrNotFound", err)
 	}
 }
