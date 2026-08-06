@@ -1,0 +1,22 @@
+model.go
+  s_9b7af80e1b2d04::t_3d8c26dada2055 296-298,306-309,312-313
+  s_9b7af80e1b2d04::t_16db1b6bb01d27 71-76,79
+model_test.go
+  s_9b7af80e1b2d04::t_0114473888f680 214-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "370d10c2f75d564c9d5f6f1e36c9b0f1e89c1995",
+  "prompts": {},
+  "sessions": {
+    "s_9b7af80e1b2d04": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0295bd4c7ffeUTF5HJx9TtbPKF",
+        "model": "moonshotai/kimi-k3"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
