@@ -94,20 +94,20 @@ func RunProviderContract(t *testing.T, factory ProviderFactory) {
 				ctx = cancelled
 			}
 
-		response, err := model.Generate(ctx, cloneRequest(contractCase.Request))
-		switch contractCase.Mode {
-		case ContractResponse:
-			assertNoError(t, err)
-			assertResponse(t, response, contractCase.Response)
-		case ContractStructuredOutput:
-			assertNoError(t, err)
-			assertValidJSON(t, response.Message.Content)
-			assertResponse(t, response, contractCase.Response)
-		case ContractFailure:
-			assertError(t, err)
-		case ContractCancellation:
-			AssertCancellation(t, err)
-		}
+			response, err := model.Generate(ctx, cloneRequest(contractCase.Request))
+			switch contractCase.Mode {
+			case ContractResponse:
+				assertNoError(t, err)
+				assertResponse(t, response, contractCase.Response)
+			case ContractStructuredOutput:
+				assertNoError(t, err)
+				assertValidJSON(t, response.Message.Content)
+				assertResponse(t, response, contractCase.Response)
+			case ContractFailure:
+				assertError(t, err)
+			case ContractCancellation:
+				AssertCancellation(t, err)
+			}
 		})
 	}
 }
