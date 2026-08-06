@@ -200,6 +200,17 @@ func TestModelToolCallCollectionsAreDefensive(t *testing.T) {
 	if err := decoded.UnmarshalJSON([]byte(`[ { "arguments": {}, "tool_id": "lookup", "id": "call-1" } ]`)); err != nil || decoded != canonical {
 		t.Fatalf("canonical decoded tool calls = %#v, %v; want %#v", decoded, err, canonical)
 	}
+	equivalent, err := NewModelToolCalls(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"b":1,"a":2}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := NewModelToolCalls(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{ "a": 2, "b": 1 }`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equivalent != reordered {
+		t.Fatalf("canonical tool call encoding = %s; want equal to %s", reordered, equivalent)
+	}
 	var nilCalls *ModelToolCalls
 	if err := nilCalls.UnmarshalJSON([]byte("[]")); err == nil {
 		t.Fatal("nil tool call receiver error = nil")
@@ -217,6 +228,10 @@ func TestModelToolCallCollectionsAreDefensive(t *testing.T) {
 	}
 	if err := decodedOutput.UnmarshalJSON([]byte("{")); err == nil {
 		t.Fatal("invalid structured output unmarshal error = nil")
+	}
+	var nullOutput ModelStructuredOutput
+	if err := nullOutput.UnmarshalJSON([]byte("null")); err != nil || nullOutput != "" {
+		t.Fatalf("null structured output = %#v, %v; want empty", nullOutput, err)
 	}
 	var nilOutput *ModelStructuredOutput
 	if err := nilOutput.UnmarshalJSON([]byte("null")); err == nil {

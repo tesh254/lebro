@@ -57,8 +57,21 @@ func NewModelToolCalls(calls ...ModelToolCall) (ModelToolCalls, error) {
 		}
 		seen[call.ID] = struct{}{}
 	}
-	// Validation guarantees RawMessage values are valid, so encoding cannot fail.
-	encoded, _ := json.Marshal(calls)
+	// Canonicalize arguments so semantically equivalent calls (differing only in
+	// whitespace or object-key order) share one stable identity for persistence
+	// and replay. Validation already guaranteed the input is valid JSON.
+	canonical := make([]ModelToolCall, len(calls))
+	for i, call := range calls {
+		normalized, err := canonicalJSON(call.Arguments)
+		if err != nil {
+			return ModelToolCalls{}, fmt.Errorf("lebro: model tool call %d arguments: %w", i, err)
+		}
+		canonical[i] = ModelToolCall{ID: call.ID, ToolID: call.ToolID, Arguments: json.RawMessage(normalized)}
+	}
+	encoded, err := json.Marshal(canonical)
+	if err != nil {
+		return ModelToolCalls{}, fmt.Errorf("lebro: encode model tool calls: %w", err)
+	}
 	return ModelToolCalls{encoded: string(encoded)}, nil
 }
 
@@ -138,6 +151,10 @@ func (o *ModelStructuredOutput) UnmarshalJSON(data []byte) error {
 	if o == nil {
 		return errors.New("lebro: unmarshal model structured output into nil receiver")
 	}
+	if string(data) == "null" {
+		*o = ""
+		return nil
+	}
 	if !json.Valid(data) {
 		return errors.New("lebro: model structured output must be valid JSON")
 	}
@@ -165,9 +182,12 @@ const (
 )
 
 // ModelResponse is the provider-neutral output returned from a model adapter.
-// A response can contain assistant text, requested tool calls, or structured
-// JSON. Extension preserves opaque provider metadata without coupling callers
-// to a vendor SDK.
+// A response may carry assistant text, requested tool calls, and structured
+// JSON in any combination; Validate enforces internal consistency (for example,
+// tool calls require a tool_calls finish reason) rather than exclusivity, so
+// adapters can surface whatever the provider returns without ambiguity.
+// Extension preserves opaque provider metadata without coupling callers to a
+// vendor SDK.
 type ModelResponse struct {
 	Message      Message
 	Usage        ModelUsage
@@ -263,6 +283,24 @@ func validateOptionalJSON(name string, value json.RawMessage) error {
 		return fmt.Errorf("%s must be valid JSON", name)
 	}
 	return nil
+}
+
+// canonicalJSON normalizes JSON so semantically equivalent values produce
+// identical bytes: whitespace is removed and object keys are sorted, which
+// makes the encoding suitable as a comparable identity for persisted/replayed
+// tool-call arguments. Numbers are preserved verbatim via json.Number.
+func canonicalJSON(data []byte) ([]byte, error) {
+	var value any
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&value); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 func validFinishReason(reason FinishReason) bool {

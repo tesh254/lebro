@@ -97,6 +97,9 @@ func TestMemoryStoreRepositoryContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	storedCalls := againCalls.Records[1].Message.ToolCalls.Values()
+	if len(storedCalls) != 1 {
+		t.Fatalf("stored tool calls = %d, want 1", len(storedCalls))
+	}
 	if got := string(storedCalls[0].Arguments); got != `{"value":1}` {
 		t.Fatalf("stored tool call arguments = %s, want original value", got)
 	}

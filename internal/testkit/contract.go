@@ -143,7 +143,7 @@ func cloneProviderCase(contractCase ProviderCase) ProviderCase {
 func contractToolCalls(calls ...lebro.ModelToolCall) lebro.ModelToolCalls {
 	encoded, err := lebro.NewModelToolCalls(calls...)
 	if err != nil {
-		return lebro.ModelToolCalls{}
+		panic(err)
 	}
 	return encoded
 }
