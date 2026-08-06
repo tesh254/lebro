@@ -8,6 +8,24 @@ execution. Provider adapters, the agent loop, and workflow execution arrive in
 the following incremental releases. This keeps each layer independently
 testable and avoids locking users into a model provider or storage backend.
 
+## Package layout
+
+`github.com/tesh254/lebro` is the only import most applications need. It is a
+stable façade for every public contract and constructor, so existing code keeps
+using `lebro.Message`, `lebro.NewToolRegistry`, and `lebro.NewMemoryStore`.
+
+```
+lebro/                   public API façade and module documentation
+internal/runtime/        model, tools, schema, workflow, and storage runtime
+jsonschema/              optional JSON Schema compiler implementation
+internal/testkit/        deterministic provider fixtures for tests
+examples/                runnable feature-focused examples
+docs/                    installation and release guides
+```
+
+Keep runtime implementation out of module root. Add optional integrations as
+their own packages, never as dependencies of the root API.
+
 ## Requirements
 
 - Go 1.26.5 or newer
