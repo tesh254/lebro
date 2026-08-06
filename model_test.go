@@ -211,6 +211,13 @@ func TestModelToolCallCollectionsAreDefensive(t *testing.T) {
 	if equivalent != reordered {
 		t.Fatalf("canonical tool call encoding = %s; want equal to %s", reordered, equivalent)
 	}
+	html, err := NewModelToolCalls(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"query":"a<b>c&d"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := html.Values()[0].Arguments; string(got) != `{"query":"a<b>c&d"}` {
+		t.Fatalf("canonical tool call HTML escaping = %s; want source bytes preserved", got)
+	}
 	var nilCalls *ModelToolCalls
 	if err := nilCalls.UnmarshalJSON([]byte("[]")); err == nil {
 		t.Fatal("nil tool call receiver error = nil")

@@ -68,10 +68,15 @@ func NewModelToolCalls(calls ...ModelToolCall) (ModelToolCalls, error) {
 		}
 		canonical[i] = ModelToolCall{ID: call.ID, ToolID: call.ToolID, Arguments: json.RawMessage(normalized)}
 	}
-	encoded, err := json.Marshal(canonical)
-	if err != nil {
+	// Encode without HTML escaping so persisted bytes stay faithful to the
+	// source arguments (json.Marshal would escape <, >, & inside RawMessage).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(canonical); err != nil {
 		return ModelToolCalls{}, fmt.Errorf("lebro: encode model tool calls: %w", err)
 	}
+	encoded := bytes.TrimSpace(buf.Bytes())
 	return ModelToolCalls{encoded: string(encoded)}, nil
 }
 
@@ -288,7 +293,9 @@ func validateOptionalJSON(name string, value json.RawMessage) error {
 // canonicalJSON normalizes JSON so semantically equivalent values produce
 // identical bytes: whitespace is removed and object keys are sorted, which
 // makes the encoding suitable as a comparable identity for persisted/replayed
-// tool-call arguments. Numbers are preserved verbatim via json.Number.
+// tool-call arguments. Numbers are preserved verbatim via json.Number, and
+// HTML-sensitive characters in string values are left untouched (no \u003c
+// escaping) so the canonical bytes stay faithful to the source arguments.
 func canonicalJSON(data []byte) ([]byte, error) {
 	var value any
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -296,11 +303,14 @@ func canonicalJSON(data []byte) ([]byte, error) {
 	if err := dec.Decode(&value); err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal(value)
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
 		return nil, err
 	}
-	return encoded, nil
+	// json.Encoder appends a trailing newline; drop it for a pure value encoding.
+	return bytes.TrimSpace(buf.Bytes()), nil
 }
 
 func validFinishReason(reason FinishReason) bool {
