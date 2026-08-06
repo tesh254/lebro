@@ -13,7 +13,8 @@ import (
 const JSONSchemaDraft202012 = "https://json-schema.org/draft/2020-12/schema"
 
 // SchemaCompiler separates the Tool API from a concrete JSON Schema engine.
-// Implementations should return SchemaError for invalid or unsupported schemas.
+// Implementations should return SchemaError for invalid or unsupported schemas
+// and must be safe for concurrent calls.
 type SchemaCompiler interface {
 	Compile(json.RawMessage) (CompiledSchema, error)
 }
@@ -113,7 +114,7 @@ func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) 
 		if err != nil {
 			return nil, fmt.Errorf("lebro: compile tool input schema: %w", err)
 		}
-		if validator.input == nil {
+		if validator.input == nil || isNilInterface(validator.input) {
 			return nil, errors.New("lebro: schema compiler returned a nil input schema")
 		}
 	}
@@ -122,7 +123,7 @@ func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) 
 		if err != nil {
 			return nil, fmt.Errorf("lebro: compile tool output schema: %w", err)
 		}
-		if validator.output == nil {
+		if validator.output == nil || isNilInterface(validator.output) {
 			return nil, errors.New("lebro: schema compiler returned a nil output schema")
 		}
 	}

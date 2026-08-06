@@ -12,3 +12,5 @@ All notable changes to this project are documented in this file.
   for repository tests and examples.
 - Provider-neutral text, tool-call, and structured-output model protocol with
   opaque vendor extensions and typed error mapping.
+- Schema-backed tool registration and execution with request metadata,
+  cancellation, and distinct normalized failure states.

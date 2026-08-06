@@ -1,12 +1,12 @@
 # lebro
 
-`lebro` is a Go library for composing AI agents, tools, workflows, and their
-durable runtime state.
+`lebro` is a Go library for composing AI agents, schema-backed tools,
+workflows, and their durable runtime state.
 
-The first release establishes stable public contracts. Provider adapters, tool
-execution, the agent loop, and workflow execution arrive in the following
-incremental releases. This keeps each layer independently testable and avoids
-locking users into a model provider or storage backend.
+The first release establishes stable public contracts and safe local tool
+execution. Provider adapters, the agent loop, and workflow execution arrive in
+the following incremental releases. This keeps each layer independently
+testable and avoids locking users into a model provider or storage backend.
 
 ## Requirements
 
@@ -86,6 +86,29 @@ same canonical transcript can be persisted and replayed on the next turn.
 Provider failures can be inspected with `errors.As` as `*lebro.ModelError` or
 with `errors.Is` against sentinels such as `lebro.ErrModelRateLimited`.
 
+## Schema-backed tool execution
+
+Register application tools with a `ToolRegistry` to compile their input and
+output schemas once. Every invocation validates arguments before calling the
+handler and validates the result before returning it. Request metadata is
+available through `ToolMetadataFromContext`, while validation errors, handler
+errors, panics, cancellation, and missing tools have distinct result states.
+
+```go
+registry, err := lebro.NewToolRegistry(lebrojsonschema.NewCompiler())
+if err != nil {
+	panic(err)
+}
+if err := registry.Register(weatherTool{}); err != nil {
+	panic(err)
+}
+
+result := registry.Execute(ctx, "weather.lookup", lebro.ToolExecutionRequest{
+	Arguments: json.RawMessage(`{"city":"Nairobi"}`),
+	Metadata:  map[string]string{"request_id": "req-42"},
+})
+```
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per
@@ -106,6 +129,12 @@ stream, failure, and cancellation without making a network request:
 
 ```sh
 go run ./examples/model-fixtures
+```
+
+The tools example registers and safely invokes a local schema-backed handler:
+
+```sh
+go run ./examples/tools-schema
 ```
 
 ## Development
