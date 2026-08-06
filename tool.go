@@ -140,7 +140,7 @@ func (t *RegisteredTool) Execute(ctx context.Context, request ToolExecutionReque
 	}
 
 	handlerCtx := context.WithValue(ctx, toolMetadataContextKey{}, cloneMetadata(request.Metadata))
-	output, handlerErr, panicValue, panicked := invokeToolHandler(handlerCtx, t.handler, cloneRawMessage(request.Arguments))
+	output, panicValue, panicked, handlerErr := invokeToolHandler(handlerCtx, t.handler, cloneRawMessage(request.Arguments))
 	if panicked {
 		return failedToolExecution(id, ToolExecutionPanicked, &ToolPanicError{Value: panicValue})
 	}
@@ -265,7 +265,7 @@ func ToolMetadataFromContext(ctx context.Context) map[string]string {
 	return cloneMetadata(metadata)
 }
 
-func invokeToolHandler(ctx context.Context, handler Tool, input json.RawMessage) (output json.RawMessage, err error, panicValue any, panicked bool) {
+func invokeToolHandler(ctx context.Context, handler Tool, input json.RawMessage) (output json.RawMessage, panicValue any, panicked bool, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			output = nil
@@ -275,7 +275,7 @@ func invokeToolHandler(ctx context.Context, handler Tool, input json.RawMessage)
 		}
 	}()
 	output, err = handler.Execute(ctx, input)
-	return output, err, nil, false
+	return output, nil, false, err
 }
 
 func failedToolExecution(id ToolID, state ToolExecutionState, err error) ToolExecutionResult {

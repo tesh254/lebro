@@ -405,7 +405,7 @@ func TestNilToolRegistryAndRegisteredTool(t *testing.T) {
 
 	registry = registryForToolTest(t, nil, nil)
 	registerToolForTest(t, registry, ToolDefinition{ID: "nil-context"}, echoToolHandler)
-	assertToolState(t, registry.Execute(nil, "nil-context", ToolExecutionRequest{}), ToolExecutionHandlerError)
+	assertToolState(t, registry.Execute(nilContextForTest(), "nil-context", ToolExecutionRequest{}), ToolExecutionHandlerError)
 }
 
 func TestToolExecutionErrorsAndMetadata(t *testing.T) {
@@ -436,7 +436,7 @@ func TestToolExecutionErrorsAndMetadata(t *testing.T) {
 	if metadata := ToolMetadataFromContext(context.Background()); metadata != nil {
 		t.Fatalf("background metadata = %#v", metadata)
 	}
-	if metadata := ToolMetadataFromContext(nil); metadata != nil {
+	if metadata := ToolMetadataFromContext(nilContextForTest()); metadata != nil {
 		t.Fatalf("nil context metadata = %#v", metadata)
 	}
 }
@@ -472,4 +472,8 @@ func assertToolState(t *testing.T, result ToolExecutionResult, want ToolExecutio
 	if !errors.As(result.Err, &executionErr) || executionErr.State != want || executionErr.ToolID != result.ToolID {
 		t.Fatalf("execution error = %#v", result.Err)
 	}
+}
+
+func nilContextForTest() context.Context {
+	return nil
 }
