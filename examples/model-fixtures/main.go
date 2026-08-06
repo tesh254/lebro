@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/tesh254/lebro"
@@ -41,7 +42,7 @@ func run(output *os.File, agent, stream, failing, cancelling scriptedModel) erro
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "tool call %s: %s %s\n", toolResponse.Message.ToolCallID, toolResponse.Message.Name, toolResponse.Message.Content)
+	writef(output, "tool call %s: %s %s\n", toolResponse.Message.ToolCallID, toolResponse.Message.Name, toolResponse.Message.Content)
 
 	request.Messages = append(request.Messages,
 		toolResponse.Message,
@@ -51,26 +52,26 @@ func run(output *os.File, agent, stream, failing, cancelling scriptedModel) erro
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "final: %s\n", finalResponse.Message.Content)
+	writef(output, "final: %s\n", finalResponse.Message.Content)
 
 	events, err := stream.Stream(ctx, request)
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(output, "stream: ")
+	write(output, "stream: ")
 	for event := range events {
 		if event.Err != nil {
 			return event.Err
 		}
-		fmt.Fprint(output, event.Text)
+		write(output, event.Text)
 	}
-	fmt.Fprintln(output)
+	writeln(output)
 
 	_, failureErr := failing.Generate(ctx, request)
 	if failureErr == nil {
 		return errors.New("failure fixture unexpectedly succeeded")
 	}
-	fmt.Fprintf(output, "failure: %v\n", failureErr)
+	writef(output, "failure: %v\n", failureErr)
 
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -78,8 +79,26 @@ func run(output *os.File, agent, stream, failing, cancelling scriptedModel) erro
 	if !errors.Is(cancellationErr, context.Canceled) {
 		return fmt.Errorf("cancellation fixture: %w", cancellationErr)
 	}
-	fmt.Fprintln(output, "cancelled: true")
+	writeln(output, "cancelled: true")
 	return nil
+}
+
+func write(w io.Writer, a ...any) {
+	if _, err := fmt.Fprint(w, a...); err != nil {
+		panic(err)
+	}
+}
+
+func writeln(w io.Writer, a ...any) {
+	if _, err := fmt.Fprintln(w, a...); err != nil {
+		panic(err)
+	}
+}
+
+func writef(w io.Writer, format string, a ...any) {
+	if _, err := fmt.Fprintf(w, format, a...); err != nil {
+		panic(err)
+	}
 }
 
 func must(err error) {

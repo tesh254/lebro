@@ -122,6 +122,33 @@ func TestMust(t *testing.T) {
 	must(errors.New("boom"))
 }
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func TestWriteHelpersPanicOnError(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{"write", func() { write(failingWriter{}, "x") }},
+		{"writeln", func() { writeln(failingWriter{}, "x") }},
+		{"writef", func() { writef(failingWriter{}, "%s", "x") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("expected panic")
+				}
+			}()
+			test.fn()
+		})
+	}
+}
+
 type ignoringModel struct{}
 
 func (ignoringModel) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {

@@ -1,23 +1,37 @@
+version: "2"
+
 run:
-  timeout: 5m
   modules-download-mode: readonly
 
 linters:
   enable:
     - errcheck
-    - gofmt
     - govet
     - ineffassign
     - misspell
     - staticcheck
-    - typecheck
     - unused
 
-linters-settings:
-  gofmt:
-    simplify: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
