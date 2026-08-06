@@ -141,11 +141,11 @@ func (t *RegisteredTool) Execute(ctx context.Context, request ToolExecutionReque
 
 	handlerCtx := context.WithValue(ctx, toolMetadataContextKey{}, cloneMetadata(request.Metadata))
 	output, panicValue, panicked, handlerErr := invokeToolHandler(handlerCtx, t.handler, cloneRawMessage(request.Arguments))
-	if panicked {
-		return failedToolExecution(id, ToolExecutionPanicked, &ToolPanicError{Value: panicValue})
-	}
 	if err := ctx.Err(); err != nil {
 		return failedToolExecution(id, ToolExecutionCancelled, err)
+	}
+	if panicked {
+		return failedToolExecution(id, ToolExecutionPanicked, &ToolPanicError{Value: panicValue})
 	}
 	if handlerErr != nil {
 		if errors.Is(handlerErr, context.Canceled) || errors.Is(handlerErr, context.DeadlineExceeded) {
@@ -201,6 +201,13 @@ func (r *ToolRegistry) Register(tool Tool) error {
 	}
 	if strings.TrimSpace(string(definition.ID)) != string(definition.ID) {
 		return fmt.Errorf("lebro: tool ID %q must not have surrounding whitespace", definition.ID)
+	}
+
+	r.mu.RLock()
+	_, exists := r.tools[definition.ID]
+	r.mu.RUnlock()
+	if exists {
+		return fmt.Errorf("lebro: tool ID %q is already registered", definition.ID)
 	}
 
 	validator, err := NewToolSchemaValidator(r.compiler, definition)

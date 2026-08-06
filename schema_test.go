@@ -23,6 +23,10 @@ func (s stubCompiledSchema) Validate(json.RawMessage) *ValidationError {
 	return s.validationErr
 }
 
+type pointerCompiledSchema struct{}
+
+func (*pointerCompiledSchema) Validate(json.RawMessage) *ValidationError { return nil }
+
 func TestToolSchemaValidatorUsesReplaceableCompiler(t *testing.T) {
 	t.Parallel()
 
@@ -114,6 +118,20 @@ func TestNewToolSchemaValidatorReportsCompileFailures(t *testing.T) {
 	}}, ToolDefinition{InputSchema: json.RawMessage(`{}`)})
 	if err == nil {
 		t.Fatal("nil compiled schema accepted")
+	}
+
+	var typedNilInput *pointerCompiledSchema
+	if _, err := NewToolSchemaValidator(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		return typedNilInput, nil
+	}}, ToolDefinition{InputSchema: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("typed nil compiled input schema accepted")
+	}
+
+	var typedNilOutput *pointerCompiledSchema
+	if _, err := NewToolSchemaValidator(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		return typedNilOutput, nil
+	}}, ToolDefinition{OutputSchema: json.RawMessage(`{}`)}); err == nil {
+		t.Fatal("typed nil compiled output schema accepted")
 	}
 
 	if _, err := NewToolSchemaValidator(nil, ToolDefinition{}); err == nil {

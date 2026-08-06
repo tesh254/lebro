@@ -243,6 +243,18 @@ func TestToolRegistryHonorsContextCancellation(t *testing.T) {
 	registerToolForTest(t, registry, ToolDefinition{ID: "output-validation", OutputSchema: json.RawMessage(`{}`)}, echoToolHandler)
 	result = registry.Execute(ctx, "output-validation", ToolExecutionRequest{})
 	assertToolState(t, result, ToolExecutionCancelled)
+
+	ctx, cancel = context.WithCancel(context.Background())
+	registry = registryForToolTest(t, nil, nil)
+	registerToolForTest(t, registry, ToolDefinition{ID: "panic-cancel"}, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		cancel()
+		panic("boom")
+	})
+	result = registry.Execute(ctx, "panic-cancel", ToolExecutionRequest{})
+	assertToolState(t, result, ToolExecutionCancelled)
+	if !errors.Is(result.Err, context.Canceled) {
+		t.Fatalf("panic during cancellation error = %v, want context.Canceled", result.Err)
+	}
 }
 
 func TestToolRegistryRegistrationAndLookup(t *testing.T) {
@@ -297,6 +309,24 @@ func TestToolRegistryRegistrationAndLookup(t *testing.T) {
 	}
 	if err := badRegistry.Register(toolFunc{definition: ToolDefinition{ID: "bad", InputSchema: json.RawMessage(`{}`)}, execute: echoToolHandler}); err == nil || !strings.Contains(err.Error(), `register tool "bad"`) {
 		t.Fatalf("compile error = %v", err)
+	}
+
+	goodRegistry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		return nil, errors.New("cannot compile")
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodRegistry.tools["dup"] = &RegisteredTool{definition: ToolDefinition{ID: "dup"}}
+	dupErr := goodRegistry.Register(toolFunc{definition: ToolDefinition{ID: "dup", InputSchema: json.RawMessage(`{}`)}, execute: echoToolHandler})
+	if dupErr == nil {
+		t.Fatal("duplicate ID accepted")
+	}
+	if !strings.Contains(dupErr.Error(), `is already registered`) {
+		t.Fatalf("duplicate registration error = %v, want already registered", dupErr)
+	}
+	if strings.Contains(dupErr.Error(), `register tool "dup"`) {
+		t.Fatalf("duplicate registration ran schema compile: %v", dupErr)
 	}
 }
 

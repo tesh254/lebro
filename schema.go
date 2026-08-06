@@ -114,7 +114,7 @@ func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) 
 		if err != nil {
 			return nil, fmt.Errorf("lebro: compile tool input schema: %w", err)
 		}
-		if validator.input == nil {
+		if validator.input == nil || isNilInterface(validator.input) {
 			return nil, errors.New("lebro: schema compiler returned a nil input schema")
 		}
 	}
@@ -123,7 +123,7 @@ func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) 
 		if err != nil {
 			return nil, fmt.Errorf("lebro: compile tool output schema: %w", err)
 		}
-		if validator.output == nil {
+		if validator.output == nil || isNilInterface(validator.output) {
 			return nil, errors.New("lebro: schema compiler returned a nil output schema")
 		}
 	}
