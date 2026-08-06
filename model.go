@@ -4,9 +4,10 @@ import "context"
 
 // ModelRequest is the neutral input sent to a language-model provider.
 type ModelRequest struct {
-	Messages []Message
-	Model    string
-	Tools    []ToolDefinition
+	Messages       []Message
+	Model          string
+	Tools          []ToolDefinition
+	ResponseFormat string
 }
 
 // ModelUsage records provider-reported token usage when available.
