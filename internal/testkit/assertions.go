@@ -2,7 +2,6 @@ package testkit
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -65,6 +64,14 @@ func assertError(t TestingT, err error) {
 	}
 }
 
+func assertModelError(t TestingT, err error, want lebro.ModelErrorKind) {
+	t.Helper()
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != want {
+		t.Fatalf("Generate() error = %v, want model error kind %q", err, want)
+	}
+}
+
 func assertResponse(t TestingT, got, want lebro.ModelResponse) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
@@ -72,10 +79,14 @@ func assertResponse(t TestingT, got, want lebro.ModelResponse) {
 	}
 }
 
-func assertValidJSON(t TestingT, content string) {
+func assertObservedRequest(t TestingT, observe func() lebro.ModelRequest, want lebro.ModelRequest) {
 	t.Helper()
-	if !json.Valid([]byte(content)) {
-		t.Fatalf("structured output content is not valid JSON: %q", content)
+	if observe == nil {
+		t.Fatalf("provider harness does not expose its observed request")
+		return
+	}
+	if got := observe(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("provider observed request = %#v, want %#v", got, want)
 	}
 }
 

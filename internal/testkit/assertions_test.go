@@ -45,15 +45,18 @@ func TestAssertionsReportUsefulMismatches(t *testing.T) {
 		{name: "missing error", call: func(spy *assertionSpy) {
 			assertError(spy, nil)
 		}, want: "provider failure"},
+		{name: "model error", call: func(spy *assertionSpy) {
+			assertModelError(spy, errors.New("different"), lebro.ModelErrorUnavailable)
+		}, want: "model error kind"},
 		{name: "response", call: func(spy *assertionSpy) {
 			assertResponse(spy, lebro.ModelResponse{}, lebro.ModelResponse{FinishReason: lebro.FinishReasonStop})
 		}, want: "Generate() response"},
-		{name: "valid JSON", call: func(spy *assertionSpy) {
-			assertValidJSON(spy, `{"ok":true}`)
-		}, want: ""},
-		{name: "invalid JSON", call: func(spy *assertionSpy) {
-			assertValidJSON(spy, `{`)
-		}, want: "structured output content is not valid JSON"},
+		{name: "missing observation", call: func(spy *assertionSpy) {
+			assertObservedRequest(spy, nil, lebro.ModelRequest{})
+		}, want: "does not expose"},
+		{name: "request observation", call: func(spy *assertionSpy) {
+			assertObservedRequest(spy, func() lebro.ModelRequest { return lebro.ModelRequest{Model: "got"} }, lebro.ModelRequest{Model: "want"})
+		}, want: "observed request"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -69,7 +72,9 @@ func TestAssertionsReportUsefulMismatches(t *testing.T) {
 	AssertCancellation(spy, context.Canceled)
 	assertNoError(spy, nil)
 	assertError(spy, errors.New("expected"))
+	assertModelError(spy, &lebro.ModelError{Kind: lebro.ModelErrorUnavailable}, lebro.ModelErrorUnavailable)
 	assertResponse(spy, lebro.ModelResponse{}, lebro.ModelResponse{})
+	assertObservedRequest(spy, func() lebro.ModelRequest { return lebro.ModelRequest{Model: "same"} }, lebro.ModelRequest{Model: "same"})
 	if spy.fatal != "" {
 		t.Fatalf("successful assertions failed: %s", spy.fatal)
 	}

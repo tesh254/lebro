@@ -15,7 +15,7 @@ var (
 type contractModel struct{}
 
 func (contractModel) Generate(_ context.Context, request ModelRequest) (ModelResponse, error) {
-	return ModelResponse{Message: request.Messages[0], FinishReason: FinishReasonStop}, nil
+	return ModelResponse{Message: Message{Role: RoleAssistant, Content: request.Messages[0].Content}, FinishReason: FinishReasonStop}, nil
 }
 
 type contractTool struct{}
@@ -51,7 +51,7 @@ func TestMAD10PublicContracts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Message != message || response.FinishReason != FinishReasonStop {
+	if response.Message.Role != RoleAssistant || response.Message.Content != message.Content || response.FinishReason != FinishReasonStop {
 		t.Fatalf("model response = %#v", response)
 	}
 

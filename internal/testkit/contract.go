@@ -12,24 +12,31 @@ import (
 type ContractMode string
 
 const (
-	ContractResponse         ContractMode = "response"
-	ContractStructuredOutput ContractMode = "structured_output"
-	ContractFailure          ContractMode = "failure"
-	ContractCancellation     ContractMode = "cancellation"
+	ContractResponse     ContractMode = "response"
+	ContractFailure      ContractMode = "failure"
+	ContractCancellation ContractMode = "cancellation"
 )
 
 // ProviderCase is one adapter-neutral provider behavior.
 type ProviderCase struct {
-	Name     string
-	Mode     ContractMode
-	Request  lebro.ModelRequest
-	Response lebro.ModelResponse
+	Name      string
+	Mode      ContractMode
+	Request   lebro.ModelRequest
+	Response  lebro.ModelResponse
+	ErrorKind lebro.ModelErrorKind
 }
 
-// ProviderFactory builds an adapter configured for one contract case. A real
-// adapter can translate the case into a recorded HTTP response; the fake model
-// translates it into a Fixture.
-type ProviderFactory func(*testing.T, ProviderCase) lebro.Model
+// ProviderHarness couples an adapter with an observation of the neutral request
+// that reached its provider boundary.
+type ProviderHarness struct {
+	Model           lebro.Model
+	ObservedRequest func() lebro.ModelRequest
+}
+
+// ProviderFactory builds a harness configured for one contract case. A real
+// adapter can translate the case into a recorded HTTP exchange and report the
+// neutral equivalent observed at that boundary.
+type ProviderFactory func(*testing.T, ProviderCase) ProviderHarness
 
 // ProviderContractCases returns defensive copies of the canonical cases.
 func ProviderContractCases() []ProviderCase {
@@ -53,23 +60,31 @@ func ProviderContractCases() []ProviderCase {
 				Tools:    []lebro.ToolDefinition{{ID: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 			},
 			Response: lebro.ModelResponse{
-				Message:      lebro.Message{Role: lebro.RoleAssistant, Name: "lookup", ToolCallID: "contract-call-1", Content: `{"id":"42"}`},
+				Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: contractToolCalls(lebro.ModelToolCall{
+					ID: "contract-call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"id":"42"}`),
+				})},
 				FinishReason: lebro.FinishReasonToolCalls,
 			},
 		},
 		{
-			Name:    "structured output",
-			Mode:    ContractStructuredOutput,
-			Request: lebro.ModelRequest{Model: "contract-model", ResponseFormat: "json", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "return JSON"}}},
+			Name: "structured output",
+			Mode: ContractResponse,
+			Request: lebro.ModelRequest{
+				Model: "contract-model", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "return JSON"}},
+				OutputSchema: &lebro.ModelOutputSchema{Name: "result", Schema: json.RawMessage(`{"type":"object"}`), Strict: true},
+				Extension:    json.RawMessage(`{"seed":7}`),
+			},
 			Response: lebro.ModelResponse{
-				Message:      lebro.Message{Role: lebro.RoleAssistant, Content: `{"ok":true}`},
+				Message:      lebro.Message{Role: lebro.RoleAssistant, StructuredOutput: lebro.NewModelStructuredOutput(json.RawMessage(`{"ok":true}`))},
 				FinishReason: lebro.FinishReasonStop,
+				Extension:    json.RawMessage(`{"request_id":"req-1"}`),
 			},
 		},
 		{
-			Name:    "failure",
-			Mode:    ContractFailure,
-			Request: lebro.ModelRequest{Model: "contract-model", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "fail"}}},
+			Name:      "failure",
+			Mode:      ContractFailure,
+			Request:   lebro.ModelRequest{Model: "contract-model", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "fail"}}},
+			ErrorKind: lebro.ModelErrorUnavailable,
 		},
 		{
 			Name:    "cancellation",
@@ -86,7 +101,8 @@ func RunProviderContract(t *testing.T, factory ProviderFactory) {
 	for _, contractCase := range ProviderContractCases() {
 		contractCase := contractCase
 		t.Run(contractCase.Name, func(t *testing.T) {
-			model := factory(t, cloneProviderCase(contractCase))
+			assertNoError(t, contractCase.Request.Validate())
+			harness := factory(t, cloneProviderCase(contractCase))
 			ctx := context.Background()
 			if contractCase.Mode == ContractCancellation {
 				cancelled, cancel := context.WithCancel(ctx)
@@ -94,17 +110,15 @@ func RunProviderContract(t *testing.T, factory ProviderFactory) {
 				ctx = cancelled
 			}
 
-			response, err := model.Generate(ctx, cloneRequest(contractCase.Request))
+			response, err := harness.Model.Generate(ctx, cloneRequest(contractCase.Request))
 			switch contractCase.Mode {
 			case ContractResponse:
 				assertNoError(t, err)
+				assertNoError(t, response.Validate())
 				assertResponse(t, response, contractCase.Response)
-			case ContractStructuredOutput:
-				assertNoError(t, err)
-				assertValidJSON(t, response.Message.Content)
-				assertResponse(t, response, contractCase.Response)
+				assertObservedRequest(t, harness.ObservedRequest, contractCase.Request)
 			case ContractFailure:
-				assertError(t, err)
+				assertModelError(t, err, contractCase.ErrorKind)
 			case ContractCancellation:
 				AssertCancellation(t, err)
 			}
@@ -124,4 +138,12 @@ func cloneProviderCase(contractCase ProviderCase) ProviderCase {
 	contractCase.Request = cloneRequest(contractCase.Request)
 	contractCase.Response = cloneResponse(contractCase.Response)
 	return contractCase
+}
+
+func contractToolCalls(calls ...lebro.ModelToolCall) lebro.ModelToolCalls {
+	encoded, err := lebro.NewModelToolCalls(calls...)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }

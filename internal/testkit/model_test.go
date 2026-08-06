@@ -18,7 +18,7 @@ func TestModelConsumesSynchronousFixturesInDeterministicOrder(t *testing.T) {
 	providerErr := errors.New("provider unavailable")
 	model := NewModel(
 		Text("hello"),
-		ToolCallResponse(ToolCall{Name: "lookup", Arguments: json.RawMessage(`{"id":"42"}`)}),
+		ToolCallResponse(ToolCall{ToolID: "lookup", Arguments: json.RawMessage(`{"id":"42"}`)}),
 		StructuredOutput(json.RawMessage(`{"ok":true}`)),
 		Failure(providerErr),
 	)
@@ -38,9 +38,9 @@ func TestModelConsumesSynchronousFixturesInDeterministicOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	AssertToolCalls(t, toolCallsFromResponse(tool), []ToolCall{{ID: "tool-call-0001", Name: "lookup", Arguments: json.RawMessage(`{"id":"42"}`)}})
+	AssertToolCalls(t, toolCallsFromResponse(tool), []ToolCall{{ID: "tool-call-0001", ToolID: "lookup", Arguments: json.RawMessage(`{"id":"42"}`)}})
 	structured, err := model.Generate(context.Background(), request)
-	if err != nil || structured.Message.Content != `{"ok":true}` {
+	if err != nil || string(structured.Message.StructuredOutput.Raw()) != `{"ok":true}` {
 		t.Fatalf("structured response = %#v, %v", structured, err)
 	}
 	if _, err := model.Generate(context.Background(), request); !errors.Is(err, providerErr) {
@@ -93,8 +93,8 @@ func TestModelConsumesSynchronousFixturesInDeterministicOrder(t *testing.T) {
 func TestModelGeneratedRecordsRepeatAcrossInstances(t *testing.T) {
 	t.Parallel()
 	request := lebro.ModelRequest{Model: "fake-model", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hello"}}}
-	first := NewModel(ToolCallResponse(ToolCall{Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}))
-	second := NewModel(ToolCallResponse(ToolCall{Name: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}))
+	first := NewModel(ToolCallResponse(ToolCall{ToolID: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}))
+	second := NewModel(ToolCallResponse(ToolCall{ToolID: "echo", Arguments: json.RawMessage(`{"text":"hello"}`)}))
 	for _, model := range []*Model{first, second} {
 		if _, err := model.Generate(context.Background(), request); err != nil {
 			t.Fatal(err)
@@ -117,6 +117,7 @@ func TestModelGenerateErrorAndCancellationPaths(t *testing.T) {
 		{name: "exhausted", model: NewModel(), ctx: context.Background(), wantErr: ErrScriptExhausted},
 		{name: "nil failure", model: NewModel(Failure(nil)), ctx: context.Background(), wantErr: ErrInvalidFixture},
 		{name: "invalid structured output", model: NewModel(StructuredOutput(json.RawMessage(`{`))), ctx: context.Background(), wantErr: ErrInvalidFixture},
+		{name: "invalid tool encoding", model: NewModel(ToolCallResponse(ToolCall{ToolID: "lookup", Arguments: json.RawMessage(`{`)})), ctx: context.Background(), wantErr: ErrInvalidFixture},
 		{name: "uncancellable context", model: NewModel(WaitForCancellation()), ctx: context.Background(), wantErr: ErrInvalidFixture},
 		{name: "stream fixture", model: NewModel(Stream(TextChunk("no"))), ctx: context.Background(), wantErr: ErrUnexpectedFixture},
 	}
@@ -137,6 +138,16 @@ func TestModelGenerateErrorAndCancellationPaths(t *testing.T) {
 	}
 	if got := model.Remaining(); got != 1 {
 		t.Fatalf("pre-cancelled call consumed fixture; remaining = %d", got)
+	}
+
+	invalidModel := NewModel(Text("unused"))
+	_, err := invalidModel.Generate(context.Background(), lebro.ModelRequest{Tools: []lebro.ToolDefinition{{}}})
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorInvalidRequest {
+		t.Fatalf("invalid request error = %v", err)
+	}
+	if invalidModel.Remaining() != 1 || invalidModel.Events()[1].Type != RunEventModelFailed {
+		t.Fatalf("invalid request changed script state: remaining=%d events=%#v", invalidModel.Remaining(), invalidModel.Events())
 	}
 
 	waiting, cancelWaiting := context.WithCancel(context.Background())
@@ -162,7 +173,7 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 	model := NewModel(
 		Stream(
 			TextChunk("weather: "),
-			ToolCallChunk(ToolCall{Name: "weather", Arguments: originalArgs}),
+			ToolCallChunk(ToolCall{ToolID: "weather", Arguments: originalArgs}),
 			StructuredOutputChunk(originalJSON),
 			FailureChunk(streamErr),
 		),
@@ -185,7 +196,7 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 	if events[0].Text != "weather: " || events[0].ID != "stream-event-0001" {
 		t.Fatalf("text stream event = %#v", events[0])
 	}
-	AssertToolCalls(t, []ToolCall{*events[1].ToolCall}, []ToolCall{{ID: "tool-call-0001", Name: "weather", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}})
+	AssertToolCalls(t, []ToolCall{*events[1].ToolCall}, []ToolCall{{ID: "tool-call-0001", ToolID: "weather", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}})
 	if got := string(events[2].StructuredOutput); got != `{"temperature":24.5}` {
 		t.Fatalf("structured stream output = %s", got)
 	}
@@ -336,7 +347,7 @@ func formatID(prefix string, sequence int) string {
 func TestFixtureCloneHelpers(t *testing.T) {
 	t.Parallel()
 	message := lebro.Message{Role: lebro.RoleAssistant, Content: "ok"}
-	if got := cloneMessage(message); got != message {
+	if got := cloneMessage(message); !reflect.DeepEqual(got, message) {
 		t.Fatalf("cloneMessage() = %#v", got)
 	}
 	call := ModelCall{Request: lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hello"}}}}

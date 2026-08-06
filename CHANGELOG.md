@@ -10,3 +10,5 @@ All notable changes to this project are documented in this file.
 - Replaceable JSON Schema Draft 2020-12 validation for tool inputs and outputs.
 - Deterministic model fixtures, assertions, streams, and provider contract tests
   for repository tests and examples.
+- Provider-neutral text, tool-call, and structured-output model protocol with
+  opaque vendor extensions and typed error mapping.
