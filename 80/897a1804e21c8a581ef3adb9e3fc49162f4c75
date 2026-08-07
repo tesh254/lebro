@@ -1,0 +1,59 @@
+internal/runtime/workflow.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/memory_storage.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+doc.go
+  s_dc612f3e6620d6::t_2b4a88296054fa 1-3
+internal/runtime/tool.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/doc.go
+  s_dc612f3e6620d6::t_d0fc4e54c78bba 1-3
+CONTRIBUTING.md
+  s_dc612f3e6620d6::t_6f739e934f20d5 21-23
+internal/runtime/memory_storage_test.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/types.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/schema.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+public.go
+  s_dc612f3e6620d6::t_2d66ee51543cb5 11-60,62-66
+  s_dc612f3e6620d6::t_2b4a88296054fa 88,131-151
+  s_dc612f3e6620d6::t_ff9168926bdeff 92
+  s_dc612f3e6620d6::t_ac1bd9afd3a406 1-2,9-10,61,67-87,89-91,93-130
+  s_dc612f3e6620d6::t_d0fc4e54c78bba 3-8
+internal/runtime/model_test.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/types_test.go
+  s_dc612f3e6620d6::t_0a480c8544cd1e 1
+internal/runtime/storage.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/model_error.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/model.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+README.md
+  s_dc612f3e6620d6::t_6f739e934f20d5 11-28
+internal/runtime/schema_test.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/tool_test.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+internal/runtime/model_error_test.go
+  s_dc612f3e6620d6::t_795ecc941d3f7e 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "80897a1804e21c8a581ef3adb9e3fc49162f4c75",
+  "prompts": {},
+  "sessions": {
+    "s_dc612f3e6620d6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd700-5240-7870-b9c2-d31069737978",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
