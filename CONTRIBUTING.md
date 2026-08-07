@@ -18,7 +18,9 @@ go vet ./...
 ```
 
 Keep packages provider- and storage-neutral unless the package is explicitly an
-adapter. Every public-contract change needs tests and documentation.
+adapter. Keep root `lebro` as stable public API façade; place runtime
+implementation in `internal/runtime` and optional integrations in their own
+packages. Every public-contract change needs tests and documentation.
 
 ## Before opening a pull request
 
