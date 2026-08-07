@@ -104,6 +104,48 @@ same canonical transcript can be persisted and replayed on the next turn.
 Provider failures can be inspected with `errors.As` as `*lebro.ModelError` or
 with `errors.Is` against sentinels such as `lebro.ErrModelRateLimited`.
 
+## OpenAI-compatible text-generation adapter
+
+The optional `github.com/tesh254/lebro/openai` package implements `lebro.Model`
+against any OpenAI-compatible chat-completions endpoint. It is text-only: tool
+definitions and structured output are rejected here and handled by richer
+adapters built on the same protocol. OpenAI-specific wire types stay inside the
+package, and opaque `ModelRequest.Extension` fields are merged into the request
+body so callers can pass vendor knobs (`temperature`, `max_tokens`, `seed`,
+...) without coupling the neutral protocol to a vendor.
+
+```go
+import (
+    "github.com/tesh254/lebro"
+    "github.com/tesh254/lebro/openai"
+)
+
+model, err := openai.New(openai.Config{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+    Model:  "gpt-4o",
+})
+if err != nil {
+    panic(err)
+}
+
+response, err := model.Generate(context.Background(), lebro.ModelRequest{
+    Model:    "gpt-4o",
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Hello"}},
+})
+if err != nil {
+    var apiErr *lebro.ModelError
+    if errors.As(err, &apiErr) {
+        // apiErr.Kind is normalized (authentication, rate_limited, timeout, ...).
+    }
+    return err
+}
+```
+
+Network, authentication, permission, not-found, rate-limit, timeout, and
+malformed-response failures each map to a distinct `lebro.ModelErrorKind`;
+context cancellation is returned as `context.Canceled` so `errors.Is` works
+against it directly.
+
 ## Schema-backed tool execution
 
 Register application tools with a `ToolRegistry` to compile their input and
@@ -153,6 +195,13 @@ The tools example registers and safely invokes a local schema-backed handler:
 
 ```sh
 go run ./examples/tools-schema
+```
+
+The model-openai example runs the OpenAI-compatible text-generation adapter
+against a recorded HTTP endpoint (no network or API key required):
+
+```sh
+go run ./examples/model-openai
 ```
 
 ## Development
