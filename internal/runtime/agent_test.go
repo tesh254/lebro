@@ -817,6 +817,103 @@ func TestAgentSentinelErrorsAreDistinct(t *testing.T) {
 	}
 }
 
+func TestAgentEnforcesToolAllowlistAgainstRegistry(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		return stubCompiledSchema{}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustRegister := func(id ToolID) {
+		t.Helper()
+		tool := toolFunc{
+			definition: ToolDefinition{ID: id, InputSchema: json.RawMessage(`{"type":"object"}`)},
+			execute:    func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`{}`), nil },
+		}
+		if err := registry.Register(tool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustRegister("allowed")
+	mustRegister("forbidden")
+
+	model := newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-1", ToolID: "forbidden", Arguments: json.RawMessage(`{}`)}))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model", Tools: []ToolID{"allowed"}},
+		Model:      model,
+		Tools:      registry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "use forbidden tool"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want unknown tool failure")
+	}
+	var agentErr *AgentError
+	if !errors.As(err, &agentErr) || agentErr.Kind != AgentErrorUnknownTool {
+		t.Fatalf("error = %v, want AgentErrorUnknownTool", err)
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("error = %v, want mention of not-allowed tool", err)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+}
+
+func TestAgentCopiesDefinitionToolIDsToAvoidCallerMutation(t *testing.T) {
+	t.Parallel()
+
+	def := AgentDefinition{ID: "agent", Model: "fixture-model", Tools: []ToolID{"lookup"}}
+	registry, _ := newAgentTestRegistry(t)
+	agent, err := NewAgent(AgentConfig{Definition: def, Model: echoModel{}, Tools: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	def.Tools[0] = "tampered"
+	if agent.definition.Tools[0] != "lookup" {
+		t.Fatalf("agent definition tool mutated to %q", agent.definition.Tools[0])
+	}
+}
+
+func TestAgentDoesNotAppendZeroMessageOnProviderFailure(t *testing.T) {
+	t.Parallel()
+
+	registry, handler := newAgentTestRegistry(t)
+	handler.execute = func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{}`), nil
+	}
+	model := newScriptedModel(scriptedResponse{err: errors.New("provider gone")})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want provider failure")
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	for i, message := range result.Messages {
+		if message.Role == "" {
+			t.Fatalf("result message %d is a zero-value Message: %#v", i, message)
+		}
+	}
+}
+
 func TestAgentFailOnNil(t *testing.T) {
 	t.Parallel()
 	var agent *Agent

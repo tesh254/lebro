@@ -164,6 +164,7 @@ type Agent struct {
 	tools      *ToolRegistry
 	maxSteps   int
 	deadline   time.Duration
+	allowed    map[ToolID]struct{}
 
 	mu     sync.Mutex
 	runSeq int
@@ -188,12 +189,24 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	if maxSteps <= 0 {
 		maxSteps = DefaultAgentMaxSteps
 	}
+	definition := AgentDefinition{
+		ID:           config.Definition.ID,
+		Name:         config.Definition.Name,
+		Instructions: config.Definition.Instructions,
+		Model:        config.Definition.Model,
+		Tools:        append([]ToolID(nil), config.Definition.Tools...),
+	}
+	allowed := make(map[ToolID]struct{}, len(definition.Tools))
+	for _, id := range definition.Tools {
+		allowed[id] = struct{}{}
+	}
 	return &Agent{
-		definition: config.Definition,
+		definition: definition,
 		model:      config.Model,
 		tools:      config.Tools,
 		maxSteps:   maxSteps,
 		deadline:   config.Deadline,
+		allowed:    allowed,
 	}, nil
 }
 
@@ -251,7 +264,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		response, err := a.model.Generate(runCtx, request)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
-				return a.cancelled(runID, append(transcript, response.Message), metadata, step, preferContextError(err, cancelledErr))
+				return a.cancelled(runID, transcript, metadata, step, preferContextError(err, cancelledErr))
 			}
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
 		}
@@ -292,15 +305,13 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 }
 
 func (a *Agent) buildInitialTranscript(input RunInput) ([]Message, error) {
+	messages := make([]Message, 0, len(input.Messages)+1)
 	if a.definition.Instructions != "" {
 		system := Message{Role: RoleSystem, Content: a.definition.Instructions}
 		if err := system.Validate(); err != nil {
 			return nil, &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: err}
 		}
-	}
-	messages := make([]Message, 0, len(input.Messages)+1)
-	if a.definition.Instructions != "" {
-		messages = append(messages, Message{Role: RoleSystem, Content: a.definition.Instructions})
+		messages = append(messages, system)
 	}
 	for i, message := range input.Messages {
 		if err := message.Validate(); err != nil {
@@ -337,6 +348,11 @@ func (a *Agent) resolveToolDefinitions() ([]ToolDefinition, error) {
 func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, call ModelToolCall, metadata map[string]string) ToolExecutionResult {
 	if a.tools == nil {
 		return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not registered: %w", call.ToolID, ErrToolNotFound))
+	}
+	if len(a.allowed) > 0 {
+		if _, ok := a.allowed[call.ToolID]; !ok {
+			return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not allowed for this agent: %w", call.ToolID, ErrToolNotFound))
+		}
 	}
 	toolMetadata := make(map[string]string, len(metadata)+3)
 	for key, value := range metadata {
