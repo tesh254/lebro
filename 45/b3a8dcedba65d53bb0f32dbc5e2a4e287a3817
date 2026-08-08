@@ -1,0 +1,36 @@
+openai/adapter.go
+  s_0f1513424e2306::t_091b969b3b4a58 341-343
+  s_0f1513424e2306::t_29fe4ea5a37ee2 408-410
+  s_0f1513424e2306::t_a841be73bc891d 150
+openai/adapter_test.go
+  s_0f1513424e2306::t_1ab9897553a53c 552-554
+  s_0f1513424e2306::t_99f6f1e9e250ce 206-230
+  s_0f1513424e2306::t_841f73c08e1f16 169,171,201-202
+  s_0f1513424e2306::t_9aa7fe04ca4a37 359
+  s_0f1513424e2306::t_d985e3fec3f880 12
+  s_0f1513424e2306::t_e1cc995ab43108 443
+  s_0f1513424e2306::t_5f55d5303c504d 534-551,555-586
+  s_0f1513424e2306::t_bad8d9d2f1f01b 386,400,412-437
+openai/contract_test.go
+  s_0f1513424e2306::t_d1bf94eaa44ff1 79
+  s_0f1513424e2306::t_b96a228029edc4 105-108
+  s_0f1513424e2306::t_7d2110e38db8c2 11
+examples/README.md
+  s_0f1513424e2306::t_2c1b86049e2583 32-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "45b3a8dcedba65d53bb0f32dbc5e2a4e287a3817",
+  "prompts": {},
+  "sessions": {
+    "s_0f1513424e2306": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_023c86dadffehQX9SGwz4yl3eT",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
