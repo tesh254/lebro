@@ -29,16 +29,16 @@ Run the schema-backed local tool execution example:
 go run ./examples/tools-schema
 ```
 
+This example imports `internal/testkit`, which is deliberately available only
+to this repository's tests and examples. Production packages do not depend on
+the fixture harness.
+
 Run the OpenAI-compatible text-generation adapter example (no network or API key
 required; it targets a recorded HTTP endpoint):
 
 ```sh
 go run ./examples/model-openai
 ```
-
-This example imports `internal/testkit`, which is deliberately available only
-to this repository's tests and examples. Production packages do not depend on
-the fixture harness.
 
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.

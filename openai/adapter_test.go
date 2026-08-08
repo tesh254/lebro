@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,8 +166,9 @@ func TestGenerateMergesExtensionFields(t *testing.T) {
 
 func TestGenerateRejectsUnsupportedRequests(t *testing.T) {
 	t.Parallel()
+	var serverReached atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("unsupported request reached the server")
+		serverReached.Store(true)
 	}))
 	t.Cleanup(server.Close)
 	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
@@ -195,6 +197,36 @@ func TestGenerateRejectsUnsupportedRequests(t *testing.T) {
 				t.Fatalf("error = %v, want invalid_request", err)
 			}
 		})
+	}
+	if serverReached.Load() {
+		t.Fatal("unsupported request reached the server")
+	}
+}
+
+func TestGenerateRejectsAssistantToolCallHistory(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, chatResponse{
+			Choices: []chatChoice{{Message: chatChoiceMessage{Role: "assistant", Content: json.RawMessage(`"ok"`)}, FinishReason: "stop"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+
+	toolCalls, err := lebro.NewModelToolCalls(lebro.ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = model.Generate(context.Background(), lebro.ModelRequest{
+		Model: "gpt-4o",
+		Messages: []lebro.Message{
+			{Role: lebro.RoleUser, Content: "hi"},
+			{Role: lebro.RoleAssistant, ToolCalls: toolCalls},
+		},
+	})
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorInvalidRequest {
+		t.Fatalf("error = %v, want invalid_request", err)
 	}
 }
 
@@ -324,6 +356,7 @@ func TestGenerateTranslatesMalformedResponses(t *testing.T) {
 		{name: "invalid json", body: `{not json`},
 		{name: "no choices", body: `{"id":"x","choices":[]}`},
 		{name: "unsupported content", body: `{"choices":[{"message":{"role":"assistant","content":42},"finish_reason":"stop"}]}`},
+		{name: "malformed text part", body: `{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":42}]},"finish_reason":"stop"}]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -350,13 +383,7 @@ func TestGenerateTranslatesMalformedResponses(t *testing.T) {
 
 func TestGenerateTranslatesTransportFailure(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("transport case should not reach the server")
-	}))
-	server.CloseClientConnections()
-	server.Close()
-	t.Cleanup(func() {})
-	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", HTTPClient: server.Client()})
+	model := newStubModel(t, stubRoundTripper{err: errors.New("connection reset by peer")}, Config{APIKey: "k", Model: "gpt-4o"})
 
 	_, err := model.Generate(context.Background(), lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
 	var modelErr *lebro.ModelError
@@ -370,11 +397,7 @@ func TestGenerateTranslatesTransportFailure(t *testing.T) {
 
 func TestGenerateTranslatesTimeout(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-	}))
-	t.Cleanup(server.Close)
-	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 5 * time.Millisecond})
+	model := newStubModel(t, stubRoundTripper{err: &timeoutNetErr{}}, Config{APIKey: "k", Model: "gpt-4o"})
 
 	_, err := model.Generate(context.Background(), lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
 	var modelErr *lebro.ModelError
@@ -386,13 +409,38 @@ func TestGenerateTranslatesTimeout(t *testing.T) {
 	}
 }
 
+func TestGenerateTranslatesMidStreamCancellation(t *testing.T) {
+	t.Parallel()
+	model := newStubModel(t, stubRoundTripper{
+		body: io.NopCloser(&cancelReader{}),
+	}, Config{APIKey: "k", Model: "gpt-4o"})
+
+	_, err := model.Generate(context.Background(), lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	if !errors.Is(err, context.Canceled) {
+		var modelErr *lebro.ModelError
+		if errors.As(err, &modelErr) && modelErr.Kind == lebro.ModelErrorTimeout {
+			t.Fatalf("error = %v, want context.Canceled not timeout", err)
+		}
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestGenerateTranslatesMidStreamTimeout(t *testing.T) {
+	t.Parallel()
+	model := newStubModel(t, stubRoundTripper{
+		body: io.NopCloser(&timeoutReader{}),
+	}, Config{APIKey: "k", Model: "gpt-4o"})
+
+	_, err := model.Generate(context.Background(), lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorTimeout {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+}
+
 func TestGenerateRespectsContextCancellation(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		time.Sleep(50 * time.Millisecond)
-	}))
-	t.Cleanup(server.Close)
-	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+	model := newStubModel(t, stubRoundTripper{err: errors.New("should not reach transport")}, Config{APIKey: "k", Model: "gpt-4o"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -483,3 +531,56 @@ func writeJSON(t *testing.T, w http.ResponseWriter, status int, value any) {
 		t.Fatalf("encode response: %v", err)
 	}
 }
+
+// newStubModel builds an adapter backed by a stub RoundTripper instead of a
+// real HTTP server, making transport/timeout/cancellation tests deterministic
+// and independent of OS socket behavior.
+func newStubModel(t *testing.T, rt http.RoundTripper, config Config) *Model {
+	t.Helper()
+	config.HTTPClient = &http.Client{Transport: rt}
+	config.BaseURL = "https://stub.local"
+	model, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model
+}
+
+// stubRoundTripper returns a fixed response or error without touching the
+// network.
+type stubRoundTripper struct {
+	resp *http.Response
+	body io.ReadCloser
+	err  error
+}
+
+func (s stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.resp != nil {
+		return s.resp, nil
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       s.body,
+	}, nil
+}
+
+// timeoutNetErr is a net.Error that always reports a timeout.
+type timeoutNetErr struct{}
+
+func (*timeoutNetErr) Error() string   { return "i/o timeout" }
+func (*timeoutNetErr) Timeout() bool   { return true }
+func (*timeoutNetErr) Temporary() bool { return true }
+
+// cancelReader returns context.Canceled on the first Read.
+type cancelReader struct{}
+
+func (*cancelReader) Read([]byte) (int, error) { return 0, context.Canceled }
+
+// timeoutReader returns a net timeout on the first Read.
+type timeoutReader struct{}
+
+func (*timeoutReader) Read([]byte) (int, error) { return 0, &timeoutNetErr{} }

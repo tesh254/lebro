@@ -147,7 +147,7 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return lebro.ModelResponse{}, m.transportError("read response body", err)
+		return lebro.ModelResponse{}, m.classifyTransportError(reqCtx, err)
 	}
 
 	var parsed chatResponse
@@ -338,6 +338,9 @@ func mapMessage(message lebro.Message) (chatMessage, error) {
 	if err != nil {
 		return chatMessage{}, err
 	}
+	if !message.ToolCalls.IsZero() {
+		return chatMessage{}, errors.New("lebro: assistant tool calls are not supported by the text-generation adapter")
+	}
 	out := chatMessage{Role: role, Content: message.Content, Name: message.Name}
 	if message.Role == lebro.RoleTool {
 		if message.ToolCallID == "" {
@@ -402,7 +405,9 @@ func extractTextContent(raw json.RawMessage) (string, error) {
 			}
 			if raw, ok := part["text"]; ok {
 				var text string
-				_ = json.Unmarshal(raw, &text)
+				if err := json.Unmarshal(raw, &text); err != nil {
+					return "", fmt.Errorf("lebro: invalid text content part: %w", err)
+				}
 				b.WriteString(text)
 			}
 		}

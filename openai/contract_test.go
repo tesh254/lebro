@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/internal/testkit"
@@ -75,7 +76,7 @@ func buildFactory(t *testing.T, contractCase testkit.ProviderCase) *contractFact
 	}))
 	t.Cleanup(server.Close)
 
-	factory.Model = newAdapter(t, server, Config{APIKey: "contract-key", Model: "contract-model"})
+	factory.Model = newAdapter(t, server, Config{APIKey: "contract-key", Model: "contract-model", Timeout: 1 * time.Second})
 	return factory
 }
 
@@ -101,9 +102,10 @@ func serveContractCase(t *testing.T, w http.ResponseWriter, contractCase testkit
 		_, _ = io.WriteString(w, `{"error":{"message":"contract provider failure","type":"unavailable"}}`)
 	case testkit.ContractCancellation:
 		// The context is already cancelled; the client never reaches the
-		// handler. Sleep as a guard so a buggy adapter that ignored the
-		// deadline would still time out instead of succeeding.
-		select {}
+		// handler. Block for a bounded time as a guard so a buggy adapter
+		// that ignored the deadline would time out (via the 1s Config.Timeout)
+		// instead of succeeding or hanging the test indefinitely.
+		time.Sleep(5 * time.Second)
 	}
 }
 
