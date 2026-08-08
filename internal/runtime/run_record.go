@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -56,11 +57,16 @@ func (t RunEventType) IsTerminal() bool {
 // the elapsed time since the paired start event; it is zero for events without
 // a paired start. Error is non-nil for events that report a failure or
 // cancellation, including non-terminal model and tool failures as well as
-// terminal events.
+// terminal events. ParentRunID, ParentStepID, and ParentStep identify the
+// workflow invocation that started a nested run; they are zero values for a
+// top-level run.
 type RunEvent struct {
 	Sequence     int
 	Type         RunEventType
 	RunID        RunID
+	ParentRunID  RunID
+	ParentStepID StepID
+	ParentStep   int
 	StepID       StepID
 	Step         int
 	Timestamp    time.Time
@@ -185,13 +191,24 @@ func (r *RunRecorder) TerminalEvent() (RunEvent, bool) {
 // reads are no-ops, ensuring recording does not alter agent behavior even
 // with a stateful or blocking Clock.
 type runEmitter struct {
-	listener RunListener
-	clock    Clock
-	seq      int
+	listener   RunListener
+	clock      Clock
+	parentRun  RunID
+	parentStep StepID
+	parentPos  int
+	seq        int
 }
 
-func newRunEmitter(listener RunListener, clock Clock, _ IDSource) *runEmitter {
-	return &runEmitter{listener: listener, clock: clock}
+func newRunEmitter(ctx context.Context, listener RunListener, clock Clock, _ IDSource) *runEmitter {
+	parent := workflowInvocationFromContext(ctx)
+	return &runEmitter{listener: listener, clock: clock, parentRun: parent.runID, parentStep: parent.stepID, parentPos: parent.step}
+}
+
+func (e *runEmitter) dispatch(event RunEvent) {
+	event.ParentRunID = e.parentRun
+	event.ParentStepID = e.parentStep
+	event.ParentStep = e.parentPos
+	e.listener.OnRunEvent(event)
 }
 
 // enabled reports whether the emitter will dispatch events. When false, all
@@ -214,7 +231,7 @@ func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEve
 		return
 	}
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      eventType,
 		RunID:     runID,
@@ -230,7 +247,7 @@ func (e *runEmitter) emitModelStarted(runID RunID, step int, stepID StepID) time
 		return ts
 	}
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventModelStarted,
 		RunID:     runID,
@@ -247,7 +264,7 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 	}
 	now := e.clock.Now()
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:     e.seq,
 		Type:         RunEventModelFinished,
 		RunID:        runID,
@@ -266,7 +283,7 @@ func (e *runEmitter) emitToolRequested(runID RunID, step int, stepID StepID, too
 		return
 	}
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:   e.seq,
 		Type:       RunEventToolRequested,
 		RunID:      runID,
@@ -284,7 +301,7 @@ func (e *runEmitter) emitToolStarted(runID RunID, step int, stepID StepID, toolC
 		return ts
 	}
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:   e.seq,
 		Type:       RunEventToolStarted,
 		RunID:      runID,
@@ -303,7 +320,7 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 	}
 	now := e.clock.Now()
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:   e.seq,
 		Type:       RunEventToolFinished,
 		RunID:      runID,
@@ -324,7 +341,7 @@ func (e *runEmitter) emitStepStarted(runID RunID, step int, stepID StepID) time.
 		return ts
 	}
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventStepStarted,
 		RunID:     runID,
@@ -341,7 +358,7 @@ func (e *runEmitter) emitStepFinished(runID RunID, step int, stepID StepID, star
 	}
 	now := e.clock.Now()
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventStepFinished,
 		RunID:     runID,
@@ -358,7 +375,7 @@ func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType Ru
 		return
 	}
 	e.seq++
-	e.listener.OnRunEvent(RunEvent{
+	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      eventType,
 		RunID:     runID,

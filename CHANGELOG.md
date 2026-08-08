@@ -50,3 +50,9 @@ All notable changes to this project are documented in this file.
   `RunRecorder` event model, ordered and correlated to one run ID. `WorkflowRunInput`
   and `WorkflowRunResult` carry raw JSON input and output; `DecodeOutput`
   unmarshals the final step result into a caller-supplied value.
+- Agent and registered-tool workflow step adapters. `NewAgentStep` turns a
+  workflow value into an agent user message and returns structured output or
+  final assistant text as JSON; it forwards workflow context, thread ID, and
+  metadata. `NewToolStep` invokes a schema-checked `RegisteredTool` with the
+  workflow value as arguments and returns validated output. Nested agent run
+  events now carry parent workflow run and step correlation fields.

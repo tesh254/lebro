@@ -58,6 +58,8 @@ type (
 	Step                       = runtime.Step
 	StepHandler                = runtime.StepHandler
 	StepHandlerFunc            = runtime.StepHandlerFunc
+	AgentStep                  = runtime.AgentStep
+	ToolStep                   = runtime.ToolStep
 	LinearWorkflowConfig       = runtime.LinearWorkflowConfig
 	LinearWorkflow             = runtime.LinearWorkflow
 	WorkflowRunInput           = runtime.WorkflowRunInput
@@ -206,6 +208,10 @@ func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {
 func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) (*ToolSchemaValidator, error) {
 	return runtime.NewToolSchemaValidator(compiler, definition)
 }
+
+func NewAgentStep(agent Workflow) (*AgentStep, error) { return runtime.NewAgentStep(agent) }
+
+func NewToolStep(tool *RegisteredTool) *ToolStep { return runtime.NewToolStep(tool) }
 
 func ToolMetadataFromContext(ctx context.Context) map[string]string {
 	return runtime.ToolMetadataFromContext(ctx)

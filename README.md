@@ -411,6 +411,43 @@ Run the linear-workflow example (no network or API key required):
 go run ./examples/workflow-linear
 ```
 
+## Agent and tool workflow steps
+
+`lebro.NewAgentStep` adapts an `Agent` (or another `Workflow`) to a typed
+workflow step. The previous JSON value becomes a user message: JSON strings
+are unquoted, while objects and arrays are passed as JSON text. The step returns
+validated structured output when available; otherwise it returns the final
+assistant content as a JSON string. The parent workflow's context, thread ID,
+and metadata are forwarded to the agent run.
+
+`lebro.NewToolStep` adapts a `RegisteredTool` resolved from a `ToolRegistry`.
+It passes workflow input as tool arguments and returns the schema-validated tool
+output. Registering first keeps both tool schema boundaries enforced.
+
+```go
+registered, _ := registry.Resolve("weather.lookup")
+agentStep, _ := lebro.NewAgentStep(agent)
+
+wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+    Definition: lebro.WorkflowDefinition{ID: "weather-summary"},
+    Steps: []lebro.Step{
+        {Definition: lebro.StepDefinition{ID: "weather"}, Handler: lebro.NewToolStep(registered)},
+        {Definition: lebro.StepDefinition{ID: "summarize"}, Handler: agentStep},
+    },
+})
+```
+
+When the workflow and nested agent share a `RunListener`, every nested agent
+event carries `ParentRunID`, `ParentStepID`, and `ParentStep`. This preserves
+the parent workflow and invoking step correlation while nested runs retain
+their own run and step IDs.
+
+Run the combined workflow example (no network or API key required):
+
+```sh
+go run ./examples/workflow-agents-tools
+```
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per
@@ -451,6 +488,13 @@ JSON result, validates it locally, and decodes it into a typed Go value:
 
 ```sh
 go run ./examples/structured-output
+```
+
+The workflow-agents-tools example combines ordinary Go work, a schema-backed
+tool, and an agent in a single linear workflow:
+
+```sh
+go run ./examples/workflow-agents-tools
 ```
 
 ## Development

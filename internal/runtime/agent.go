@@ -300,7 +300,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if a == nil {
 		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
 	}
-	emitter := newRunEmitter(a.listener, a.clock, a.idSource)
+	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
 		runID := a.idSource.NewRunID()
 		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)

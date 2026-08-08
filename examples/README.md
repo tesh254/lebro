@@ -62,5 +62,13 @@ handoffs; no network or API key required):
 go run ./examples/workflow-linear
 ```
 
+Run the workflow agent-and-tool steps example (ordinary Go work, a
+schema-backed tool, and an agent in one workflow; no network or API key
+required):
+
+```sh
+go run ./examples/workflow-agents-tools
+```
+
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.
