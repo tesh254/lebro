@@ -169,6 +169,60 @@ result := registry.Execute(ctx, "weather.lookup", lebro.ToolExecutionRequest{
 })
 ```
 
+## Bounded tool-using agent loop
+
+`lebro.NewAgent` builds an agent that repeatedly asks a model, executes
+requested tools through a `ToolRegistry`, and feeds results back until the
+model produces a terminal response or a configured bound is reached.
+
+```go
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{
+        ID:           "weather-agent",
+        Instructions: "Use weather.lookup to answer weather questions.",
+        Model:        "gpt-4o",
+        Tools:        []lebro.ToolID{"weather.lookup"},
+    },
+    Model:    model,
+    Tools:    registry,
+    MaxSteps: 10,
+    Deadline: 30 * time.Second,
+})
+if err != nil {
+    panic(err)
+}
+
+result, err := agent.Run(context.Background(), lebro.RunInput{
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Weather in Nairobi?"}},
+})
+```
+
+The loop prepends `Instructions` as a system message, exposes only the tool
+schemas listed in `AgentDefinition.Tools`, and appends every assistant response
+and tool result to `RunResult.Messages` in canonical order. `MaxSteps` defaults
+to `lebro.DefaultAgentMaxSteps` when zero. Failures are returned as
+`*lebro.AgentError` with a normalized `Kind`:
+
+| Kind | Cause |
+|------|-------|
+| `AgentErrorUnknownTool` | Model requested or definition references an unregistered tool |
+| `AgentErrorInvalidToolArguments` | Tool input schema rejected model arguments |
+| `AgentErrorInvalidToolOutput` | Tool output schema rejected a handler result |
+| `AgentErrorToolFailure` | Handler error or recovered panic |
+| `AgentErrorProviderFailure` | Model adapter failure or invalid model response |
+| `AgentErrorStepLimitExhausted` | Loop consumed every permitted step |
+| `AgentErrorCancelled` | Run context or deadline cancelled |
+
+`errors.Is` works against the `lebro.ErrAgent*` sentinels and against
+`context.Canceled` / `context.DeadlineExceeded`. The wrapped error preserves the
+original `*lebro.ModelError` for provider failures so `errors.As` keeps working.
+
+Run the bounded agent-loop example (no network or API key required):
+
+```sh
+go run ./examples/agent-loop
+```
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per

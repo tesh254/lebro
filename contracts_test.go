@@ -109,3 +109,66 @@ func TestCanonicalRuntimeValues(t *testing.T) {
 		}
 	}
 }
+
+func TestMAD17AgentLoopPublicContract(t *testing.T) {
+	t.Parallel()
+
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "echo", Model: "contract-model"},
+		Model:      contractModel{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Definition().ID != "echo" {
+		t.Fatalf("Definition() = %#v", agent.Definition())
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Metadata: map[string]string{"source": "test"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if result.Messages[0].Role != RoleUser || result.Messages[0].Content != "hello" {
+		t.Fatalf("user message = %#v", result.Messages[0])
+	}
+	if result.Messages[1].Content != "hello" {
+		t.Fatalf("assistant message = %#v", result.Messages[1])
+	}
+	if result.Metadata["source"] != "test" {
+		t.Fatalf("metadata = %#v", result.Metadata)
+	}
+
+	kinds := map[AgentErrorKind]string{
+		AgentErrorUnknownTool:          "unknown_tool",
+		AgentErrorInvalidToolArguments: "invalid_tool_arguments",
+		AgentErrorInvalidToolOutput:    "invalid_tool_output",
+		AgentErrorToolFailure:          "tool_failure",
+		AgentErrorProviderFailure:      "provider_failure",
+		AgentErrorStepLimitExhausted:   "step_limit_exhausted",
+		AgentErrorCancelled:            "cancelled",
+	}
+	for kind, want := range kinds {
+		if string(kind) != want {
+			t.Fatalf("AgentErrorKind = %q, want %q", kind, want)
+		}
+	}
+	if DefaultAgentMaxSteps <= 0 {
+		t.Fatalf("DefaultAgentMaxSteps = %d, want positive", DefaultAgentMaxSteps)
+	}
+
+	sentinels := []error{
+		ErrAgentUnknownTool, ErrAgentInvalidToolArguments, ErrAgentInvalidToolOutput,
+		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentStepLimitExhausted, ErrAgentCancelled,
+	}
+	for _, sentinel := range sentinels {
+		if sentinel == nil {
+			t.Fatalf("sentinel error is nil: %v", sentinel)
+		}
+	}
+}

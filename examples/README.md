@@ -40,5 +40,12 @@ required; it targets a recorded HTTP endpoint):
 go run ./examples/model-openai
 ```
 
+Run the bounded tool-using agent-loop example against deterministic fixtures and
+a local schema-backed tool (no network or API key required):
+
+```sh
+go run ./examples/agent-loop
+```
+
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.
