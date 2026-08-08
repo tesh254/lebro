@@ -67,6 +67,21 @@ All notable changes to this project are documented in this file.
   `ErrConflict` for callers to retry. A shared storage contract suite in the
   test kit runs against both adapters to keep the memory and durable
   implementations behaviorally aligned.
+- PostgreSQL storage. `NewPostgresStore` opens a pure-Go PostgreSQL
+  connection pool (via `github.com/jackc/pgx/v5`, no CGO) for production
+  deployments where multiple processes share threads and workflow state.
+  It implements the same `Store` and repository contracts as the in-memory
+  and SQLite adapters: threads, messages, workflow runs, and workflow
+  snapshots survive connection pool close/reopen. `Migrate` installs the
+  schema atomically and idempotently using a `schema_migrations` version
+  table; a failed migration rolls back and leaves the database unchanged
+  with an actionable error. Transactions use `READ COMMITTED` isolation;
+  serialization failures (SQLSTATE 40001) and lock timeouts (55P03) surface
+  as `ErrConflict` for callers to retry, and foreign-key violations (23503)
+  map to `ErrNotFound`. Required indexes (`idx_messages_thread_seq`,
+  `idx_workflow_snapshots_run_seq`) and migration versioning are documented
+  in the README. The adapter passes the shared storage contract suite when
+  `LEBRO_POSTGRES_TEST_DSN` is set to a disposable database.
 - Token and event streaming with cancellation. `StreamingModel` extends the
   provider-neutral `Model` interface with `Stream`, which returns a
   `StreamReader` over ordered `StreamDelta` values (text, tool calls,

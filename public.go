@@ -88,6 +88,8 @@ type (
 	WorkflowRunStore           = runtime.WorkflowRunStore
 	MemoryStore                = runtime.MemoryStore
 	SQLiteStore                = runtime.SQLiteStore
+	PostgresStore              = runtime.PostgresStore
+	PostgresStoreOptions       = runtime.PostgresStoreOptions
 	RunEvent                   = runtime.RunEvent
 	RunEventType               = runtime.RunEventType
 	RunListener                = runtime.RunListener
@@ -238,6 +240,12 @@ func NewMemoryStore() *MemoryStore { return runtime.NewMemoryStore() }
 // the given DSN and returns the store. Call Migrate once to install the
 // schema.
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) { return runtime.NewSQLiteStore(dsn) }
+
+// NewPostgresStore opens a PostgreSQL connection pool at the given DSN and
+// returns the store. Call Migrate once to install the schema.
+func NewPostgresStore(dsn string, opts PostgresStoreOptions) (*PostgresStore, error) {
+	return runtime.NewPostgresStore(dsn, opts)
+}
 
 func NewAgent(config AgentConfig) (*Agent, error) {
 	return runtime.NewAgent(config)
