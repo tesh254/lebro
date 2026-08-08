@@ -338,8 +338,8 @@ func mapMessage(message lebro.Message) (chatMessage, error) {
 	if err != nil {
 		return chatMessage{}, err
 	}
-	if !message.ToolCalls.IsZero() {
-		return chatMessage{}, errors.New("lebro: assistant tool calls are not supported by the text-generation adapter")
+	if !message.ToolCalls.IsZero() || message.StructuredOutput != "" {
+		return chatMessage{}, errors.New("lebro: assistant tool calls and structured output are not supported by the text-generation adapter")
 	}
 	out := chatMessage{Role: role, Content: message.Content, Name: message.Name}
 	if message.Role == lebro.RoleTool {

@@ -23,15 +23,15 @@ Run the deterministic, network-free model protocol and fixture example:
 go run ./examples/model-fixtures
 ```
 
+This example imports `internal/testkit`, which is deliberately available only
+to this repository's tests and examples. Production packages do not depend on
+the fixture harness.
+
 Run the schema-backed local tool execution example:
 
 ```sh
 go run ./examples/tools-schema
 ```
-
-This example imports `internal/testkit`, which is deliberately available only
-to this repository's tests and examples. Production packages do not depend on
-the fixture harness.
 
 Run the OpenAI-compatible text-generation adapter example (no network or API key
 required; it targets a recorded HTTP endpoint):

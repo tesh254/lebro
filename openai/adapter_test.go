@@ -217,16 +217,27 @@ func TestGenerateRejectsAssistantToolCallHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = model.Generate(context.Background(), lebro.ModelRequest{
-		Model: "gpt-4o",
-		Messages: []lebro.Message{
+	tests := []struct {
+		name     string
+		messages []lebro.Message
+	}{
+		{"tool calls", []lebro.Message{
 			{Role: lebro.RoleUser, Content: "hi"},
 			{Role: lebro.RoleAssistant, ToolCalls: toolCalls},
-		},
-	})
-	var modelErr *lebro.ModelError
-	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorInvalidRequest {
-		t.Fatalf("error = %v, want invalid_request", err)
+		}},
+		{"structured output", []lebro.Message{
+			{Role: lebro.RoleUser, Content: "hi"},
+			{Role: lebro.RoleAssistant, StructuredOutput: lebro.NewModelStructuredOutput(json.RawMessage(`{"ok":true}`))},
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := model.Generate(context.Background(), lebro.ModelRequest{Model: "gpt-4o", Messages: test.messages})
+			var modelErr *lebro.ModelError
+			if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorInvalidRequest {
+				t.Fatalf("error = %v, want invalid_request", err)
+			}
+		})
 	}
 }
 
