@@ -223,6 +223,69 @@ Run the bounded agent-loop example (no network or API key required):
 go run ./examples/agent-loop
 ```
 
+## Deterministic run recording
+
+Every agent run can emit an ordered record of lifecycle events: run start,
+model request start/finish, tool-call requested, tool started/finished, and
+terminal events (succeeded, failed, cancelled). Events carry stable run/step
+IDs, monotonic sequence numbers, timestamps, durations, model usage, and error
+summaries.
+
+Recording is opt-in via a `RunListener`. When no listener is configured, agent
+behavior is unchanged. A `RunRecorder` collects events into a slice for
+programmatic inspection without an observability backend:
+
+```go
+recorder := lebro.NewRunRecorder()
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "agent", Model: "gpt-4o"},
+    Model:      model,
+    Listener:   recorder,
+})
+result, err := agent.Run(context.Background(), lebro.RunInput{
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Hello"}},
+})
+
+events := recorder.Events()
+for _, event := range events {
+    fmt.Printf("%d %s step=%d\n", event.Sequence, event.Type, event.Step)
+}
+
+terminal, ok := recorder.TerminalEvent()
+if ok {
+    fmt.Printf("terminal: %s status=%s\n", terminal.Type, terminal.Status)
+}
+```
+
+For deterministic tests, inject a fixed `Clock` and `IDSource` so the same
+fixture produces the same event type, order, and identifiers every run:
+
+```go
+recorder := lebro.NewRunRecorder()
+agent, _ := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "agent", Model: "fixture"},
+    Model:      model,
+    Listener:   recorder,
+    Clock:      lebro.NewFixedClock(time.Unix(0, 0)),
+    IDSource:   lebro.NewFixedIDSource(
+        []lebro.RunID{"run-1"},
+        []lebro.StepID{"step-1"},
+    ),
+})
+```
+
+| Event type | Description |
+|------------|-------------|
+| `RunEventStarted` | Run begins, before the first model call |
+| `RunEventModelStarted` | Before each model Generate call |
+| `RunEventModelFinished` | After a model call returns (usage, finish reason, duration) |
+| `RunEventToolRequested` | Model requested a tool call (once per call) |
+| `RunEventToolStarted` | Before a tool handler is invoked |
+| `RunEventToolFinished` | After a tool handler returns (state, duration, error) |
+| `RunEventSucceeded` | Terminal: run completed successfully |
+| `RunEventFailed` | Terminal: run failed |
+| `RunEventCancelled` | Terminal: run was cancelled |
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per

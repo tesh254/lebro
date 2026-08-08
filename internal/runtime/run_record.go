@@ -1,0 +1,313 @@
+package runtime
+
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+// RunEventType identifies a lifecycle event emitted during an agent run.
+type RunEventType string
+
+const (
+	// RunEventStarted is emitted when a run begins, before the first model
+	// call.
+	RunEventStarted RunEventType = "run_started"
+	// RunEventModelStarted is emitted before each model Generate call.
+	RunEventModelStarted RunEventType = "model_started"
+	// RunEventModelFinished is emitted after a model Generate call returns,
+	// carrying usage and finish reason.
+	RunEventModelFinished RunEventType = "model_finished"
+	// RunEventToolRequested is emitted when the model requests tool calls,
+	// once per individual tool call.
+	RunEventToolRequested RunEventType = "tool_requested"
+	// RunEventToolStarted is emitted before a tool handler is invoked.
+	RunEventToolStarted RunEventType = "tool_started"
+	// RunEventToolFinished is emitted after a tool handler returns, carrying
+	// the execution state.
+	RunEventToolFinished RunEventType = "tool_finished"
+	// RunEventSucceeded is the terminal event for a successful run.
+	RunEventSucceeded RunEventType = "run_succeeded"
+	// RunEventFailed is the terminal event for a failed run.
+	RunEventFailed RunEventType = "run_failed"
+	// RunEventCancelled is the terminal event for a cancelled run.
+	RunEventCancelled RunEventType = "run_cancelled"
+)
+
+// IsTerminal reports whether the event type is a terminal run event.
+func (t RunEventType) IsTerminal() bool {
+	switch t {
+	case RunEventSucceeded, RunEventFailed, RunEventCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// RunEvent records one ordered lifecycle event during an agent run. The
+// Sequence field is 1-indexed and monotonic within a single run. Step is the
+// 1-indexed model-call step (0 for run-level events). Duration is the elapsed
+// time since the paired start event; it is zero for events without a paired
+// start. Error is non-nil only for failure and cancellation terminal events.
+type RunEvent struct {
+	Sequence     int
+	Type         RunEventType
+	RunID        RunID
+	StepID       StepID
+	Step         int
+	Timestamp    time.Time
+	Duration     time.Duration
+	FinishReason FinishReason
+	Usage        ModelUsage
+	ToolCallID   string
+	ToolID       ToolID
+	ToolState    ToolExecutionState
+	Status       RunStatus
+	Error        error
+}
+
+// RunListener receives ordered run events. Implementations must be safe for
+// concurrent use when an agent is shared across goroutines. A nil listener
+// disables event recording entirely and must not alter agent behavior.
+type RunListener interface {
+	OnRunEvent(event RunEvent)
+}
+
+// Clock supplies timestamps for run events.
+type Clock interface {
+	Now() time.Time
+}
+
+// IDSource generates stable run and step identifiers. Implementations must be
+// safe for concurrent use.
+type IDSource interface {
+	NewRunID() RunID
+	NewStepID() StepID
+}
+
+// defaultClock uses time.Now.
+type defaultClock struct{}
+
+func (defaultClock) Now() time.Time { return time.Now() }
+
+// sequentialIDSource generates monotonic run and step IDs using a mutex. Run
+// IDs are formatted as "agent-run-NNNN" and step IDs as "step-NNN" to stay
+// stable across runs with the same sequence.
+type sequentialIDSource struct {
+	mu      sync.Mutex
+	runSeq  int
+	stepSeq int
+}
+
+func (s *sequentialIDSource) NewRunID() RunID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runSeq++
+	return RunID(fmt.Sprintf("agent-run-%04d", s.runSeq))
+}
+
+func (s *sequentialIDSource) NewStepID() StepID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stepSeq++
+	return StepID(fmt.Sprintf("step-%03d", s.stepSeq))
+}
+
+// RunRecorder collects run events into an ordered slice. It is safe for
+// concurrent use and does not require an observability backend, making it
+// suitable for tests, local development, and programmatic inspection.
+type RunRecorder struct {
+	mu     sync.Mutex
+	events []RunEvent
+}
+
+// NewRunRecorder creates an empty recorder ready to receive events.
+func NewRunRecorder() *RunRecorder {
+	return &RunRecorder{}
+}
+
+// OnRunEvent appends a copy of the event to the recorder.
+func (r *RunRecorder) OnRunEvent(event RunEvent) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.events = append(r.events, event)
+	r.mu.Unlock()
+}
+
+// Events returns a caller-owned copy of all recorded events in sequence order.
+func (r *RunRecorder) Events() []RunEvent {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]RunEvent(nil), r.events...)
+}
+
+// EventCount returns the number of recorded events.
+func (r *RunRecorder) EventCount() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.events)
+}
+
+// TerminalEvent returns the last terminal event recorded, or false if no
+// terminal event has been recorded yet.
+func (r *RunRecorder) TerminalEvent() (RunEvent, bool) {
+	if r == nil {
+		return RunEvent{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.events) - 1; i >= 0; i-- {
+		if r.events[i].Type.IsTerminal() {
+			return r.events[i], true
+		}
+	}
+	return RunEvent{}, false
+}
+
+// runEmitter manages the event sequence for a single agent run and dispatches
+// events to a listener. When the listener is nil, all emit calls are no-ops,
+// ensuring recording does not alter agent behavior.
+type runEmitter struct {
+	listener RunListener
+	clock    Clock
+	seq      int
+}
+
+func newRunEmitter(listener RunListener, clock Clock, _ IDSource) *runEmitter {
+	return &runEmitter{listener: listener, clock: clock}
+}
+
+func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEventType) {
+	if e == nil || e.listener == nil {
+		return
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:  e.seq,
+		Type:      eventType,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: e.clock.Now(),
+	})
+}
+
+func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, duration time.Duration, finishReason FinishReason, usage ModelUsage, err error) {
+	if e == nil || e.listener == nil {
+		return
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:     e.seq,
+		Type:         RunEventModelFinished,
+		RunID:        runID,
+		StepID:       stepID,
+		Step:         step,
+		Timestamp:    e.clock.Now(),
+		Duration:     duration,
+		FinishReason: finishReason,
+		Usage:        usage,
+		Error:        err,
+	})
+}
+
+func (e *runEmitter) emitTool(runID RunID, step int, stepID StepID, eventType RunEventType, toolCallID string, toolID ToolID, duration time.Duration, toolState ToolExecutionState, err error) {
+	if e == nil || e.listener == nil {
+		return
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:   e.seq,
+		Type:       eventType,
+		RunID:      runID,
+		StepID:     stepID,
+		Step:       step,
+		Timestamp:  e.clock.Now(),
+		Duration:   duration,
+		ToolCallID: toolCallID,
+		ToolID:     toolID,
+		ToolState:  toolState,
+		Error:      err,
+	})
+}
+
+func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType RunEventType, status RunStatus, err error) {
+	if e == nil || e.listener == nil {
+		return
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:  e.seq,
+		Type:      eventType,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: e.clock.Now(),
+		Status:    status,
+		Error:     err,
+	})
+}
+
+// deterministic tests.
+type fixedClock struct {
+	t time.Time
+}
+
+// NewFixedClock creates a Clock that always returns t.
+func NewFixedClock(t time.Time) Clock {
+	return fixedClock{t: t}
+}
+
+func (c fixedClock) Now() time.Time { return c.t }
+
+// fixedIDSource returns predetermined IDs in order. It is intended for
+// deterministic tests.
+type fixedIDSource struct {
+	runIDs  []RunID
+	stepIDs []StepID
+	runIdx  int
+	stepIdx int
+	mu      sync.Mutex
+}
+
+// NewFixedIDSource creates an IDSource that returns the given run and step IDs
+// in order. If a source is exhausted, subsequent calls return the last ID.
+func NewFixedIDSource(runIDs []RunID, stepIDs []StepID) IDSource {
+	return &fixedIDSource{runIDs: runIDs, stepIDs: stepIDs}
+}
+
+func (s *fixedIDSource) NewRunID() RunID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runIdx < len(s.runIDs) {
+		id := s.runIDs[s.runIdx]
+		s.runIdx++
+		return id
+	}
+	if len(s.runIDs) > 0 {
+		return s.runIDs[len(s.runIDs)-1]
+	}
+	return RunID("fixed-run")
+}
+
+func (s *fixedIDSource) NewStepID() StepID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stepIdx < len(s.stepIDs) {
+		id := s.stepIDs[s.stepIdx]
+		s.stepIdx++
+		return id
+	}
+	if len(s.stepIDs) > 0 {
+		return s.stepIDs[len(s.stepIDs)-1]
+	}
+	return StepID("fixed-step")
+}

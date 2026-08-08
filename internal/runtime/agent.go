@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -153,6 +152,16 @@ type AgentConfig struct {
 	// Deadline caps the total run when non-zero. It is layered on top of any
 	// deadline already present on the run context.
 	Deadline time.Duration
+	// Listener receives ordered run lifecycle events. May be nil to disable
+	// recording entirely; a nil listener does not alter agent behavior.
+	Listener RunListener
+	// Clock supplies timestamps for run events. When nil, the system clock is
+	// used. Inject a fixed clock for deterministic tests.
+	Clock Clock
+	// IDSource generates stable run and step identifiers. When nil, a
+	// sequential source is used. Inject a fixed source for deterministic
+	// tests.
+	IDSource IDSource
 }
 
 // Agent repeatedly asks a model, executes requested tools, and feeds results
@@ -165,9 +174,9 @@ type Agent struct {
 	maxSteps   int
 	deadline   time.Duration
 	allowed    map[ToolID]struct{}
-
-	mu     sync.Mutex
-	runSeq int
+	listener   RunListener
+	clock      Clock
+	idSource   IDSource
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -200,6 +209,14 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	for _, id := range definition.Tools {
 		allowed[id] = struct{}{}
 	}
+	clock := config.Clock
+	if clock == nil {
+		clock = defaultClock{}
+	}
+	idSource := config.IDSource
+	if idSource == nil {
+		idSource = &sequentialIDSource{}
+	}
 	return &Agent{
 		definition: definition,
 		model:      config.Model,
@@ -207,6 +224,9 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		maxSteps:   maxSteps,
 		deadline:   config.Deadline,
 		allowed:    allowed,
+		listener:   config.Listener,
+		clock:      clock,
+		idSource:   idSource,
 	}, nil
 }
 
@@ -226,35 +246,49 @@ func (a *Agent) Definition() WorkflowDefinition {
 // Run executes the bounded agent loop and returns a complete non-streaming
 // run result. The run honors context cancellation, enforces MaxSteps and
 // optional Deadline, and appends every model response and tool result to the
-// transcript in canonical order.
+// transcript in canonical order. When a Listener is configured, ordered run
+// events are emitted for every lifecycle point; when the listener is nil,
+// recording is disabled and agent behavior is unchanged.
 func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if a == nil {
 		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
 	}
+	emitter := newRunEmitter(a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
-		return RunResult{ID: a.nextRunID(), Status: RunStatusCancelled, Messages: nil, Metadata: input.Metadata}, a.cancelledError(0, err)
+		runID := a.idSource.NewRunID()
+		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+		return RunResult{ID: runID, Status: RunStatusCancelled, Messages: nil, Metadata: input.Metadata}, a.cancelledError(0, err)
 	}
 
 	runCtx, cancel := a.applyDeadline(ctx)
 	defer cancel()
 
-	runID := a.nextRunID()
+	runID := a.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
 
 	transcript, err := a.buildInitialTranscript(input)
 	if err != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
 		return a.fail(runID, input, 0, err)
 	}
 
 	toolDefinitions, err := a.resolveToolDefinitions()
 	if err != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
 		return a.fail(runID, input, 0, err)
 	}
 
+	emitter.emit(runID, 0, "", RunEventStarted)
+
 	for step := 1; step <= a.maxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
+			emitter.terminal(runID, step, "", RunEventCancelled, RunStatusCancelled, err)
 			return a.cancelled(runID, transcript, metadata, step, err)
 		}
+
+		stepID := a.idSource.NewStepID()
+		modelStart := a.clock.Now()
+		emitter.emit(runID, step, stepID, RunEventModelStarted)
 
 		request := ModelRequest{
 			Model:    a.definition.Model,
@@ -262,20 +296,31 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			Tools:    cloneToolDefinitions(toolDefinitions),
 		}
 		response, err := a.model.Generate(runCtx, request)
+		modelDuration := a.clock.Now().Sub(modelStart)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
-				return a.cancelled(runID, transcript, metadata, step, preferContextError(err, cancelledErr))
+				cause := preferContextError(err, cancelledErr)
+				emitter.emitModelFinished(runID, step, stepID, modelDuration, FinishReasonUnspecified, ModelUsage{}, cause)
+				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
+				return a.cancelled(runID, transcript, metadata, step, cause)
 			}
+			emitter.emitModelFinished(runID, step, stepID, modelDuration, FinishReasonUnspecified, ModelUsage{}, err)
+			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
 		}
 		if err := response.Validate(); err != nil {
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			emitter.emitModelFinished(runID, step, stepID, modelDuration, FinishReasonUnspecified, ModelUsage{}, failure)
+			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure})
 		}
+
+		emitter.emitModelFinished(runID, step, stepID, modelDuration, response.FinishReason, response.Usage, nil)
 
 		transcript = append(transcript, cloneMessage(response.Message))
 
 		if response.FinishReason != FinishReasonToolCalls {
+			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			return RunResult{
 				ID:       runID,
 				Status:   RunStatusSucceeded,
@@ -287,20 +332,33 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		toolCalls := response.Message.ToolCalls.Values()
 		for _, call := range toolCalls {
 			if err := runCtx.Err(); err != nil {
+				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
 				return a.cancelled(runID, transcript, metadata, step, err)
 			}
+			emitter.emitTool(runID, step, stepID, RunEventToolRequested, call.ID, call.ToolID, 0, ToolExecutionSucceeded, nil)
+
+			toolStart := a.clock.Now()
+			emitter.emitTool(runID, step, stepID, RunEventToolStarted, call.ID, call.ToolID, 0, ToolExecutionSucceeded, nil)
+
 			result := a.executeToolCall(runCtx, runID, step, call, metadata)
+			toolDuration := a.clock.Now().Sub(toolStart)
+			emitter.emitTool(runID, step, stepID, RunEventToolFinished, call.ID, call.ToolID, toolDuration, result.State, result.Err)
+
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
+				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, result.Err)
 				return a.cancelled(runID, transcript, metadata, step, result.Err)
 			}
 			if result.State != ToolExecutionSucceeded {
-				return a.failWithMessages(runID, metadata, step, transcript, toolExecutionAgentError(step, result))
+				agentErr := toolExecutionAgentError(step, result)
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
 			}
 		}
 	}
 
 	exhausted := &AgentError{Kind: AgentErrorStepLimitExhausted, Step: a.maxSteps, Err: ErrAgentStepLimitExhausted}
+	emitter.terminal(runID, a.maxSteps, "", RunEventFailed, RunStatusFailed, exhausted)
 	return a.failWithMessages(runID, metadata, a.maxSteps, transcript, exhausted)
 }
 
@@ -402,13 +460,6 @@ func (a *Agent) failWithMessages(runID RunID, metadata map[string]string, step i
 		Messages: cloneMessages(messages),
 		Metadata: metadata,
 	}, agentErr
-}
-
-func (a *Agent) nextRunID() RunID {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.runSeq++
-	return RunID(fmt.Sprintf("agent-run-%04d", a.runSeq))
 }
 
 func toolResultMessage(callID string, result ToolExecutionResult) Message {
