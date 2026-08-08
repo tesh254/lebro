@@ -1,0 +1,27 @@
+README.md
+  s_d07dd5390c5054::t_1cbc2a89939b27 430,435
+internal/runtime/workflow_adapter_test.go
+  s_d07dd5390c5054::t_1cbc2a89939b27 106-109,112,151-156
+public.go
+  s_d07dd5390c5054::t_1cbc2a89939b27 214
+examples/workflow-agents-tools/main.go
+  s_d07dd5390c5054::t_1cbc2a89939b27 65-68,75
+internal/runtime/workflow_adapter.go
+  s_d07dd5390c5054::t_1cbc2a89939b27 15,23,29,40,77,82-86,91,97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "db39c5b9128c84f3df213eff7690551748e7e0d7",
+  "prompts": {},
+  "sessions": {
+    "s_d07dd5390c5054": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fe264-47de-7dd3-9323-0ef54ed71121",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
