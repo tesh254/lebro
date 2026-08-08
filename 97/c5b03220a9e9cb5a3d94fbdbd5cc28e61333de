@@ -1,0 +1,22 @@
+internal/testkit/contract_storage.go
+  s_3f077e84b085bb::t_d2025cc7b7eb1c 100-105
+internal/runtime/sqlite_storage.go
+  s_3f077e84b085bb::t_a3b35ada654037 44-50
+  s_3f077e84b085bb::t_b96f5ec2279a1d 298-302,345-398,400-406,408-409,411
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "97c5b03220a9e9cb5a3d94fbdbd5cc28e61333de",
+  "prompts": {},
+  "sessions": {
+    "s_3f077e84b085bb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01cf20e09ffe0q7jiYX0T25NKY",
+        "model": "accounts/fireworks/models/deepseek-v4-flash-0731"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
