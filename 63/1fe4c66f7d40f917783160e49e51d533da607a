@@ -1,0 +1,58 @@
+internal/runtime/postgres_storage.go
+  s_aada9ebcc5a6be::t_ecff821cc6365b 419
+  s_aada9ebcc5a6be::t_3f6a19aa6447da 346
+  s_aada9ebcc5a6be::t_2cb5c532d220f1 652
+  s_aada9ebcc5a6be::t_40d5ec7f357114 623,631-633
+  s_aada9ebcc5a6be::t_f12a709834c11e 1-36,38-58,61-79,81-88,92-99,102-109,111-187,191-345,347-418,420-530,532-583,585-587,591-597,600-602,604-605,608-622,624-630,634,636-637,640-646,648-650,653-668,670-671,682-694
+  s_aada9ebcc5a6be::t_705cd8e39bf2b2 669
+  s_aada9ebcc5a6be::t_0820225ba7f95b 188-190,695
+  s_aada9ebcc5a6be::t_5dc0fe38d08a96 672-681
+  s_aada9ebcc5a6be::t_4311de23abca74 531
+  s_aada9ebcc5a6be::t_d9d37bd90d2be4 598-599,603,606
+  s_aada9ebcc5a6be::t_97ee2282db01ad 607
+  s_aada9ebcc5a6be::t_2f554eb5f53bb2 37
+  s_aada9ebcc5a6be::t_8ad71bbd77a57e 59-60
+  s_aada9ebcc5a6be::t_f9307b3958448f 635,638-639
+  s_aada9ebcc5a6be::t_644e9e3d896aff 584,588
+  s_aada9ebcc5a6be::t_a0fa613dca7fa4 647,651
+internal/runtime/postgres_storage_test.go
+  s_aada9ebcc5a6be::t_7fb0991698f638 201-206
+  s_aada9ebcc5a6be::t_9e1ed71a9a718a 1-4,6-200,207-210,214-360
+  s_aada9ebcc5a6be::t_67fa5da6e54157 5
+  s_aada9ebcc5a6be::t_fc1238423ae9de 211-213
+internal/runtime/postgres_contract_test.go
+  s_aada9ebcc5a6be::t_1eeac9cc356456 1,5,10,22-31,35,38-41,43
+  s_aada9ebcc5a6be::t_c5105c824f8b27 2-4,6-9,11-21,32-34,36-37,42,44-49
+examples/storage-postgres/main.go
+  s_aada9ebcc5a6be::t_b30896c099fe06 1-110
+go.mod
+  s_aada9ebcc5a6be::t_933a36c9a6974d 17-19,23
+  s_aada9ebcc5a6be::t_44c9e29ca7abfb 8
+  s_aada9ebcc5a6be::t_3b428ad8d9ef4a 25
+public.go
+  s_aada9ebcc5a6be::t_36deaaff640cc6 91
+  s_aada9ebcc5a6be::t_d982cbaa0a76aa 92
+  s_aada9ebcc5a6be::t_c3ea003764e355 244-249
+examples/storage-postgres/main_test.go
+  s_aada9ebcc5a6be::t_ee073b2d2f3335 5-26
+CHANGELOG.md
+  s_aada9ebcc5a6be::t_8d3c732fb4f107 70-84
+README.md
+  s_aada9ebcc5a6be::t_c7d22da76e28d6 365-405
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "631fe4c66f7d40f917783160e49e51d533da607a",
+  "prompts": {},
+  "sessions": {
+    "s_aada9ebcc5a6be": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ca1d2b1ffeAl9bGFMkyZEwO2",
+        "model": "accounts/fireworks/models/glm-5p2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
