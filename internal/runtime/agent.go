@@ -35,6 +35,10 @@ const (
 	// AgentErrorCancelled means the run context was cancelled before a
 	// terminal result was produced. The wrapped error is the context error.
 	AgentErrorCancelled AgentErrorKind = "cancelled"
+	// AgentErrorInvalidStructuredOutput means a terminal model response either
+	// omitted structured output when one was requested or produced a value
+	// that failed local JSON Schema validation.
+	AgentErrorInvalidStructuredOutput AgentErrorKind = "invalid_structured_output"
 )
 
 var (
@@ -57,6 +61,9 @@ var (
 	ErrAgentStepLimitExhausted = errors.New("lebro: agent step limit exhausted")
 	// ErrAgentCancelled matches runs aborted by context cancellation.
 	ErrAgentCancelled = errors.New("lebro: agent cancelled")
+	// ErrAgentInvalidStructuredOutput matches runs whose terminal model
+	// response omitted requested structured output or failed schema validation.
+	ErrAgentInvalidStructuredOutput = errors.New("lebro: agent invalid structured output")
 )
 
 // AgentError preserves the category, failing step, and cause of an agent-loop
@@ -124,6 +131,8 @@ func agentErrorSentinel(kind AgentErrorKind) error {
 		return ErrAgentStepLimitExhausted
 	case AgentErrorCancelled:
 		return ErrAgentCancelled
+	case AgentErrorInvalidStructuredOutput:
+		return ErrAgentInvalidStructuredOutput
 	default:
 		return errors.New("lebro: agent failure")
 	}
@@ -155,6 +164,15 @@ type AgentConfig struct {
 	// Listener receives ordered run lifecycle events. May be nil to disable
 	// recording entirely; a nil listener does not alter agent behavior.
 	Listener RunListener
+	// OutputSchema requests a final JSON value that conforms to Schema from
+	// every terminal model response in a run. When non-nil, SchemaCompiler is
+	// required and the agent validates the final structured payload locally.
+	// A RunInput.OutputSchema override takes precedence over this value.
+	OutputSchema *ModelOutputSchema
+	// SchemaCompiler compiles OutputSchema at construction and any
+	// RunInput.OutputSchema override at run start. Required when OutputSchema
+	// is set; optional otherwise. When nil, run-level overrides are rejected.
+	SchemaCompiler SchemaCompiler
 	// Clock supplies timestamps for run events. When nil, the system clock is
 	// used. Inject a fixed clock for deterministic tests.
 	Clock Clock
@@ -168,15 +186,18 @@ type AgentConfig struct {
 // back until a terminal response is produced or a configured bound is reached.
 // The zero value is not usable; construct one with NewAgent.
 type Agent struct {
-	definition AgentDefinition
-	model      Model
-	tools      *ToolRegistry
-	maxSteps   int
-	deadline   time.Duration
-	allowed    map[ToolID]struct{}
-	listener   RunListener
-	clock      Clock
-	idSource   IDSource
+	definition     AgentDefinition
+	model          Model
+	tools          *ToolRegistry
+	outputSchema   *ModelOutputSchema
+	compiledOutput CompiledSchema
+	schemaCompiler SchemaCompiler
+	maxSteps       int
+	deadline       time.Duration
+	allowed        map[ToolID]struct{}
+	listener       RunListener
+	clock          Clock
+	idSource       IDSource
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -194,6 +215,29 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	if len(config.Definition.Tools) > 0 && (config.Tools == nil) {
 		return nil, errors.New("lebro: agent tool registry is required when the definition references tools")
 	}
+	if config.OutputSchema != nil {
+		if len(config.OutputSchema.Schema) == 0 {
+			return nil, errors.New("lebro: agent output schema must not be empty")
+		}
+		if !json.Valid(config.OutputSchema.Schema) {
+			return nil, errors.New("lebro: agent output schema must be valid JSON")
+		}
+		if config.SchemaCompiler == nil || isNilInterface(config.SchemaCompiler) {
+			return nil, errors.New("lebro: agent schema compiler is required when output schema is set")
+		}
+	}
+	var compiledOutput CompiledSchema
+	if config.OutputSchema != nil {
+		compiled, err := config.SchemaCompiler.Compile(config.OutputSchema.Schema)
+		if err != nil {
+			return nil, fmt.Errorf("lebro: compile agent output schema: %w", err)
+		}
+		if compiled == nil || isNilInterface(compiled) {
+			return nil, errors.New("lebro: schema compiler returned a nil output schema")
+		}
+		compiledOutput = compiled
+	}
+	outputSchema := cloneModelOutputSchema(config.OutputSchema)
 	maxSteps := config.MaxSteps
 	if maxSteps <= 0 {
 		maxSteps = DefaultAgentMaxSteps
@@ -218,15 +262,18 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		idSource = &sequentialIDSource{}
 	}
 	return &Agent{
-		definition: definition,
-		model:      config.Model,
-		tools:      config.Tools,
-		maxSteps:   maxSteps,
-		deadline:   config.Deadline,
-		allowed:    allowed,
-		listener:   config.Listener,
-		clock:      clock,
-		idSource:   idSource,
+		definition:     definition,
+		model:          config.Model,
+		tools:          config.Tools,
+		outputSchema:   outputSchema,
+		compiledOutput: compiledOutput,
+		schemaCompiler: config.SchemaCompiler,
+		maxSteps:       maxSteps,
+		deadline:       config.Deadline,
+		allowed:        allowed,
+		listener:       config.Listener,
+		clock:          clock,
+		idSource:       idSource,
 	}, nil
 }
 
@@ -280,6 +327,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return a.fail(runID, input, 0, err)
 	}
 
+	outputSchema, compiledOutput, err := a.resolveOutputSchema(input)
+	if err != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return a.fail(runID, input, 0, err)
+	}
+
 	for step := 1; step <= a.maxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
 			emitter.terminal(runID, step, "", RunEventCancelled, RunStatusCancelled, err)
@@ -290,9 +343,10 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		modelStart := emitter.emitModelStarted(runID, step, stepID)
 
 		request := ModelRequest{
-			Model:    a.definition.Model,
-			Messages: cloneMessages(transcript),
-			Tools:    cloneToolDefinitions(toolDefinitions),
+			Model:        a.definition.Model,
+			Messages:     cloneMessages(transcript),
+			Tools:        cloneToolDefinitions(toolDefinitions),
+			OutputSchema: cloneModelOutputSchema(outputSchema),
 		}
 		response, err := a.model.Generate(runCtx, request)
 		if err != nil {
@@ -307,6 +361,13 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
 		}
 		if err := response.Validate(); err != nil {
+			if compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
+				errors.Is(err, ErrMessageStructuredOutputInvalidJSON) {
+				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
+				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
+				return a.failWithMessages(runID, metadata, step, transcript, structuredErr)
+			}
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
@@ -318,6 +379,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		transcript = append(transcript, cloneMessage(response.Message))
 
 		if response.FinishReason != FinishReasonToolCalls {
+			if err := a.validateStructuredOutput(compiledOutput, response); err != nil {
+				agentErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: err}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
+			}
 			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			return RunResult{
 				ID:       runID,
@@ -397,6 +463,46 @@ func (a *Agent) resolveToolDefinitions() ([]ToolDefinition, error) {
 		definitions = append(definitions, tool.Definition())
 	}
 	return definitions, nil
+}
+
+func (a *Agent) resolveOutputSchema(input RunInput) (*ModelOutputSchema, CompiledSchema, error) {
+	if input.OutputSchema != nil {
+		if len(input.OutputSchema.Schema) == 0 {
+			return nil, nil, &AgentError{Kind: AgentErrorInvalidStructuredOutput, Err: errors.New("lebro: run output schema must not be empty")}
+		}
+		if !json.Valid(input.OutputSchema.Schema) {
+			return nil, nil, &AgentError{Kind: AgentErrorInvalidStructuredOutput, Err: errors.New("lebro: run output schema must be valid JSON")}
+		}
+		if a.schemaCompiler == nil || isNilInterface(a.schemaCompiler) {
+			return nil, nil, &AgentError{Kind: AgentErrorInvalidStructuredOutput, Err: errors.New("lebro: agent schema compiler is required when run output schema is set")}
+		}
+		compiled, err := a.schemaCompiler.Compile(input.OutputSchema.Schema)
+		if err != nil {
+			return nil, nil, &AgentError{Kind: AgentErrorInvalidStructuredOutput, Err: fmt.Errorf("lebro: compile run output schema: %w", err)}
+		}
+		if compiled == nil || isNilInterface(compiled) {
+			return nil, nil, &AgentError{Kind: AgentErrorInvalidStructuredOutput, Err: errors.New("lebro: schema compiler returned a nil output schema")}
+		}
+		return input.OutputSchema, compiled, nil
+	}
+	return a.outputSchema, a.compiledOutput, nil
+}
+
+func (a *Agent) validateStructuredOutput(compiled CompiledSchema, response ModelResponse) error {
+	if compiled == nil {
+		return nil
+	}
+	if response.Message.StructuredOutput == "" {
+		return errors.New("lebro: structured output is missing")
+	}
+	validationErr := compiled.Validate(response.Message.StructuredOutput.Raw())
+	if validationErr == nil {
+		return nil
+	}
+	return &ValidationError{
+		Target: ValidationTargetStructuredOutput,
+		Issues: sortedValidationIssues(validationErr.Issues),
+	}
 }
 
 func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, call ModelToolCall, metadata map[string]string) ToolExecutionResult {

@@ -22,6 +22,14 @@ All notable changes to this project are documented in this file.
   conversation in canonical order; enforces configurable maximum steps and
   deadlines; and returns typed failures for unknown tools, invalid arguments,
   tool failures, provider failures, step-limit exhaustion, and cancellation.
+- Schema-constrained structured output for the agent loop. `AgentConfig.OutputSchema`
+  and `RunInput.OutputSchema` (per-run override) request a final JSON value that
+  conforms to a caller-supplied schema; the agent forwards the schema to the
+  model adapter on every step and validates the final assistant payload locally
+  via `AgentConfig.SchemaCompiler`. Missing or schema-invalid final output
+  returns `AgentErrorInvalidStructuredOutput`. `RunResult.StructuredOutput` and
+  `RunResult.DecodeStructuredOutput` expose the validated typed result. Tool use
+  and a structured final response compose in a single run.
 - Deterministic run record for agent lifecycle events: run start/finish, model
   request start/finish, tool-call requested, tool started/finished, and
   terminal events (succeeded, failed, cancelled). Events carry stable run/step

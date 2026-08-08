@@ -30,8 +30,9 @@ type CompiledSchema interface {
 type ValidationTarget string
 
 const (
-	ValidationTargetToolInput  ValidationTarget = "tool_input"
-	ValidationTargetToolOutput ValidationTarget = "tool_output"
+	ValidationTargetToolInput        ValidationTarget = "tool_input"
+	ValidationTargetToolOutput       ValidationTarget = "tool_output"
+	ValidationTargetStructuredOutput ValidationTarget = "structured_output"
 )
 
 // ValidationIssue describes one JSON Schema violation. Path is an RFC 6901
