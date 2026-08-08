@@ -56,6 +56,17 @@ All notable changes to this project are documented in this file.
   metadata. `NewToolStep` invokes a schema-checked `RegisteredTool` with the
   workflow value as arguments and returns validated output. Nested agent run
   events now carry parent workflow run and step correlation fields.
+- File-backed SQLite storage. `NewSQLiteStore` opens a pure-Go SQLite database
+  (via `modernc.org/sqlite`, no CGO) at a caller-supplied DSN and implements
+  the same `Store` and repository contracts as the in-memory adapter:
+  threads, messages, workflow runs, and workflow snapshots survive process
+  restarts. `Migrate` installs the schema atomically and idempotently; a
+  failed migration rolls back and leaves the database in its prior state with
+  an actionable error. Concurrent writers serialize on SQLite's transactional
+  locking, with lock contention over the busy timeout surfaced as
+  `ErrConflict` for callers to retry. A shared storage contract suite in the
+  test kit runs against both adapters to keep the memory and durable
+  implementations behaviorally aligned.
 - Token and event streaming with cancellation. `StreamingModel` extends the
   provider-neutral `Model` interface with `Stream`, which returns a
   `StreamReader` over ordered `StreamDelta` values (text, tool calls,

@@ -332,6 +332,36 @@ agent, _ := lebro.NewAgent(lebro.AgentConfig{
 | `RunEventFailed` | Terminal: run failed |
 | `RunEventCancelled` | Terminal: run was cancelled |
 
+## File-backed SQLite storage
+
+`lebro.NewSQLiteStore` opens a file-backed SQLite database (pure Go via
+`modernc.org/sqlite`, no CGO). Call `Migrate` once to install the schema, then
+use the same `Store` / repository interfaces as `NewMemoryStore`. Records
+survive process restarts:
+
+```go
+store, err := lebro.NewSQLiteStore("state.db")
+if err != nil {
+	panic(err)
+}
+defer store.Close()
+
+if err := store.Migrate(ctx); err != nil {
+	panic(err)
+}
+if err := store.Transaction(ctx, func(ctx context.Context, repositories lebro.Repositories) error {
+	return repositories.Threads().CreateThread(ctx, lebro.ThreadRecord{ID: "thread-1"})
+}); err != nil {
+	panic(err)
+}
+```
+
+Concurrent writers are serialized per SQLite's transactional locking; a lock
+blocked longer than the busy timeout surfaces as `lebro.ErrConflict`, which
+callers may retry, and migration failures roll back and leave the database
+unchanged. Both adapters pass the shared storage contract suite in
+[testkit](internal/testkit/contract_storage.go).
+
 ## Typed linear workflow execution
 
 `lebro.NewLinearWorkflow` composes ordered, named steps whose handlers are
@@ -509,10 +539,18 @@ feature set. The schema-validation example validates both tool input and output:
 go run ./examples/schema-validation
 ```
 
-The storage example exercises the repository contracts and in-memory adapter:
+The storage-memory example exercises the repository contracts and in-memory
+adapter:
 
 ```sh
 go run ./examples/storage-memory
+```
+
+The storage-sqlite example stores the same records in a file-backed SQLite
+database, closes it, reopens it, and reads the records back:
+
+```sh
+go run ./examples/storage-sqlite
 ```
 
 The model-fixtures example runs a deterministic tool-using model conversation,

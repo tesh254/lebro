@@ -87,6 +87,7 @@ type (
 	ThreadStore                = runtime.ThreadStore
 	WorkflowRunStore           = runtime.WorkflowRunStore
 	MemoryStore                = runtime.MemoryStore
+	SQLiteStore                = runtime.SQLiteStore
 	RunEvent                   = runtime.RunEvent
 	RunEventType               = runtime.RunEventType
 	RunListener                = runtime.RunListener
@@ -232,6 +233,11 @@ func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 }
 
 func NewMemoryStore() *MemoryStore { return runtime.NewMemoryStore() }
+
+// NewSQLiteStore opens (or creates) a file-backed SQLite storage adapter at
+// the given DSN and returns the store. Call Migrate once to install the
+// schema.
+func NewSQLiteStore(dsn string) (*SQLiteStore, error) { return runtime.NewSQLiteStore(dsn) }
 
 func NewAgent(config AgentConfig) (*Agent, error) {
 	return runtime.NewAgent(config)
