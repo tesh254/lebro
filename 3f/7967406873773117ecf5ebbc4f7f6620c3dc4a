@@ -1,0 +1,22 @@
+internal/runtime/workflow_adapter_test.go
+  s_1676663a997f68::t_18d3cb721d5a4c 254-257
+  s_1676663a997f68::t_8aaa6f12589661 185-242,244-246
+internal/runtime/workflow_adapter.go
+  s_1676663a997f68::t_285e82c5560aa5 66-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3f7967406873773117ecf5ebbc4f7f6620c3dc4a",
+  "prompts": {},
+  "sessions": {
+    "s_1676663a997f68": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d78866affeQSWs5w3wuxmai1",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
