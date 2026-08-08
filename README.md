@@ -362,6 +362,47 @@ callers may retry, and migration failures roll back and leave the database
 unchanged. Both adapters pass the shared storage contract suite in
 [testkit](internal/testkit/contract_storage.go).
 
+## PostgreSQL storage
+
+`lebro.NewPostgresStore` opens a PostgreSQL connection pool (pure Go via
+`github.com/jackc/pgx/v5`, no CGO) for production deployments where multiple
+processes share threads and workflow state. Call `Migrate` once to install
+the schema, then use the same `Store` / repository interfaces as the other
+adapters:
+
+```go
+store, err := lebro.NewPostgresStore("postgres://user:pass@host:5432/db?sslmode=disable", lebro.PostgresStoreOptions{})
+if err != nil {
+	panic(err)
+}
+defer store.Close()
+
+if err := store.Migrate(ctx); err != nil {
+	panic(err)
+}
+if err := store.Transaction(ctx, func(ctx context.Context, repositories lebro.Repositories) error {
+	return repositories.Threads().CreateThread(ctx, lebro.ThreadRecord{ID: "thread-1"})
+}); err != nil {
+	panic(err)
+}
+```
+
+Transactions use `READ COMMITTED` isolation. Serialization failures
+(SQLSTATE 40001) and lock timeouts (55P03) surface as `lebro.ErrConflict`
+for callers to retry. Foreign-key violations (23503) map to
+`lebro.ErrNotFound`. The schema is versioned in a `schema_migrations` table;
+migrations are append-only and run atomically, so a failed migration leaves
+the database in its prior state. Required indexes:
+
+| Index | Purpose |
+|-------|---------|
+| `idx_messages_thread_seq` | Ordered message listing per thread |
+| `idx_workflow_snapshots_run_seq` | Ordered snapshot listing per run |
+
+The adapter passes the shared storage contract suite. Set
+`LEBRO_POSTGRES_TEST_DSN` to run the PostgreSQL tests against a disposable
+database.
+
 ## Typed linear workflow execution
 
 `lebro.NewLinearWorkflow` composes ordered, named steps whose handlers are
