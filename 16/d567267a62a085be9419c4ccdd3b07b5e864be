@@ -1,0 +1,43 @@
+examples/workflow-agents-tools/main_test.go
+  s_d07dd5390c5054::t_d1df670cb819b5 1-17
+internal/runtime/run_record.go
+  s_d07dd5390c5054::t_6e15f22e6c89e0 4,67-69,194-199,202-211,234,250,267,286,304,323,344,361,378
+  s_d07dd5390c5054::t_55fd0bbc35a25b 60-62
+public.go
+  s_d07dd5390c5054::t_dc4899f8fd66cf 61-62,212-214
+examples/workflow-agents-tools/main.go
+  s_d07dd5390c5054::t_d1df670cb819b5 1-20,22-94
+  s_d07dd5390c5054::t_4b638bc0a1cb4d 21
+internal/runtime/workflow_adapter_test.go
+  s_d07dd5390c5054::t_29476c945a34e5 89,94-96,129-134
+  s_d07dd5390c5054::t_d1df670cb819b5 1-88,90-93,97-128,135-147
+  s_d07dd5390c5054::t_55fd0bbc35a25b 148-185
+README.md
+  s_d07dd5390c5054::t_b84e415ca5d577 414-450,493-497
+internal/runtime/workflow_adapter.go
+  s_d07dd5390c5054::t_dc4899f8fd66cf 1-131
+internal/runtime/workflow.go
+  s_d07dd5390c5054::t_6e15f22e6c89e0 320,352-353
+examples/README.md
+  s_d07dd5390c5054::t_b84e415ca5d577 65-72
+CHANGELOG.md
+  s_d07dd5390c5054::t_b84e415ca5d577 53-58
+internal/runtime/agent.go
+  s_d07dd5390c5054::t_6e15f22e6c89e0 303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "16d567267a62a085be9419c4ccdd3b07b5e864be",
+  "prompts": {},
+  "sessions": {
+    "s_d07dd5390c5054": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fe264-47de-7dd3-9323-0ef54ed71121",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
