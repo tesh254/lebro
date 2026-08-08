@@ -1,0 +1,66 @@
+internal/runtime/model.go
+  s_d15de75b3270b6::t_b532b739699f15 10
+  s_d15de75b3270b6::t_a9829dcfb27c56 308-310,312-315,318-324,326,329-333,336-345,348
+internal/runtime/run_record.go
+  s_d15de75b3270b6::t_f4bf86697d0c61 82-86
+  s_3aa285e5638070::t_666d87197973b8 68-81,279-284
+  s_d15de75b3270b6::t_a4a0642e9d14d4 285-291
+contracts_test.go
+  s_3aa285e5638070::t_a08d24db2878cb 41
+  s_3aa285e5638070::t_7f53231f3ba468 273-283,285
+internal/runtime/agent.go
+  s_3aa285e5638070::t_05eabcec17c6f9 715-729,735,737-738,740-741,743-744,768-770,777
+internal/runtime/agent_stream_test.go
+  s_3aa285e5638070::t_a08d24db2878cb 71,506
+  s_3aa285e5638070::t_b8376b09c82502 631,634-635
+openai/adapter.go
+  s_3aa285e5638070::t_666d87197973b8 597,601-604,643-644
+  s_23f0d45e7dd696::t_475d0a1c446081 702,717-735
+internal/testkit/model.go
+  s_e0ff83c752a678::t_37db4290025d67 353
+  s_e0ff83c752a678::t_d6e64b00a6254c 385,388-390,405-416
+  s_e0ff83c752a678::t_14abde6b475bdb 290,342,356
+  s_e0ff83c752a678::t_ec9868b3ff7200 307-341,343-351
+go.mod
+  s_3aa285e5638070::t_062dcdfcc16f5b 8-9,11-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4a4ac82bce71aa9a47e70bbaecde15ddeaa46daf",
+  "prompts": {},
+  "sessions": {
+    "s_23f0d45e7dd696": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d1fe369ffeOSe6LH0ALQqN6J",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    },
+    "s_3aa285e5638070": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d758452ffeyAenxHgqVxR9l7",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    },
+    "s_d15de75b3270b6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d1f4677ffeiL044bHsGyR5b5",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    },
+    "s_e0ff83c752a678": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d1f8c0dffeaZxlKYabPKXBsM",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
