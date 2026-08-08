@@ -89,7 +89,7 @@ func TestSQLiteStorePersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reopened.Close()
+	defer func() { _ = reopened.Close() }()
 	if err := reopened.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestSQLiteStoreMigrationFailuresLeaveDatabaseSafe(t *testing.T) {
 			t.Fatal(err)
 		}
 		hasRuns = rows.Next()
-		rows.Close()
+		_ = rows.Close()
 		if hasRuns {
 			t.Fatal("failed migration left partial tables behind")
 		}

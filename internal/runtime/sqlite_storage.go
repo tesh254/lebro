@@ -127,7 +127,7 @@ func (s *SQLiteStore) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("lebro: sqlite: begin migration: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	var version int
 	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -336,7 +336,7 @@ func (r *sqliteRepositories) ListMessages(ctx context.Context, id ThreadID, p Pa
 	if err != nil {
 		return Page[MessageRecord]{}, fmt.Errorf("lebro: list messages for thread %q: %w", id, sqliteError(err))
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanMessagePage(rows, offset, limit)
 }
 
@@ -426,7 +426,7 @@ func (r *sqliteRepositories) ListWorkflowSnapshots(ctx context.Context, id RunID
 	if err != nil {
 		return Page[WorkflowSnapshotRecord]{}, fmt.Errorf("lebro: list workflow snapshots for run %q: %w", id, sqliteError(err))
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanSnapshotPage(rows, offset, limit)
 }
 

@@ -36,7 +36,7 @@ func main() {
 	// Close and reopen the same database file; records must survive.
 	must(store.Close())
 	store = mustValue(lebro.NewSQLiteStore(path))
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	must(store.Migrate(ctx))
 
 	messages := mustValue(store.Messages().ListMessages(ctx, "support-42", lebro.PageRequest{}))

@@ -19,7 +19,7 @@ func TestExample(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("reopen Migrate(): %v", err)
 	}
@@ -69,7 +69,7 @@ func TestTransactionCallbackReturnsErrorsAndAborts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
