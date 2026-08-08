@@ -62,13 +62,17 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	toolStep, err := lebro.NewToolStep(registered)
+	if err != nil {
+		return err
+	}
 	wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
 		Definition: lebro.WorkflowDefinition{ID: "weather-summary"},
 		Steps: []lebro.Step{
 			{Definition: lebro.StepDefinition{ID: "request"}, Handler: lebro.StepHandlerFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {
 				return json.RawMessage(`{"city":"Nairobi"}`), nil
 			})},
-			{Definition: lebro.StepDefinition{ID: "weather"}, Handler: lebro.NewToolStep(registered)},
+			{Definition: lebro.StepDefinition{ID: "weather"}, Handler: toolStep},
 			{Definition: lebro.StepDefinition{ID: "summarize"}, Handler: agentStep},
 		},
 	})

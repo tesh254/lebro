@@ -211,7 +211,7 @@ func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) 
 
 func NewAgentStep(agent Workflow) (*AgentStep, error) { return runtime.NewAgentStep(agent) }
 
-func NewToolStep(tool *RegisteredTool) *ToolStep { return runtime.NewToolStep(tool) }
+func NewToolStep(tool *RegisteredTool) (*ToolStep, error) { return runtime.NewToolStep(tool) }
 
 func ToolMetadataFromContext(ctx context.Context) map[string]string {
 	return runtime.ToolMetadataFromContext(ctx)

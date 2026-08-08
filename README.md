@@ -427,11 +427,12 @@ output. Registering first keeps both tool schema boundaries enforced.
 ```go
 registered, _ := registry.Resolve("weather.lookup")
 agentStep, _ := lebro.NewAgentStep(agent)
+toolStep, _ := lebro.NewToolStep(registered)
 
 wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
     Definition: lebro.WorkflowDefinition{ID: "weather-summary"},
     Steps: []lebro.Step{
-        {Definition: lebro.StepDefinition{ID: "weather"}, Handler: lebro.NewToolStep(registered)},
+        {Definition: lebro.StepDefinition{ID: "weather"}, Handler: toolStep},
         {Definition: lebro.StepDefinition{ID: "summarize"}, Handler: agentStep},
     },
 })

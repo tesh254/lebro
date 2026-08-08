@@ -103,9 +103,13 @@ func TestToolStepValidatesInputOutputAndForwardsMetadata(t *testing.T) {
 	if !ok {
 		t.Fatal("registered tool not found")
 	}
+	toolStep, err := NewToolStep(registered)
+	if err != nil {
+		t.Fatal(err)
+	}
 	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
 		Definition: WorkflowDefinition{ID: "weather-workflow"},
-		Steps:      []Step{{Definition: StepDefinition{ID: "weather"}, Handler: NewToolStep(registered)}},
+		Steps:      []Step{{Definition: StepDefinition{ID: "weather"}, Handler: toolStep}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -143,6 +147,13 @@ func TestAgentStepRejectsMissingAgent(t *testing.T) {
 	var step *AgentStep
 	if _, err := step.Execute(context.Background(), json.RawMessage(`null`)); err == nil {
 		t.Fatal("nil AgentStep Execute() error = nil")
+	}
+	if _, err := NewToolStep(nil); err == nil {
+		t.Fatal("NewToolStep(nil) error = nil")
+	}
+	var toolStep *ToolStep
+	if _, err := toolStep.Execute(context.Background(), json.RawMessage(`null`)); err == nil {
+		t.Fatal("nil ToolStep Execute() error = nil")
 	}
 }
 
