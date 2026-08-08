@@ -317,7 +317,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	if w == nil {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: errors.New("lebro: workflow is nil")}
 	}
-	emitter := newRunEmitter(w.listener, w.clock, w.idSource)
+	emitter := newRunEmitter(ctx, w.listener, w.clock, w.idSource)
 	if err := ctx.Err(); err != nil {
 		runID := w.idSource.NewRunID()
 		metadata := cloneMetadata(input.Metadata)
@@ -349,7 +349,8 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 			return w.fail(runID, metadata, stepErr)
 		}
 
-		output, panicValue, panicked, handlerErr := invokeStepHandler(ctx, step.handler, cloneRawMessage(current))
+		stepCtx := withWorkflowInvocation(ctx, runID, position, stepID, input.ThreadID, metadata)
+		output, panicValue, panicked, handlerErr := invokeStepHandler(stepCtx, step.handler, cloneRawMessage(current))
 
 		if err := ctx.Err(); err != nil {
 			cause := preferContextError(err, err)
