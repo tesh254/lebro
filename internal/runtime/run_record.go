@@ -65,24 +65,25 @@ func (t RunEventType) IsTerminal() bool {
 // workflow invocation that started a nested run; they are zero values for a
 // top-level run.
 type RunEvent struct {
-	Sequence     int
-	Type         RunEventType
-	RunID        RunID
-	ParentRunID  RunID
-	ParentStepID StepID
-	ParentStep   int
-	StepID       StepID
-	Step         int
-	Timestamp    time.Time
-	Duration     time.Duration
-	FinishReason FinishReason
-	Usage        ModelUsage
-	ToolCallID   string
-	ToolID       ToolID
-	ToolState    ToolExecutionState
-	DeltaText    string
-	Status       RunStatus
-	Error        error
+	Sequence              int
+	Type                  RunEventType
+	RunID                 RunID
+	ParentRunID           RunID
+	ParentStepID          StepID
+	ParentStep            int
+	StepID                StepID
+	Step                  int
+	Timestamp             time.Time
+	Duration              time.Duration
+	FinishReason          FinishReason
+	Usage                 ModelUsage
+	ToolCallID            string
+	ToolID                ToolID
+	ToolState             ToolExecutionState
+	DeltaText             string
+	DeltaStructuredOutput ModelStructuredOutput
+	Status                RunStatus
+	Error                 error
 }
 
 // RunListener receives ordered run events. Implementations must be safe for
@@ -275,18 +276,19 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 	}
 	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:     e.seq,
-		Type:         RunEventDelta,
-		RunID:        runID,
-		StepID:       stepID,
-		Step:         step,
-		Timestamp:    e.clock.Now(),
-		DeltaText:    delta.Text,
-		ToolCallID:   toolCallID,
-		ToolID:       toolID,
-		FinishReason: delta.FinishReason,
-		Usage:        delta.Usage,
-		Error:        delta.Err,
+		Sequence:              e.seq,
+		Type:                  RunEventDelta,
+		RunID:                 runID,
+		StepID:                stepID,
+		Step:                  step,
+		Timestamp:             e.clock.Now(),
+		DeltaText:             delta.Text,
+		DeltaStructuredOutput: delta.StructuredOutput,
+		ToolCallID:            toolCallID,
+		ToolID:                toolID,
+		FinishReason:          delta.FinishReason,
+		Usage:                 delta.Usage,
+		Error:                 delta.Err,
 	})
 }
 

@@ -38,7 +38,7 @@ func (contractStreamingModel) Stream(ctx context.Context, request ModelRequest) 
 		case <-closed:
 		}
 	}()
-	return StreamReaderFunc{
+	return &StreamReaderFunc{
 		NextFn: func() (StreamDelta, error) {
 			delta, ok := <-out
 			if !ok {
@@ -270,9 +270,19 @@ func TestMAD22StreamingPublicContracts(t *testing.T) {
 	}
 	defer run.Cancel()
 
-	result, runErr := run.Drain()
+	var deltaCount int
+	for delta := range run.Deltas {
+		if delta.Text != "" {
+			deltaCount++
+		}
+	}
+	if deltaCount == 0 {
+		t.Fatal("no text deltas delivered through StreamRun.Deltas")
+	}
+
+	result, runErr := run.Wait()
 	if runErr != nil {
-		t.Fatalf("Drain() error = %v", runErr)
+		t.Fatalf("Wait() error = %v", runErr)
 	}
 	if result.Status != RunStatusSucceeded {
 		t.Fatalf("status = %q, want succeeded", result.Status)

@@ -68,7 +68,7 @@ func (m *streamScriptedModel) Stream(ctx context.Context, request ModelRequest) 
 		}
 	}()
 
-	return StreamReaderFunc{
+	return &StreamReaderFunc{
 		NextFn: func() (StreamDelta, error) {
 			delta, ok := <-out
 			if !ok {
@@ -503,7 +503,7 @@ func TestAsStreamingModelReturnsStreamingAdapter(t *testing.T) {
 
 func TestStreamReaderFuncDefaultsToEOF(t *testing.T) {
 	t.Parallel()
-	reader := StreamReaderFunc{}
+	reader := &StreamReaderFunc{}
 	if _, err := reader.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("Next() error = %v, want io.EOF", err)
 	}
@@ -628,10 +628,10 @@ func TestAgentRunStreamTimeoutCancellation(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	_, runErr := run.Drain()
 	if runErr == nil {
-		return
+		t.Fatal("Drain() error = nil, want deadline cancellation")
 	}
 	var agentErr *AgentError
-	if errors.As(runErr, &agentErr) && agentErr.Kind == AgentErrorCancelled {
-		return
+	if !errors.As(runErr, &agentErr) || agentErr.Kind != AgentErrorCancelled {
+		t.Fatalf("error = %v, want AgentErrorCancelled", runErr)
 	}
 }

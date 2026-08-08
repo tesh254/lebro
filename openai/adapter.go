@@ -594,9 +594,13 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 				r.markTerminal()
 				return lebro.StreamDelta{FinishReason: lebro.FinishReasonUnspecified}, nil
 			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) {
 				r.markTerminal()
 				return lebro.StreamDelta{}, err
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				r.markTerminal()
+				return lebro.StreamDelta{}, r.model.timeoutError("stream deadline exceeded", err)
 			}
 			r.markTerminal()
 			return lebro.StreamDelta{}, r.model.transportError("stream read failed", err)
@@ -635,6 +639,9 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 		}
 		if terminal {
 			r.markTerminal()
+		}
+		if delta == (lebro.StreamDelta{}) && !terminal {
+			continue
 		}
 		return delta, nil
 	}
@@ -692,7 +699,7 @@ func (r *sseStreamReader) mapStreamEvent(event chatStreamEvent) (lebro.StreamDel
 
 func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {
 	modelErr := &lebro.ModelError{
-		Kind:     lebro.ModelErrorUnavailable,
+		Kind:     streamErrorKind(errBody.Type),
 		Provider: providerName,
 		Code:     errBody.Code,
 		Message:  errBody.Message,
@@ -705,6 +712,27 @@ func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {
 		modelErr.Extension = extension
 	}
 	return modelErr
+}
+
+func streamErrorKind(errType string) lebro.ModelErrorKind {
+	switch errType {
+	case "rate_limit_exceeded":
+		return lebro.ModelErrorRateLimited
+	case "invalid_request_error":
+		return lebro.ModelErrorInvalidRequest
+	case "authentication_error":
+		return lebro.ModelErrorAuthentication
+	case "permission_denied", "forbidden":
+		return lebro.ModelErrorPermissionDenied
+	case "not_found":
+		return lebro.ModelErrorNotFound
+	case "timeout":
+		return lebro.ModelErrorTimeout
+	case "server_error", "unavailable", "server_unavailable":
+		return lebro.ModelErrorUnavailable
+	default:
+		return lebro.ModelErrorUnavailable
+	}
 }
 
 type chatStreamEvent struct {

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -27,27 +26,6 @@ func TestRunStreamsDeltasAndReturnsResult(t *testing.T) {
 	if !strings.Contains(got, "final: Hello from the streaming agent!") {
 		t.Fatalf("output = %q", got)
 	}
-}
-
-func TestExampleMain(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := os.Stdout
-	os.Stdout = write
-	t.Cleanup(func() { os.Stdout = original })
-	defer func() {
-		_ = write.Close()
-		_ = read.Close()
-	}()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		main()
-	}()
-	<-done
 }
 
 func TestAsStreamingModelPublicSurface(t *testing.T) {

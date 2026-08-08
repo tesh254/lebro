@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 )
 
 // ModelRequest is the provider-neutral input sent to a language-model adapter.
@@ -304,29 +305,47 @@ type StreamReader interface {
 
 // StreamReaderFunc adapts a function into a StreamReader. The function is
 // called for each Next invocation. A nil function returns io.EOF on Next and a
-// nil error on Close.
+// nil error on Close. Once Next returns a terminal delta or a non-nil error,
+// subsequent Next calls return io.EOF without invoking NextFn again. Close is
+// idempotent and invokes CloseFn at most once.
 type StreamReaderFunc struct {
-	NextFn  func() (StreamDelta, error)
-	CloseFn func() error
+	NextFn   func() (StreamDelta, error)
+	CloseFn  func() error
+	once     sync.Once
+	terminal bool
 }
 
-// Next calls NextFn when set, otherwise returns io.EOF.
-func (r StreamReaderFunc) Next() (StreamDelta, error) {
-	if r.NextFn == nil {
+// Next calls NextFn when set, otherwise returns io.EOF. After a terminal delta
+// or non-nil error has been returned, subsequent calls return io.EOF without
+// invoking NextFn.
+func (r *StreamReaderFunc) Next() (StreamDelta, error) {
+	if r.terminal {
 		return StreamDelta{}, io.EOF
 	}
-	return r.NextFn()
-}
-
-// Close calls CloseFn when set and returns nil otherwise.
-func (r StreamReaderFunc) Close() error {
-	if r.CloseFn == nil {
-		return nil
+	if r.NextFn == nil {
+		r.terminal = true
+		return StreamDelta{}, io.EOF
 	}
-	return r.CloseFn()
+	delta, err := r.NextFn()
+	if delta.IsTerminal() || err != nil {
+		r.terminal = true
+	}
+	return delta, err
 }
 
-var _ StreamReader = StreamReaderFunc{}
+// Close calls CloseFn when set and returns nil otherwise. It is idempotent:
+// CloseFn is invoked at most once regardless of how many times Close is called.
+func (r *StreamReaderFunc) Close() error {
+	var err error
+	r.once.Do(func() {
+		if r.CloseFn != nil {
+			err = r.CloseFn()
+		}
+	})
+	return err
+}
+
+var _ StreamReader = (*StreamReaderFunc)(nil)
 
 // Validate checks the provider-neutral invariants adapters can rely on.
 func (r ModelRequest) Validate() error {

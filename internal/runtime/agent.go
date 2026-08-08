@@ -712,31 +712,36 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		if err != nil {
 			return ModelResponse{}, err
 		}
-		// Emit a single delta representing the complete response so streaming
-		// consumers observe one item per Generate-backed step.
-		delta := StreamDelta{
+		// Emit deltas representing the complete response so streaming
+		// consumers observe every tool call and the terminal payload.
+		calls := response.Message.ToolCalls.Values()
+		for i := range calls {
+			call := calls[i]
+			delta := StreamDelta{ToolCall: &call}
+			if err := delta.Validate(); err != nil {
+				return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			}
+			emitter.emitDelta(runID, step, stepID, delta)
+			if !sendDelta(ctx, deltas, delta) {
+				return ModelResponse{}, context.Canceled
+			}
+		}
+		terminal := StreamDelta{
 			Text:         response.Message.Content,
 			FinishReason: response.FinishReason,
 			Usage:        response.Usage,
 		}
-		if !response.Message.ToolCalls.IsZero() {
-			calls := response.Message.ToolCalls.Values()
-			if len(calls) > 0 {
-				first := calls[0]
-				delta.ToolCall = &first
-			}
-		}
 		if response.Message.StructuredOutput != "" {
-			delta.StructuredOutput = response.Message.StructuredOutput
+			terminal.StructuredOutput = response.Message.StructuredOutput
 		}
-		if delta.Text == "" && delta.ToolCall == nil && delta.StructuredOutput == "" && delta.FinishReason == "" {
-			delta.FinishReason = FinishReasonUnspecified
+		if terminal.Text == "" && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
+			terminal.FinishReason = FinishReasonUnspecified
 		}
-		if err := delta.Validate(); err != nil {
-			return ModelResponse{}, err
+		if err := terminal.Validate(); err != nil {
+			return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
-		emitter.emitDelta(runID, step, stepID, delta)
-		if !sendDelta(ctx, deltas, delta) {
+		emitter.emitDelta(runID, step, stepID, terminal)
+		if !sendDelta(ctx, deltas, terminal) {
 			return ModelResponse{}, context.Canceled
 		}
 		return response, nil
@@ -760,13 +765,16 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		delta, derr := reader.Next()
 		if errors.Is(derr, io.EOF) {
+			if err := ctx.Err(); err != nil {
+				return ModelResponse{}, err
+			}
 			break
 		}
 		if derr != nil {
 			return ModelResponse{}, derr
 		}
 		if err := delta.Validate(); err != nil {
-			return ModelResponse{}, err
+			return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		emitter.emitDelta(runID, step, stepID, delta)
 		if !sendDelta(ctx, deltas, delta) {

@@ -287,7 +287,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 			}
 			m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
 		}()
-		return lebro.StreamReaderFunc{
+		return &lebro.StreamReaderFunc{
 			NextFn: func() (lebro.StreamDelta, error) {
 				delta, ok := <-out
 				if !ok {
@@ -304,11 +304,56 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 				return nil
 			},
 		}, nil
+	case FixtureResponse:
+		response := cloneResponse(fixture.response)
+		toolCalls := cloneToolCalls(fixture.toolCalls)
+		if fixture.toolCalls == nil {
+			toolCalls = response.Message.ToolCalls.Values()
+		}
+		for i := range toolCalls {
+			if toolCalls[i].ID == "" {
+				m.mu.Lock()
+				toolCalls[i].ID = fmt.Sprintf("tool-call-%04d", m.toolSeq)
+				m.toolSeq++
+				m.mu.Unlock()
+			}
+		}
+
+		var deltas []lebro.StreamDelta
+		if len(toolCalls) > 0 {
+			for _, call := range toolCalls {
+				c := call
+				deltas = append(deltas, lebro.StreamDelta{ToolCall: &c})
+			}
+			deltas = append(deltas, lebro.StreamDelta{FinishReason: lebro.FinishReasonToolCalls})
+		} else if response.Message.StructuredOutput != "" {
+			deltas = append(deltas, lebro.StreamDelta{StructuredOutput: response.Message.StructuredOutput})
+			deltas = append(deltas, lebro.StreamDelta{FinishReason: lebro.FinishReasonStop})
+		} else {
+			deltas = append(deltas, lebro.StreamDelta{Text: response.Message.Content, FinishReason: response.FinishReason})
+		}
+
+		out := make(chan lebro.StreamDelta, len(deltas))
+		for _, d := range deltas {
+			out <- d
+		}
+		close(out)
+		m.finish(call.ID, RunEventModelCompleted, response.Message, toolCalls, nil)
+		return &lebro.StreamReaderFunc{
+			NextFn: func() (lebro.StreamDelta, error) {
+				delta, ok := <-out
+				if !ok {
+					return lebro.StreamDelta{}, io.EOF
+				}
+				return delta, nil
+			},
+			CloseFn: func() error { return nil },
+		}, nil
 	case FixtureStream:
-		out := make(chan lebro.StreamDelta, len(fixture.stream))
+		out := make(chan lebro.StreamDelta, len(fixture.stream)+1)
 		closed := make(chan struct{})
 		go m.emitPublicStream(ctx, call, fixture.stream, out, closed)
-		return lebro.StreamReaderFunc{
+		return &lebro.StreamReaderFunc{
 			NextFn: func() (lebro.StreamDelta, error) {
 				delta, ok := <-out
 				if !ok {
@@ -337,8 +382,12 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 
 func (m *Model) emitPublicStream(ctx context.Context, call ModelCall, chunks []StreamChunk, out chan<- lebro.StreamDelta, closed chan struct{}) {
 	defer close(out)
+	hasToolCall := false
 	for _, chunk := range chunks {
 		delta := m.publicStreamDelta(call.ID, chunk)
+		if delta.ToolCall != nil {
+			hasToolCall = true
+		}
 		select {
 		case out <- delta:
 		case <-ctx.Done():
@@ -352,6 +401,19 @@ func (m *Model) emitPublicStream(ctx context.Context, call ModelCall, chunks []S
 			m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, delta.Err)
 			return
 		}
+	}
+	terminal := lebro.StreamDelta{FinishReason: lebro.FinishReasonStop}
+	if hasToolCall {
+		terminal.FinishReason = lebro.FinishReasonToolCalls
+	}
+	select {
+	case out <- terminal:
+	case <-ctx.Done():
+		m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+		return
+	case <-closed:
+		m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+		return
 	}
 	m.finish(call.ID, RunEventModelCompleted, lebro.Message{}, nil, nil)
 }
