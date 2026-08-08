@@ -17,13 +17,16 @@ func TestRunStreamsDeltasAndReturnsResult(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 	got := output.String()
-	if !strings.Contains(got, "deltas: Hello from the streaming agent!") {
+	if !strings.Contains(got, "streaming: The streaming agent is now live.") {
 		t.Fatalf("output = %q", got)
 	}
-	if !strings.Contains(got, "status: succeeded") {
+	if !strings.Contains(got, "status:   succeeded") {
 		t.Fatalf("output = %q", got)
 	}
-	if !strings.Contains(got, "final: Hello from the streaming agent!") {
+	if !strings.Contains(got, "final:    The streaming agent is now live.") {
+		t.Fatalf("output = %q", got)
+	}
+	if !strings.Contains(got, "deltas:   6 text chunks delivered in real time") {
 		t.Fatalf("output = %q", got)
 	}
 }

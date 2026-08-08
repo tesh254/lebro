@@ -3,11 +3,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/internal/testkit"
@@ -21,12 +23,16 @@ func main() {
 }
 
 func run(output io.Writer) error {
+	buf := bufio.NewWriter(output)
+	defer func() { _ = buf.Flush() }()
+
 	model := testkit.NewModel(testkit.Stream(
-		testkit.TextChunk("Hello "),
-		testkit.TextChunk("from "),
-		testkit.TextChunk("the "),
-		testkit.TextChunk("streaming "),
-		testkit.TextChunk("agent!"),
+		testkit.StreamChunk{Text: "The ", Delay: 100 * time.Millisecond},
+		testkit.StreamChunk{Text: "streaming ", Delay: 150 * time.Millisecond},
+		testkit.StreamChunk{Text: "agent ", Delay: 150 * time.Millisecond},
+		testkit.StreamChunk{Text: "is ", Delay: 100 * time.Millisecond},
+		testkit.StreamChunk{Text: "now ", Delay: 120 * time.Millisecond},
+		testkit.StreamChunk{Text: "live.", Delay: 80 * time.Millisecond},
 	))
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "streaming-echo", Model: "fixture-model", Instructions: "be brief"},
@@ -36,35 +42,45 @@ func run(output io.Writer) error {
 		return fmt.Errorf("new agent: %w", err)
 	}
 
-	run, err := agent.RunStream(context.Background(), lebro.RunInput{
-		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "greet me"}},
+	write(buf, "streaming: ")
+	if err := buf.Flush(); err != nil {
+		return err
+	}
+	runHandle, err := agent.RunStream(context.Background(), lebro.RunInput{
+		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "greet me in real time"}},
 		Metadata: map[string]string{"source": "streaming-example"},
 	})
 	if err != nil {
 		return fmt.Errorf("run stream: %w", err)
 	}
-	defer run.Cancel()
+	defer runHandle.Cancel()
 
-	write(output, "deltas: ")
 	var deltaCount int
-	for delta := range run.Deltas {
+	for delta := range runHandle.Deltas {
 		if delta.Text != "" {
-			write(output, delta.Text)
+			write(buf, delta.Text)
+			if err := buf.Flush(); err != nil {
+				return err
+			}
 			deltaCount++
 		}
 	}
-	writeln(output)
+	writeln(buf)
+	if err := buf.Flush(); err != nil {
+		return err
+	}
 	if deltaCount == 0 {
 		return errors.New("no deltas were emitted")
 	}
 
-	result, err := run.Wait()
+	result, err := runHandle.Wait()
 	if err != nil {
 		return fmt.Errorf("wait: %w", err)
 	}
-	writef(output, "status: %s\n", result.Status)
-	writef(output, "final: %s\n", result.Messages[len(result.Messages)-1].Content)
-	return nil
+	writef(buf, "status:   %s\n", result.Status)
+	writef(buf, "final:    %s\n", result.Messages[len(result.Messages)-1].Content)
+	writef(buf, "deltas:   %d text chunks delivered in real time\n", deltaCount)
+	return buf.Flush()
 }
 
 func write(writer io.Writer, values ...any) {

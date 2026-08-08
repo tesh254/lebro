@@ -45,6 +45,10 @@ type StreamChunk struct {
 	ToolCall         *ToolCall
 	StructuredOutput json.RawMessage
 	Err              error
+	// Delay pauses the stream for this duration before emitting this chunk.
+	// A zero delay emits the chunk immediately. Use non-zero delays to simulate
+	// real-time token streaming in examples and tests.
+	Delay time.Duration
 }
 
 // Fixture describes the result of one model invocation.
@@ -384,6 +388,20 @@ func (m *Model) emitPublicStream(ctx context.Context, call ModelCall, chunks []S
 	defer close(out)
 	hasToolCall := false
 	for _, chunk := range chunks {
+		if chunk.Delay > 0 {
+			timer := time.NewTimer(chunk.Delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+				return
+			case <-closed:
+				timer.Stop()
+				m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+				return
+			}
+		}
 		delta := m.publicStreamDelta(call.ID, chunk)
 		if delta.ToolCall != nil {
 			hasToolCall = true
@@ -550,6 +568,16 @@ func (m *Model) begin(ctx context.Context, request lebro.ModelRequest) (Fixture,
 func (m *Model) emitStream(ctx context.Context, call ModelCall, chunks []StreamChunk, out chan<- StreamEvent) {
 	defer close(out)
 	for _, chunk := range chunks {
+		if chunk.Delay > 0 {
+			timer := time.NewTimer(chunk.Delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+				return
+			}
+		}
 		event := m.streamEvent(call.ID, chunk)
 		select {
 		case out <- event:
