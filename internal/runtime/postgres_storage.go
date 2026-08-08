@@ -126,10 +126,13 @@ const postgresSchemaVersionQuery = `SELECT version FROM schema_migrations ORDER 
 // failure rolls the transaction back, leaving the database unchanged and
 // the error actionable (it names the failing migration).
 //
-// Concurrent Migrate calls from multiple processes are safe: a session-level
-// advisory lock serializes migration so only one process runs DDL at a time.
-// A process that acquires the lock after another has already migrated sees
-// the updated version and skips its own migrations.
+// Concurrent Migrate calls from multiple processes are safe: a
+// transaction-scoped advisory lock (pg_advisory_xact_lock) serializes
+// migration so only one process runs DDL at a time. The lock is released
+// automatically when the transaction commits or rolls back, so there is no
+// separate unlock step and no way to leak a held lock back onto a pooled
+// connection. A process that acquires the lock after another has already
+// migrated sees the updated version and skips its own migrations.
 func (s *PostgresStore) Migrate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -141,26 +144,18 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("lebro: postgres: ensure schema_migrations table: %w", postgresError(err))
 	}
 
-	// Acquire a session-level advisory lock on a dedicated connection so
-	// concurrent first-time migrations from multiple processes serialize.
-	// The lock is keyed to a fixed 64-bit integer unique to lebro migrations.
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("lebro: postgres: acquire migration connection: %w", postgresError(err))
-	}
-	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", postgresAdvisoryLockKey); err != nil {
-		return fmt.Errorf("lebro: postgres: acquire migration lock: %w", postgresError(err))
-	}
-	defer func() {
-		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", postgresAdvisoryLockKey)
-	}()
-
-	tx, err := conn.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("lebro: postgres: begin migration: %w", postgresError(err))
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Acquire a transaction-scoped advisory lock so concurrent migrations
+	// serialize. The lock is released automatically on commit or rollback,
+	// so it cannot leak back onto a pooled connection.
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", postgresAdvisoryLockKey); err != nil {
+		return fmt.Errorf("lebro: postgres: acquire migration lock: %w", postgresError(err))
+	}
 
 	var version int
 	switch err := tx.QueryRowContext(ctx, postgresSchemaVersionQuery).Scan(&version); {
