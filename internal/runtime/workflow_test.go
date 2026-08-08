@@ -496,6 +496,45 @@ func TestLinearWorkflowContextCancellation(t *testing.T) {
 	}
 }
 
+func TestLinearWorkflowCancelsBlockingAgentStep(t *testing.T) {
+	t.Parallel()
+
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "blocking-agent", Model: "fixture-model"},
+		Model:      newScriptedModel(scriptedResponse{waitForCancel: true}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentStep, err := NewAgentStep(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "stream-cancel-wf"},
+		Steps:      []Step{{Definition: StepDefinition{ID: "agent-step"}, Handler: agentStep}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err = wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"hi"`)})
+	if err == nil {
+		t.Fatal("Run() error = nil, want cancellation")
+	}
+	var wfErr *WorkflowError
+	if !errors.As(err, &wfErr) || wfErr.Kind != WorkflowErrorCancelled {
+		t.Fatalf("error = %v, want WorkflowErrorCancelled", err)
+	}
+}
+
 func TestLinearWorkflowNoListenerDoesNotAlterBehavior(t *testing.T) {
 	t.Parallel()
 

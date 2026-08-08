@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"sync"
 )
 
 // ModelRequest is the provider-neutral input sent to a language-model adapter.
@@ -206,6 +208,144 @@ type ModelResponse struct {
 type Model interface {
 	Generate(context.Context, ModelRequest) (ModelResponse, error)
 }
+
+// StreamingModel is implemented by adapters that can deliver generated text
+// and tool requests as ordered deltas before the terminal response. Adapters
+// that do not support streaming continue to satisfy Model alone; callers use
+// AsStreamingModel to opt into streaming behavior.
+//
+// Stream returns a StreamReader whose Next method blocks until the next
+// StreamDelta is available, the stream completes, or an error occurs. A nil
+// StreamDelta with a nil error is never produced. When the stream completes
+// normally the terminal StreamDelta carries a non-zero FinishReason and the
+// reader returns io.EOF from subsequent Next calls. When the caller stops
+// reading, Close unblocks any in-flight provider work and releases resources;
+// it is safe to call after the stream has ended and must be idempotent.
+type StreamingModel interface {
+	Model
+	Stream(context.Context, ModelRequest) (StreamReader, error)
+}
+
+// AsStreamingModel returns model as a StreamingModel when the concrete value
+// implements Stream. It returns nil when the adapter only supports Generate,
+// letting callers fall back to a non-streaming run without type assertions.
+func AsStreamingModel(model Model) StreamingModel {
+	if model == nil || isNilInterface(model) {
+		return nil
+	}
+	if streaming, ok := model.(StreamingModel); ok {
+		return streaming
+	}
+	return nil
+}
+
+// StreamDelta is one ordered item emitted by a streaming model adapter.
+//
+// Text carries a token (or token chunk) of assistant content; adapters append
+// successive Text deltas to reconstruct the final message content. ToolCall
+// carries one tool invocation requested by the model; multiple ToolCall deltas
+// in a single stream are executed in the order they arrive. StructuredOutput
+// carries the final structured payload when the terminal response includes
+// one; a non-empty value is only present on the terminal delta.
+//
+// FinishReason is non-zero only on the terminal delta. Usage is populated on
+// the terminal delta when the provider reports token usage. Err is non-nil
+// when the adapter aborts the stream before completion; a terminal delta with
+// a non-nil Err is the last delta produced.
+type StreamDelta struct {
+	Text             string
+	ToolCall         *ModelToolCall
+	StructuredOutput ModelStructuredOutput
+	FinishReason     FinishReason
+	Usage            ModelUsage
+	Err              error
+}
+
+// IsTerminal reports whether the delta terminates the stream. A terminal delta
+// has a non-zero FinishReason, a non-nil Err, or both.
+func (d StreamDelta) IsTerminal() bool {
+	return d.FinishReason != "" || d.Err != nil
+}
+
+// Validate checks the invariants adapters must preserve for one delta. It is
+// called by the agent runtime as deltas arrive so a malformed stream fails
+// fast instead of corrupting the transcript.
+func (d StreamDelta) Validate() error {
+	if d.Text == "" && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && d.Err == nil {
+		return errors.New("lebro: stream delta is empty")
+	}
+	if d.ToolCall != nil {
+		if err := d.ToolCall.Validate(); err != nil {
+			return fmt.Errorf("lebro: stream delta tool call: %w", err)
+		}
+	}
+	if d.StructuredOutput != "" && !json.Valid(d.StructuredOutput.Raw()) {
+		return errors.New("lebro: stream delta structured output must be valid JSON")
+	}
+	if d.FinishReason != "" && !validFinishReason(d.FinishReason) {
+		return fmt.Errorf("lebro: invalid stream delta finish reason %q", d.FinishReason)
+	}
+	if d.Usage.InputTokens < 0 || d.Usage.OutputTokens < 0 || d.Usage.TotalTokens < 0 {
+		return errors.New("lebro: stream delta usage must not contain negative token counts")
+	}
+	return nil
+}
+
+// StreamReader is a pull-based iterator over ordered StreamDelta values. A
+// reader is owned by a single goroutine; callers must not share one reader
+// across goroutines. Next blocks until the next delta is available, the stream
+// ends, or an error occurs. After Next returns a terminal delta or a non-nil
+// error, subsequent Next calls return io.EOF without blocking. Close releases
+// any resources held by the reader and is safe to call after the stream has
+// ended.
+type StreamReader interface {
+	Next() (StreamDelta, error)
+	Close() error
+}
+
+// StreamReaderFunc adapts a function into a StreamReader. The function is
+// called for each Next invocation. A nil function returns io.EOF on Next and a
+// nil error on Close. Once Next returns a terminal delta or a non-nil error,
+// subsequent Next calls return io.EOF without invoking NextFn again. Close is
+// idempotent and invokes CloseFn at most once.
+type StreamReaderFunc struct {
+	NextFn   func() (StreamDelta, error)
+	CloseFn  func() error
+	once     sync.Once
+	terminal bool
+}
+
+// Next calls NextFn when set, otherwise returns io.EOF. After a terminal delta
+// or non-nil error has been returned, subsequent calls return io.EOF without
+// invoking NextFn.
+func (r *StreamReaderFunc) Next() (StreamDelta, error) {
+	if r.terminal {
+		return StreamDelta{}, io.EOF
+	}
+	if r.NextFn == nil {
+		r.terminal = true
+		return StreamDelta{}, io.EOF
+	}
+	delta, err := r.NextFn()
+	if delta.IsTerminal() || err != nil {
+		r.terminal = true
+	}
+	return delta, err
+}
+
+// Close calls CloseFn when set and returns nil otherwise. It is idempotent:
+// CloseFn is invoked at most once regardless of how many times Close is called.
+func (r *StreamReaderFunc) Close() error {
+	var err error
+	r.once.Do(func() {
+		if r.CloseFn != nil {
+			err = r.CloseFn()
+		}
+	})
+	return err
+}
+
+var _ StreamReader = (*StreamReaderFunc)(nil)
 
 // Validate checks the provider-neutral invariants adapters can rely on.
 func (r ModelRequest) Validate() error {

@@ -205,19 +205,19 @@ func (m *invalidFinalModel) Generate(context.Context, lebro.ModelRequest) (lebro
 	return lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleUser}, FinishReason: lebro.FinishReasonStop}, nil
 }
 
-func (*invalidFinalModel) Stream(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
+func (*invalidFinalModel) StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
 	stream := make(chan testkit.StreamEvent)
 	close(stream)
 	return stream, nil
 }
 
-func (invalidToolResponseModel) Stream(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
+func (invalidToolResponseModel) StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
 	stream := make(chan testkit.StreamEvent)
 	close(stream)
 	return stream, nil
 }
 
-func (ignoringModel) Stream(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
+func (ignoringModel) StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
 	stream := make(chan testkit.StreamEvent)
 	close(stream)
 	return stream, nil

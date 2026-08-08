@@ -449,6 +449,57 @@ Run the combined workflow example (no network or API key required):
 go run ./examples/workflow-agents-tools
 ```
 
+## Token and event streaming with cancellation
+
+`lebro.StreamingModel` extends the provider-neutral `Model` interface with
+`Stream`, which returns a `StreamReader` over ordered `StreamDelta` values.
+Each delta carries text, a tool call, structured output, or a terminal finish
+reason and usage. `lebro.AsStreamingModel` adapts a `Model` into a
+`StreamingModel` when the concrete value implements `Stream`, returning nil
+otherwise so callers fall back to `Generate`.
+
+`Agent.RunStream` runs the bounded agent loop against a `StreamingModel` and
+returns a `StreamRun` handle. The caller drains `Deltas` (`<-chan StreamDelta`)
+in real time, then calls `Wait` (or `Drain`) for the terminal `RunResult` and
+error. The caller must `defer` `StreamRun.Cancel` so goroutine and channel
+resources are released even when the stream is abandoned before completion;
+closing the consumer does not leak goroutines.
+
+Cancellation propagates through the provider stream, tool execution, and the
+loop itself: cancelling the context (or calling `StreamRun.Cancel`) stops
+active work, closes the delta channel, and returns a result with status
+`RunStatusCancelled` wrapping `ErrAgentCancelled`. A `RunEventDelta`
+(`"model_delta"`) run event is emitted for each delta and flows through the
+existing `RunListener` / `RunRecorder` infrastructure. Streaming and
+non-streaming runs produce equivalent final records: when the configured model
+does not implement `StreamingModel`, `RunStream` falls back to `Generate` and
+emits a single delta per step.
+
+```go
+run, err := agent.RunStream(ctx, lebro.RunInput{
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "stream me a poem"}},
+})
+if err != nil { return err }
+defer run.Cancel()
+
+for delta := range run.Deltas {
+    if delta.Text != "" {
+        fmt.Print(delta.Text)
+    }
+}
+result, err := run.Wait()
+```
+
+The OpenAI-compatible adapter implements `StreamingModel` over Server-Sent
+Events, mapping text deltas, usage, finish reasons, and error events into the
+neutral protocol.
+
+Run the streaming example (no network or API key required):
+
+```sh
+go run ./examples/streaming
+```
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per
@@ -496,6 +547,13 @@ tool, and an agent in a single linear workflow:
 
 ```sh
 go run ./examples/workflow-agents-tools
+```
+
+The streaming example runs a bounded agent against a scripted streaming model
+and emits text deltas in real time, then collects the final result:
+
+```sh
+go run ./examples/streaming
 ```
 
 ## Development

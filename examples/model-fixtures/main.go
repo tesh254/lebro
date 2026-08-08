@@ -15,7 +15,7 @@ import (
 
 type scriptedModel interface {
 	lebro.Model
-	Stream(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error)
+	StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error)
 }
 
 func main() {
@@ -71,7 +71,7 @@ func run(output *os.File, agent, stream, failing, cancelling scriptedModel) erro
 	}
 	writef(output, "final: %s\n", finalResponse.Message.StructuredOutput.Raw())
 
-	events, err := stream.Stream(ctx, request)
+	events, err := stream.StreamEvents(ctx, request)
 	if err != nil {
 		return err
 	}

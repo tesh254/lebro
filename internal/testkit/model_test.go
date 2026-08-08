@@ -182,7 +182,7 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 	originalArgs[0] = '['
 	originalJSON[0] = '['
 
-	stream, err := model.Stream(context.Background(), lebro.ModelRequest{Model: "fake-model"})
+	stream, err := model.StreamEvents(context.Background(), lebro.ModelRequest{Model: "fake-model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 		t.Fatalf("terminal stream event = %q, want failed", got)
 	}
 
-	empty, err := model.Stream(context.Background(), lebro.ModelRequest{})
+	empty, err := model.StreamEvents(context.Background(), lebro.ModelRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestModelStreamsTextToolsStructuredOutputFailuresAndCompletion(t *testing.T
 func TestModelStreamFailureChunkNilTerminatesStream(t *testing.T) {
 	t.Parallel()
 	model := NewModel(Stream(FailureChunk(nil)))
-	stream, err := model.Stream(context.Background(), lebro.ModelRequest{})
+	stream, err := model.StreamEvents(context.Background(), lebro.ModelRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestModelStreamErrorAndCancellationPaths(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			stream, err := test.model.Stream(context.Background(), lebro.ModelRequest{})
+			stream, err := test.model.StreamEvents(context.Background(), lebro.ModelRequest{})
 			if stream != nil || !errors.Is(err, test.wantErr) {
 				t.Fatalf("Stream() = %v, %v; want nil, %v", stream, err, test.wantErr)
 			}
@@ -266,13 +266,13 @@ func TestModelStreamErrorAndCancellationPaths(t *testing.T) {
 
 	preCancelled, cancelPre := context.WithCancel(context.Background())
 	cancelPre()
-	if stream, err := NewModel(Stream()).Stream(preCancelled, lebro.ModelRequest{}); stream != nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("pre-cancelled Stream() = %v, %v", stream, err)
+	if stream, err := NewModel(Stream()).StreamEvents(preCancelled, lebro.ModelRequest{}); stream != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-cancelled StreamEvents() = %v, %v", stream, err)
 	}
 
 	waiting, cancelWaiting := context.WithCancel(context.Background())
 	waitingModel := NewModel(WaitForCancellation())
-	stream, err := waitingModel.Stream(waiting, lebro.ModelRequest{})
+	stream, err := waitingModel.StreamEvents(waiting, lebro.ModelRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestModelStreamErrorAndCancellationPaths(t *testing.T) {
 
 	blocked, cancelBlocked := context.WithCancel(context.Background())
 	blockedModel := NewModel(Stream(TextChunk("unread")))
-	blockedStream, err := blockedModel.Stream(blocked, lebro.ModelRequest{})
+	blockedStream, err := blockedModel.StreamEvents(blocked, lebro.ModelRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

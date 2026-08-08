@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -422,6 +425,439 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	exhausted := &AgentError{Kind: AgentErrorStepLimitExhausted, Step: a.maxSteps, Err: ErrAgentStepLimitExhausted}
 	emitter.terminal(runID, a.maxSteps, "", RunEventFailed, RunStatusFailed, exhausted)
 	return a.failWithMessages(runID, metadata, a.maxSteps, transcript, exhausted)
+}
+
+// StreamRun is the handle returned by Agent.RunStream. The caller drains
+// Deltas until it is closed, then calls Wait to collect the terminal RunResult
+// and error. Cancel unblocks any in-flight streaming work and releases
+// goroutine resources even when the caller abandons the stream before
+// draining; it is safe to call after Wait returns.
+type StreamRun struct {
+	Deltas   <-chan StreamDelta
+	done     chan streamOutcome
+	finished chan struct{}
+	cancel   context.CancelFunc
+	once     sync.Once
+}
+
+// Cancel unblocks the run goroutine and any in-flight provider stream. It is
+// safe to call multiple times and must be invoked when the caller stops
+// reading Deltas before the stream completes naturally.
+func (s *StreamRun) Cancel() {
+	if s == nil {
+		return
+	}
+	s.once.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
+}
+
+// Wait blocks until the run goroutine has completed. It must be called after
+// Deltas has been fully drained (for example, with a for-range loop) so the
+// run goroutine is not blocked writing to the channel. The returned RunResult
+// and error are the terminal values of the streaming run; on cancellation the
+// result Status is RunStatusCancelled and the error wraps ErrAgentCancelled.
+func (s *StreamRun) Wait() (RunResult, error) {
+	if s == nil {
+		return RunResult{}, errors.New("lebro: stream run is nil")
+	}
+	outcome, ok := <-s.done
+	if !ok {
+		return RunResult{}, errors.New("lebro: stream ended without outcome")
+	}
+	<-s.finished
+	return outcome.result, outcome.err
+}
+
+// Drain is a convenience helper that drains Deltas to completion and returns
+// the terminal Wait outcome. It is the canonical way to collect the final
+// result when the caller does not need to inspect each delta.
+func (s *StreamRun) Drain() (RunResult, error) {
+	if s == nil {
+		return RunResult{}, errors.New("lebro: stream run is nil")
+	}
+	for range s.Deltas {
+	}
+	return s.Wait()
+}
+
+// RunStream executes the bounded agent loop and streams ordered StreamDelta
+// values to the caller before returning the final RunResult. The returned
+// StreamRun owns the delta channel; the caller drains Deltas until it is
+// closed, then calls Wait (or Drain) to collect the terminal RunResult and
+// error. The caller must defer StreamRun.Cancel so goroutine resources are
+// released even when the stream is abandoned before completion.
+//
+// When the configured Model implements StreamingModel, each model call
+// streams text, tool-call, and structured-output deltas as they arrive;
+// otherwise the run falls back to Generate and emits a single delta per step
+// so streaming and non-streaming runs produce equivalent final records.
+//
+// Cancellation propagates through the provider stream, tool execution, and the
+// loop itself: cancelling the context (or calling StreamRun.Cancel) stops
+// active work, closes the delta channel, and returns a RunResult with Status
+// RunStatusCancelled and an error wrapping ErrAgentCancelled.
+func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, error) {
+	if a == nil {
+		return nil, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
+	}
+
+	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
+	if err := ctx.Err(); err != nil {
+		runID := a.idSource.NewRunID()
+		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+		return nil, a.cancelledError(0, err)
+	}
+
+	runCtx, deadlineCancel := a.applyDeadline(ctx)
+	runCtx, streamCancel := context.WithCancel(runCtx)
+	cancel := func() {
+		streamCancel()
+		deadlineCancel()
+	}
+
+	runID := a.idSource.NewRunID()
+	metadata := cloneMetadata(input.Metadata)
+
+	transcript, err := a.buildInitialTranscript(input)
+	if err != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return nil, err
+	}
+
+	toolDefinitions, err := a.resolveToolDefinitions()
+	if err != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return nil, err
+	}
+
+	outputSchema, compiledOutput, err := a.resolveOutputSchema(input)
+	if err != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return nil, err
+	}
+
+	streamingModel := AsStreamingModel(a.model)
+
+	deltas := make(chan StreamDelta, 1)
+	done := make(chan streamOutcome, 1)
+	finished := make(chan struct{})
+
+	emitter.emit(runID, 0, "", RunEventStarted)
+
+	run := &StreamRun{
+		Deltas:   deltas,
+		done:     done,
+		finished: finished,
+		cancel:   cancel,
+	}
+
+	go a.runStreamLoop(streamRunParams{
+		ctx:             runCtx,
+		runID:           runID,
+		metadata:        metadata,
+		transcript:      transcript,
+		toolDefinitions: toolDefinitions,
+		outputSchema:    outputSchema,
+		compiledOutput:  compiledOutput,
+		streamingModel:  streamingModel,
+		emitter:         emitter,
+		deltas:          deltas,
+		done:            done,
+		finished:        finished,
+	})
+
+	return run, nil
+}
+
+// runStreamOutcome carries the final result of a streaming run. It is sent
+// once on the done channel when the run goroutine exits.
+type streamOutcome struct {
+	result RunResult
+	err    error
+}
+
+type streamRunParams struct {
+	ctx             context.Context
+	runID           RunID
+	metadata        map[string]string
+	transcript      []Message
+	toolDefinitions []ToolDefinition
+	outputSchema    *ModelOutputSchema
+	compiledOutput  CompiledSchema
+	streamingModel  StreamingModel
+	emitter         *runEmitter
+	deltas          chan<- StreamDelta
+	done            chan<- streamOutcome
+	finished        chan<- struct{}
+}
+
+func (a *Agent) runStreamLoop(p streamRunParams) {
+	defer close(p.deltas)
+	defer close(p.done)
+	defer close(p.finished)
+
+	transcript := p.transcript
+
+	for step := 1; step <= a.maxSteps; step++ {
+		if err := p.ctx.Err(); err != nil {
+			p.emitter.terminal(p.runID, step, "", RunEventCancelled, RunStatusCancelled, err)
+			p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, err), err: a.cancelledError(step, err)}
+			return
+		}
+
+		stepID := a.idSource.NewStepID()
+		modelStart := p.emitter.emitModelStarted(p.runID, step, stepID)
+
+		request := ModelRequest{
+			Model:        a.definition.Model,
+			Messages:     cloneMessages(transcript),
+			Tools:        cloneToolDefinitions(p.toolDefinitions),
+			OutputSchema: cloneModelOutputSchema(p.outputSchema),
+		}
+
+		response, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, modelStart, p.emitter, p.deltas, request, p.streamingModel)
+		if streamErr != nil {
+			cause := streamErr
+			if cancelledErr := p.ctx.Err(); errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) || cancelledErr != nil {
+				cause = preferContextError(streamErr, cancelledErr)
+				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
+				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
+				p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, cause), err: a.cancelledError(step, cause)}
+				return
+			}
+			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
+			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, cause)
+			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: cause}
+			p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+			return
+		}
+
+		if err := response.Validate(); err != nil {
+			if p.compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
+				errors.Is(err, ErrMessageStructuredOutputInvalidJSON) {
+				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
+				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
+				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, structuredErr), err: structuredErr}
+				return
+			}
+			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
+			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
+			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure}
+			p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+			return
+		}
+
+		p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, response.FinishReason, response.Usage, nil)
+		transcript = append(transcript, cloneMessage(response.Message))
+
+		if response.FinishReason != FinishReasonToolCalls {
+			if err := a.validateStructuredOutput(p.compiledOutput, response); err != nil {
+				agentErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: err}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+				return
+			}
+			p.emitter.terminal(p.runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
+			p.done <- streamOutcome{result: RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata}, err: nil}
+			return
+		}
+
+		toolCalls := response.Message.ToolCalls.Values()
+		for _, call := range toolCalls {
+			if err := p.ctx.Err(); err != nil {
+				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+				p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, err), err: a.cancelledError(step, err)}
+				return
+			}
+			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
+			toolStart := p.emitter.emitToolStarted(p.runID, step, stepID, call.ID, call.ToolID)
+			result := a.executeToolCall(p.ctx, p.runID, step, call, p.metadata)
+			p.emitter.emitToolFinished(p.runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
+			transcript = append(transcript, toolResultMessage(call.ID, result))
+			if result.State == ToolExecutionCancelled {
+				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, result.Err)
+				p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, result.Err), err: a.cancelledError(step, result.Err)}
+				return
+			}
+			if result.State != ToolExecutionSucceeded {
+				agentErr := toolExecutionAgentError(step, result)
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+				return
+			}
+		}
+	}
+
+	exhausted := &AgentError{Kind: AgentErrorStepLimitExhausted, Step: a.maxSteps, Err: ErrAgentStepLimitExhausted}
+	p.emitter.terminal(p.runID, a.maxSteps, "", RunEventFailed, RunStatusFailed, exhausted)
+	p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, a.maxSteps, transcript, exhausted), err: exhausted}
+}
+
+// consumeStream drains one model call's deltas into the caller's channel and
+// returns the aggregated terminal response. When the adapter does not
+// implement StreamingModel, it falls back to Generate and emits a single
+// delta carrying the full response so streaming callers observe equivalent
+// output shape.
+func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, modelStart time.Time, emitter *runEmitter, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, error) {
+	if streamingModel == nil {
+		response, err := a.model.Generate(ctx, request)
+		if err != nil {
+			return ModelResponse{}, err
+		}
+		// Emit deltas representing the complete response so streaming
+		// consumers observe every tool call and the terminal payload.
+		calls := response.Message.ToolCalls.Values()
+		for i := range calls {
+			call := calls[i]
+			delta := StreamDelta{ToolCall: &call}
+			if err := delta.Validate(); err != nil {
+				return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			}
+			emitter.emitDelta(runID, step, stepID, delta)
+			if !sendDelta(ctx, deltas, delta) {
+				return ModelResponse{}, context.Canceled
+			}
+		}
+		terminal := StreamDelta{
+			Text:         response.Message.Content,
+			FinishReason: response.FinishReason,
+			Usage:        response.Usage,
+		}
+		if response.Message.StructuredOutput != "" {
+			terminal.StructuredOutput = response.Message.StructuredOutput
+		}
+		if terminal.Text == "" && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
+			terminal.FinishReason = FinishReasonUnspecified
+		}
+		if err := terminal.Validate(); err != nil {
+			return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+		}
+		emitter.emitDelta(runID, step, stepID, terminal)
+		if !sendDelta(ctx, deltas, terminal) {
+			return ModelResponse{}, context.Canceled
+		}
+		return response, nil
+	}
+
+	reader, err := streamingModel.Stream(ctx, request)
+	if err != nil {
+		return ModelResponse{}, err
+	}
+	defer func() { _ = reader.Close() }()
+
+	var contentBuilder strings.Builder
+	var toolCalls []ModelToolCall
+	var structuredOutput ModelStructuredOutput
+	var finishReason FinishReason
+	var usage ModelUsage
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return ModelResponse{}, err
+		}
+		delta, derr := reader.Next()
+		if errors.Is(derr, io.EOF) {
+			if err := ctx.Err(); err != nil {
+				return ModelResponse{}, err
+			}
+			break
+		}
+		if derr != nil {
+			return ModelResponse{}, derr
+		}
+		if err := delta.Validate(); err != nil {
+			return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+		}
+		emitter.emitDelta(runID, step, stepID, delta)
+		if !sendDelta(ctx, deltas, delta) {
+			return ModelResponse{}, context.Canceled
+		}
+		if delta.Text != "" {
+			contentBuilder.WriteString(delta.Text)
+		}
+		if delta.ToolCall != nil {
+			toolCalls = append(toolCalls, cloneToolCallValue(*delta.ToolCall))
+		}
+		if delta.StructuredOutput != "" {
+			structuredOutput = delta.StructuredOutput
+		}
+		if delta.FinishReason != "" {
+			finishReason = delta.FinishReason
+		}
+		if delta.Usage != (ModelUsage{}) {
+			usage = delta.Usage
+		}
+		if delta.Err != nil {
+			return ModelResponse{}, delta.Err
+		}
+	}
+
+	if finishReason == "" {
+		finishReason = FinishReasonUnspecified
+	}
+
+	message := Message{
+		Role:             RoleAssistant,
+		Content:          contentBuilder.String(),
+		StructuredOutput: structuredOutput,
+	}
+	if len(toolCalls) > 0 {
+		encoded, err := NewModelToolCalls(toolCalls...)
+		if err != nil {
+			return ModelResponse{}, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
+		}
+		message.ToolCalls = encoded
+	}
+
+	response := ModelResponse{
+		Message:      message,
+		Usage:        usage,
+		FinishReason: finishReason,
+	}
+	return response, nil
+}
+
+func (a *Agent) cancelledResult(runID RunID, messages []Message, metadata map[string]string, step int, err error) RunResult {
+	return RunResult{
+		ID:       runID,
+		Status:   RunStatusCancelled,
+		Messages: cloneMessages(messages),
+		Metadata: metadata,
+	}
+}
+
+func (a *Agent) failWithMessagesResult(runID RunID, metadata map[string]string, step int, messages []Message, agentErr *AgentError) RunResult {
+	return RunResult{
+		ID:       runID,
+		Status:   RunStatusFailed,
+		Messages: cloneMessages(messages),
+		Metadata: metadata,
+	}
+}
+
+func cloneToolCallValue(call ModelToolCall) ModelToolCall {
+	call.Arguments = cloneRawMessage(call.Arguments)
+	return call
+}
+
+// sendDelta writes delta to ch unless ctx is cancelled. It returns false when
+// the context was cancelled before the write completed, signalling the caller
+// to abort the stream.
+func sendDelta(ctx context.Context, ch chan<- StreamDelta, delta StreamDelta) bool {
+	select {
+	case ch <- delta:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (a *Agent) buildInitialTranscript(input RunInput) ([]Message, error) {

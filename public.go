@@ -50,6 +50,11 @@ type (
 	FinishReason               = runtime.FinishReason
 	ModelResponse              = runtime.ModelResponse
 	Model                      = runtime.Model
+	StreamingModel             = runtime.StreamingModel
+	StreamDelta                = runtime.StreamDelta
+	StreamReader               = runtime.StreamReader
+	StreamReaderFunc           = runtime.StreamReaderFunc
+	StreamRun                  = runtime.StreamRun
 	ModelErrorKind             = runtime.ModelErrorKind
 	ModelError                 = runtime.ModelError
 	WorkflowDefinition         = runtime.WorkflowDefinition
@@ -146,6 +151,7 @@ const (
 	RunEventToolRequested = runtime.RunEventToolRequested
 	RunEventToolStarted   = runtime.RunEventToolStarted
 	RunEventToolFinished  = runtime.RunEventToolFinished
+	RunEventDelta         = runtime.RunEventDelta
 	RunEventStepStarted   = runtime.RunEventStepStarted
 	RunEventStepFinished  = runtime.RunEventStepFinished
 	RunEventSucceeded     = runtime.RunEventSucceeded
@@ -241,4 +247,11 @@ func NewFixedClock(t time.Time) Clock { return runtime.NewFixedClock(t) }
 
 func NewFixedIDSource(runIDs []RunID, stepIDs []StepID) IDSource {
 	return runtime.NewFixedIDSource(runIDs, stepIDs)
+}
+
+// AsStreamingModel returns model as a StreamingModel when the concrete value
+// implements Stream. It returns nil when the adapter only supports Generate,
+// letting callers fall back to a non-streaming run without type assertions.
+func AsStreamingModel(model Model) StreamingModel {
+	return runtime.AsStreamingModel(model)
 }

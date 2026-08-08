@@ -70,5 +70,12 @@ required):
 go run ./examples/workflow-agents-tools
 ```
 
+Run the token and event streaming example (bounded agent against a scripted
+streaming model; no network or API key required):
+
+```sh
+go run ./examples/streaming
+```
+
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.

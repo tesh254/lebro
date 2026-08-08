@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -449,4 +451,305 @@ func parseRetryAfter(value string) time.Duration {
 		}
 	}
 	return 0
+}
+
+// Stream sends a streaming chat-completions request and returns a StreamReader
+// that delivers ordered text deltas as they arrive from the provider. The
+// reader honors context cancellation and closes the underlying HTTP response
+// body when Close is called. Failures are returned as [*lebro.ModelError] with
+// normalized kinds, matching Generate.
+func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.StreamReader, error) {
+	if err := request.Validate(); err != nil {
+		return nil, m.invalidRequest(err.Error(), err)
+	}
+	if len(request.Tools) > 0 || request.OutputSchema != nil {
+		return nil, m.invalidRequest("lebro: text-generation adapter does not support tools or structured output", nil)
+	}
+
+	body, err := m.buildStreamingRequestBody(request)
+	if err != nil {
+		return nil, err
+	}
+
+	reqCtx, cancel := m.requestContext(ctx)
+
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, m.baseURL+chatCompletions, bytes.NewReader(body))
+	if err != nil {
+		cancel()
+		return nil, m.invalidRequest(err.Error(), err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("Authorization", "Bearer "+m.apiKey)
+	httpReq.Header.Set("User-Agent", m.userAgent)
+	httpReq.Header.Set("Cache-Control", "no-store")
+	if m.organization != "" {
+		httpReq.Header.Set("OpenAI-Organization", m.organization)
+	}
+
+	resp, err := m.client.Do(httpReq)
+	if err != nil {
+		cancel()
+		return nil, m.classifyTransportError(reqCtx, err)
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		classified := m.classifyResponseError(resp)
+		_ = resp.Body.Close()
+		cancel()
+		return nil, classified
+	}
+
+	reader := newSSEStreamReader(resp, cancel, m)
+	return reader, nil
+}
+
+func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, error) {
+	model := request.Model
+	if model == "" {
+		model = m.model
+	}
+	if model == "" {
+		return nil, m.invalidRequest("lebro: model is required", nil)
+	}
+
+	messages := make([]chatMessage, 0, len(request.Messages))
+	for _, message := range request.Messages {
+		mapped, err := mapMessage(message)
+		if err != nil {
+			return nil, m.invalidRequest(err.Error(), err)
+		}
+		messages = append(messages, mapped)
+	}
+
+	body := map[string]any{"model": model, "messages": messages, "stream": true}
+	if len(request.Extension) > 0 {
+		var extension map[string]any
+		if err := json.Unmarshal(request.Extension, &extension); err != nil {
+			return nil, m.invalidRequest(fmt.Sprintf("lebro: request extension must be a JSON object: %v", err), err)
+		}
+		for key, value := range extension {
+			if key == "model" || key == "messages" || key == "stream" {
+				continue
+			}
+			body[key] = value
+		}
+	}
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, m.invalidRequest(fmt.Sprintf("lebro: encode request: %v", err), err)
+	}
+	return encoded, nil
+}
+
+// sseStreamReader parses the Server-Sent Events response from the OpenAI
+// chat-completions streaming endpoint into ordered lebro.StreamDelta values.
+type sseStreamReader struct {
+	model     *Model
+	resp      *http.Response
+	body      io.ReadCloser
+	scanner   *bufio.Scanner
+	cancel    context.CancelFunc
+	closed    chan struct{}
+	once      sync.Once
+	mu        sync.Mutex
+	terminal  bool
+	id        string
+	modelName string
+}
+
+func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *Model) *sseStreamReader {
+	body := resp.Body
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	return &sseStreamReader{
+		model:   model,
+		resp:    resp,
+		body:    body,
+		scanner: scanner,
+		cancel:  cancel,
+		closed:  make(chan struct{}),
+	}
+}
+
+func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
+	r.mu.Lock()
+	if r.terminal {
+		r.mu.Unlock()
+		return lebro.StreamDelta{}, io.EOF
+	}
+	r.mu.Unlock()
+
+	for {
+		select {
+		case <-r.closed:
+			r.markTerminal()
+			return lebro.StreamDelta{}, context.Canceled
+		default:
+		}
+		if !r.scanner.Scan() {
+			err := r.scanner.Err()
+			if err == nil {
+				r.markTerminal()
+				return lebro.StreamDelta{FinishReason: lebro.FinishReasonUnspecified}, nil
+			}
+			if errors.Is(err, context.Canceled) {
+				r.markTerminal()
+				return lebro.StreamDelta{}, err
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				r.markTerminal()
+				return lebro.StreamDelta{}, r.model.timeoutError("stream deadline exceeded", err)
+			}
+			r.markTerminal()
+			return lebro.StreamDelta{}, r.model.transportError("stream read failed", err)
+		}
+		line := r.scanner.Text()
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			r.markTerminal()
+			return lebro.StreamDelta{}, io.EOF
+		}
+		var event chatStreamEvent
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, r.model.malformedResponse(fmt.Sprintf("lebro: decode stream event: %v", err), err)
+		}
+		if event.Error != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, r.classifyStreamError(event.Error)
+		}
+		if event.ID != "" {
+			r.id = event.ID
+		}
+		if event.Model != "" {
+			r.modelName = event.Model
+		}
+		delta, terminal, err := r.mapStreamEvent(event)
+		if err != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, err
+		}
+		if terminal {
+			r.markTerminal()
+		}
+		if delta == (lebro.StreamDelta{}) && !terminal {
+			continue
+		}
+		return delta, nil
+	}
+}
+
+func (r *sseStreamReader) Close() error {
+	r.once.Do(func() {
+		close(r.closed)
+		r.cancel()
+		_ = r.body.Close()
+	})
+	return nil
+}
+
+func (r *sseStreamReader) markTerminal() {
+	r.mu.Lock()
+	r.terminal = true
+	r.mu.Unlock()
+}
+
+func (r *sseStreamReader) mapStreamEvent(event chatStreamEvent) (lebro.StreamDelta, bool, error) {
+	if len(event.Choices) == 0 {
+		if event.Usage != (chatUsageBody{}) {
+			return lebro.StreamDelta{
+				Usage: lebro.ModelUsage{
+					InputTokens:  event.Usage.PromptTokens,
+					OutputTokens: event.Usage.CompletionTokens,
+					TotalTokens:  event.Usage.TotalTokens,
+				},
+			}, false, nil
+		}
+		return lebro.StreamDelta{}, false, nil
+	}
+	choice := event.Choices[0]
+	delta := lebro.StreamDelta{}
+	if choice.Delta.Content != "" {
+		delta.Text = choice.Delta.Content
+	}
+	if choice.FinishReason != "" {
+		delta.FinishReason = mapFinishReason(choice.FinishReason)
+	}
+	if event.Usage != (chatUsageBody{}) {
+		delta.Usage = lebro.ModelUsage{
+			InputTokens:  event.Usage.PromptTokens,
+			OutputTokens: event.Usage.CompletionTokens,
+			TotalTokens:  event.Usage.TotalTokens,
+		}
+	}
+	terminal := choice.FinishReason != ""
+	if delta.Text == "" && delta.ToolCall == nil && delta.StructuredOutput == "" && delta.FinishReason == "" && delta.Usage == (lebro.ModelUsage{}) {
+		return lebro.StreamDelta{}, terminal, nil
+	}
+	return delta, terminal, nil
+}
+
+func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {
+	modelErr := &lebro.ModelError{
+		Kind:     streamErrorKind(errBody.Type),
+		Provider: providerName,
+		Code:     errBody.Code,
+		Message:  errBody.Message,
+	}
+	if modelErr.Message == "" {
+		modelErr.Message = "lebro: stream error"
+	}
+	if errBody.Type != "" || errBody.Param != "" {
+		extension, _ := json.Marshal(map[string]string{"type": errBody.Type, "param": errBody.Param})
+		modelErr.Extension = extension
+	}
+	return modelErr
+}
+
+func streamErrorKind(errType string) lebro.ModelErrorKind {
+	switch errType {
+	case "rate_limit_exceeded":
+		return lebro.ModelErrorRateLimited
+	case "invalid_request_error":
+		return lebro.ModelErrorInvalidRequest
+	case "authentication_error":
+		return lebro.ModelErrorAuthentication
+	case "permission_denied", "forbidden":
+		return lebro.ModelErrorPermissionDenied
+	case "not_found":
+		return lebro.ModelErrorNotFound
+	case "timeout":
+		return lebro.ModelErrorTimeout
+	case "server_error", "unavailable", "server_unavailable":
+		return lebro.ModelErrorUnavailable
+	default:
+		return lebro.ModelErrorUnavailable
+	}
+}
+
+type chatStreamEvent struct {
+	ID      string             `json:"id"`
+	Model   string             `json:"model"`
+	Choices []chatStreamChoice `json:"choices"`
+	Usage   chatUsageBody      `json:"usage"`
+	Error   *chatError         `json:"error,omitempty"`
+}
+
+type chatStreamChoice struct {
+	Index        int             `json:"index"`
+	Delta        chatStreamDelta `json:"delta"`
+	FinishReason string          `json:"finish_reason"`
+}
+
+type chatStreamDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
 }
