@@ -349,10 +349,8 @@ func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, call
 	if a.tools == nil {
 		return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not registered: %w", call.ToolID, ErrToolNotFound))
 	}
-	if len(a.allowed) > 0 {
-		if _, ok := a.allowed[call.ToolID]; !ok {
-			return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not allowed for this agent: %w", call.ToolID, ErrToolNotFound))
-		}
+	if _, ok := a.allowed[call.ToolID]; !ok {
+		return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not allowed for this agent: %w", call.ToolID, ErrToolNotFound))
 	}
 	toolMetadata := make(map[string]string, len(metadata)+3)
 	for key, value := range metadata {

@@ -867,6 +867,38 @@ func TestAgentEnforcesToolAllowlistAgainstRegistry(t *testing.T) {
 	}
 }
 
+func TestAgentRejectsToolCallsWhenDefinitionHasNoTools(t *testing.T) {
+	t.Parallel()
+
+	registry, _ := newAgentTestRegistry(t)
+	model := newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model"},
+		Model:      model,
+		Tools:      registry,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "use lookup"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want unknown tool failure")
+	}
+	var agentErr *AgentError
+	if !errors.As(err, &agentErr) || agentErr.Kind != AgentErrorUnknownTool {
+		t.Fatalf("error = %v, want AgentErrorUnknownTool", err)
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("error = %v, want mention of not-allowed tool", err)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+}
+
 func TestAgentCopiesDefinitionToolIDsToAvoidCallerMutation(t *testing.T) {
 	t.Parallel()
 
