@@ -1,0 +1,29 @@
+examples/streaming/main_test.go
+  s_3aa285e5638070::t_18c62e8a097378 20,23,26-29
+examples/streaming/main.go
+  s_3aa285e5638070::t_458f4c992a0dca 27
+  s_3aa285e5638070::t_992249f658c3a2 6
+  s_3aa285e5638070::t_ddd69fbba2c5f7 26,28,45-48,61-64,68-70,80-83
+  s_3aa285e5638070::t_0b54783b69a918 12,30-32,34-35,49-50,56,59,76
+  s_3aa285e5638070::t_b19c3b121c81e4 33
+internal/testkit/model.go
+  s_3aa285e5638070::t_256218b3abd1e1 571-580
+  s_3aa285e5638070::t_dc31213d7315d7 48-51
+  s_3aa285e5638070::t_266f81875cf9ee 391-404
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c7d419d02964e570f45834db20b479df38ef5d5e",
+  "prompts": {},
+  "sessions": {
+    "s_3aa285e5638070": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d758452ffeyAenxHgqVxR9l7",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
