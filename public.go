@@ -17,6 +17,10 @@ type (
 	Role                       = runtime.Role
 	Message                    = runtime.Message
 	AgentDefinition            = runtime.AgentDefinition
+	Agent                      = runtime.Agent
+	AgentConfig                = runtime.AgentConfig
+	AgentError                 = runtime.AgentError
+	AgentErrorKind             = runtime.AgentErrorKind
 	RunInput                   = runtime.RunInput
 	RunStatus                  = runtime.RunStatus
 	RunResult                  = runtime.RunResult
@@ -98,6 +102,16 @@ const (
 	FinishReasonCancelled   = runtime.FinishReasonCancelled
 	FinishReasonUnspecified = runtime.FinishReasonUnspecified
 
+	AgentErrorUnknownTool          = runtime.AgentErrorUnknownTool
+	AgentErrorInvalidToolArguments = runtime.AgentErrorInvalidToolArguments
+	AgentErrorInvalidToolOutput    = runtime.AgentErrorInvalidToolOutput
+	AgentErrorToolFailure          = runtime.AgentErrorToolFailure
+	AgentErrorProviderFailure      = runtime.AgentErrorProviderFailure
+	AgentErrorStepLimitExhausted   = runtime.AgentErrorStepLimitExhausted
+	AgentErrorCancelled            = runtime.AgentErrorCancelled
+
+	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
+
 	ModelErrorInvalidRequest    = runtime.ModelErrorInvalidRequest
 	ModelErrorAuthentication    = runtime.ModelErrorAuthentication
 	ModelErrorPermissionDenied  = runtime.ModelErrorPermissionDenied
@@ -126,6 +140,14 @@ var (
 	ErrModelTransport         = runtime.ErrModelTransport
 	ErrModelMalformedResponse = runtime.ErrModelMalformedResponse
 	ErrModelUnknown           = runtime.ErrModelUnknown
+
+	ErrAgentUnknownTool          = runtime.ErrAgentUnknownTool
+	ErrAgentInvalidToolArguments = runtime.ErrAgentInvalidToolArguments
+	ErrAgentInvalidToolOutput    = runtime.ErrAgentInvalidToolOutput
+	ErrAgentToolFailure          = runtime.ErrAgentToolFailure
+	ErrAgentProviderFailure      = runtime.ErrAgentProviderFailure
+	ErrAgentStepLimitExhausted   = runtime.ErrAgentStepLimitExhausted
+	ErrAgentCancelled            = runtime.ErrAgentCancelled
 )
 
 func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {
@@ -149,3 +171,7 @@ func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 }
 
 func NewMemoryStore() *MemoryStore { return runtime.NewMemoryStore() }
+
+func NewAgent(config AgentConfig) (*Agent, error) {
+	return runtime.NewAgent(config)
+}

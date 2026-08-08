@@ -17,3 +17,8 @@ All notable changes to this project are documented in this file.
 - OpenAI-compatible text-generation model adapter with authenticated HTTP
   requests, timeouts, opaque request extensions, typed error translation, and
   recorded-HTTP contract tests.
+- Bounded tool-using agent loop that combines instructions, caller messages, and
+  tool schemas into model requests; appends tool calls and tool results to the
+  conversation in canonical order; enforces configurable maximum steps and
+  deadlines; and returns typed failures for unknown tools, invalid arguments,
+  tool failures, provider failures, step-limit exhaustion, and cancellation.
