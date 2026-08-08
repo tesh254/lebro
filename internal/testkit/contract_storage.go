@@ -97,6 +97,12 @@ func storageContractRepository(t *testing.T, newStore StoreFactory) {
 		t.Fatalf("same message ID in another thread rejected: %v", err)
 	}
 
+	// An empty append is a no-op, so callers may conditionally append slices
+	// without checking their length.
+	if err := store.Messages().AppendMessages(ctx, nil); err != nil {
+		t.Fatalf("empty AppendMessages error = %v, want nil", err)
+	}
+
 	run := runtime.WorkflowRunRecord{ID: "run-1", WorkflowID: "workflow-1", Status: runtime.RunStatusRunning, StartedAt: now, UpdatedAt: now}
 	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, run); err != nil {
 		t.Fatal(err)

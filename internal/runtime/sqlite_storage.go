@@ -41,9 +41,13 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lebro: sqlite: open %q: %w", dsn, err)
 	}
-	// For a plain in-memory DSN the pool must not open a second connection,
-	// because each :memory: connection is its own empty database.
-	if strings.Contains(dsn, ":memory:") && !strings.Contains(dsn, "cache=shared") {
+	// A private in-memory database gives every pooled connection its own
+	// empty database, which would scatter records across connections, so
+	// such DSNs are pinned to a single connection. Both ":memory:" and the
+	// file:...?mode=memory URI form are private unless a shared cache is
+	// requested explicitly (cache=shared).
+	privateMemory := strings.Contains(dsn, ":memory:") || strings.Contains(dsn, "mode=memory")
+	if privateMemory && !strings.Contains(dsn, "cache=shared") {
 		db.SetMaxOpenConns(1)
 	}
 	if err := db.Ping(); err != nil {
@@ -291,6 +295,11 @@ func (r *sqliteRepositories) AppendMessages(ctx context.Context, vs []MessageRec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// An empty batch is a no-op, matching MemoryStore, and avoids building a
+	// VALUES clause with no rows.
+	if len(vs) == 0 {
+		return nil
+	}
 	// Validate the whole batch before writing anything, mirroring
 	// MemoryStore: message and thread IDs are required, the thread must
 	// exist, the message role must be legal, JSON payloads must be valid,
@@ -333,23 +342,73 @@ func (r *sqliteRepositories) AppendMessages(ctx context.Context, vs []MessageRec
 		seen[v.ThreadID][v.ID] = struct{}{}
 		existing[v.ThreadID][v.ID] = struct{}{}
 	}
-	// One multi-row statement makes the batch atomic: if any row violates
-	// the per-thread ID constraint (a concurrent writer since validation),
-	// the whole append is rejected without partial writes. The UNIQUE
-	// constraint stays as the concurrency backstop.
-	placeholders := make([]string, 0, len(vs))
-	args := make([]any, 0, len(vs)*5)
-	for _, v := range vs {
-		message, err := json.Marshal(v.Message)
-		if err != nil {
-			return fmt.Errorf("lebro: encode message %q: %w", v.ID, err)
+	// SQLite limits the number of bound parameters per statement, so the
+	// append is split into bounded chunks. The chunks run inside one
+	// transaction so the batch stays atomic: a duplicate that slipped in
+	// after validation fails the whole append without partial writes.
+	const chunkSize = 1000
+	insert := func(q sqlQueryer) error {
+		for start := 0; start < len(vs); start += chunkSize {
+			end := start + chunkSize
+			if end > len(vs) {
+				end = len(vs)
+			}
+			chunk := vs[start:end]
+			placeholders := make([]string, 0, len(chunk))
+			args := make([]any, 0, len(chunk)*5)
+			for _, v := range chunk {
+				message, err := json.Marshal(v.Message)
+				if err != nil {
+					return fmt.Errorf("lebro: encode message %q: %w", v.ID, err)
+				}
+				placeholders = append(placeholders, "(?, ?, ?, ?, ?)")
+				args = append(args, v.ID, v.ThreadID, string(message), sqliteJSON(v.Metadata), sqliteTime(v.CreatedAt))
+			}
+			if _, err := q.ExecContext(ctx, `INSERT INTO messages (id, thread_id, message, metadata, created_at) VALUES `+strings.Join(placeholders, ", "), args...); err != nil {
+				return fmt.Errorf("lebro: append messages: %w", sqliteError(err))
+			}
 		}
-		placeholders = append(placeholders, "(?, ?, ?, ?, ?)")
-		args = append(args, v.ID, v.ThreadID, string(message), sqliteJSON(v.Metadata), sqliteTime(v.CreatedAt))
+		return nil
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO messages (id, thread_id, message, metadata, created_at) VALUES `+strings.Join(placeholders, ", "), args...); err != nil {
-		return fmt.Errorf("lebro: append messages: %w", sqliteError(err))
+	return r.withAutoTx(ctx, insert)
+}
+
+// withAutoTx runs fn against the same queryer the repositories already use.
+// When the repositories are standalone (backed by *sql.DB) it wraps fn in a
+// BEGIN IMMEDIATE transaction so multi-statement operations like chunked
+// appends stay atomic; when they are already inside a caller's Transaction
+// (backed by a connection that holds BEGIN IMMEDIATE) fn runs against that
+// transaction directly.
+func (r *sqliteRepositories) withAutoTx(ctx context.Context, fn func(sqlQueryer) error) error {
+	db, ok := r.q.(*sql.DB)
+	if !ok {
+		return fn(r.q)
 	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("lebro: sqlite: acquire append connection: %w", sqliteError(err))
+	}
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("lebro: sqlite: begin append: %w", sqliteError(err))
+	}
+	finished := false
+	defer func() {
+		if !finished {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+		_ = conn.Close()
+	}()
+	if err := fn(conn); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return fmt.Errorf("lebro: sqlite: commit append: %w", sqliteError(err))
+	}
+	finished = true
 	return nil
 }
 
