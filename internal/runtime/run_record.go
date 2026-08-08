@@ -48,7 +48,8 @@ func (t RunEventType) IsTerminal() bool {
 // Sequence field is 1-indexed and monotonic within a single run. Step is the
 // 1-indexed model-call step (0 for run-level events). Duration is the elapsed
 // time since the paired start event; it is zero for events without a paired
-// start. Error is non-nil only for failure and cancellation terminal events.
+// start. Error is non-nil for events that report a failure or cancellation,
+// including non-terminal model and tool failures as well as terminal events.
 type RunEvent struct {
 	Sequence     int
 	Type         RunEventType
@@ -173,8 +174,9 @@ func (r *RunRecorder) TerminalEvent() (RunEvent, bool) {
 }
 
 // runEmitter manages the event sequence for a single agent run and dispatches
-// events to a listener. When the listener is nil, all emit calls are no-ops,
-// ensuring recording does not alter agent behavior.
+// events to a listener. When the listener is nil, all emit calls and clock
+// reads are no-ops, ensuring recording does not alter agent behavior even
+// with a stateful or blocking Clock.
 type runEmitter struct {
 	listener RunListener
 	clock    Clock
@@ -185,8 +187,23 @@ func newRunEmitter(listener RunListener, clock Clock, _ IDSource) *runEmitter {
 	return &runEmitter{listener: listener, clock: clock}
 }
 
+// enabled reports whether the emitter will dispatch events. When false, all
+// emit calls and clock reads are skipped.
+func (e *runEmitter) enabled() bool {
+	return e != nil && e.listener != nil
+}
+
+// now returns the current clock time, or the zero value when the emitter is
+// disabled. This prevents Clock side-effects when recording is off.
+func (e *runEmitter) now() time.Time {
+	if !e.enabled() {
+		return time.Time{}
+	}
+	return e.clock.Now()
+}
+
 func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEventType) {
-	if e == nil || e.listener == nil {
+	if !e.enabled() {
 		return
 	}
 	e.seq++
@@ -200,8 +217,25 @@ func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEve
 	})
 }
 
-func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, duration time.Duration, finishReason FinishReason, usage ModelUsage, err error) {
-	if e == nil || e.listener == nil {
+func (e *runEmitter) emitModelStarted(runID RunID, step int, stepID StepID) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventModelStarted,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: ts,
+	})
+	return ts
+}
+
+func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, start time.Time, finishReason FinishReason, usage ModelUsage, err error) {
+	if !e.enabled() {
 		return
 	}
 	e.seq++
@@ -212,26 +246,62 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, dur
 		StepID:       stepID,
 		Step:         step,
 		Timestamp:    e.clock.Now(),
-		Duration:     duration,
+		Duration:     e.clock.Now().Sub(start),
 		FinishReason: finishReason,
 		Usage:        usage,
 		Error:        err,
 	})
 }
 
-func (e *runEmitter) emitTool(runID RunID, step int, stepID StepID, eventType RunEventType, toolCallID string, toolID ToolID, duration time.Duration, toolState ToolExecutionState, err error) {
-	if e == nil || e.listener == nil {
+func (e *runEmitter) emitToolRequested(runID RunID, step int, stepID StepID, toolCallID string, toolID ToolID) {
+	if !e.enabled() {
 		return
 	}
 	e.seq++
 	e.listener.OnRunEvent(RunEvent{
 		Sequence:   e.seq,
-		Type:       eventType,
+		Type:       RunEventToolRequested,
 		RunID:      runID,
 		StepID:     stepID,
 		Step:       step,
 		Timestamp:  e.clock.Now(),
-		Duration:   duration,
+		ToolCallID: toolCallID,
+		ToolID:     toolID,
+	})
+}
+
+func (e *runEmitter) emitToolStarted(runID RunID, step int, stepID StepID, toolCallID string, toolID ToolID) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:   e.seq,
+		Type:       RunEventToolStarted,
+		RunID:      runID,
+		StepID:     stepID,
+		Step:       step,
+		Timestamp:  ts,
+		ToolCallID: toolCallID,
+		ToolID:     toolID,
+	})
+	return ts
+}
+
+func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, start time.Time, toolCallID string, toolID ToolID, toolState ToolExecutionState, err error) {
+	if !e.enabled() {
+		return
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:   e.seq,
+		Type:       RunEventToolFinished,
+		RunID:      runID,
+		StepID:     stepID,
+		Step:       step,
+		Timestamp:  e.clock.Now(),
+		Duration:   e.clock.Now().Sub(start),
 		ToolCallID: toolCallID,
 		ToolID:     toolID,
 		ToolState:  toolState,
@@ -240,7 +310,7 @@ func (e *runEmitter) emitTool(runID RunID, step int, stepID StepID, eventType Ru
 }
 
 func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType RunEventType, status RunStatus, err error) {
-	if e == nil || e.listener == nil {
+	if !e.enabled() {
 		return
 	}
 	e.seq++
@@ -280,8 +350,13 @@ type fixedIDSource struct {
 
 // NewFixedIDSource creates an IDSource that returns the given run and step IDs
 // in order. If a source is exhausted, subsequent calls return the last ID.
+// Both input slices are copied so subsequent caller mutation does not affect
+// the source.
 func NewFixedIDSource(runIDs []RunID, stepIDs []StepID) IDSource {
-	return &fixedIDSource{runIDs: runIDs, stepIDs: stepIDs}
+	return &fixedIDSource{
+		runIDs:  append([]RunID(nil), runIDs...),
+		stepIDs: append([]StepID(nil), stepIDs...),
+	}
 }
 
 func (s *fixedIDSource) NewRunID() RunID {

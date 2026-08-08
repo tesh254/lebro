@@ -266,6 +266,8 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	runID := a.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
 
+	emitter.emit(runID, 0, "", RunEventStarted)
+
 	transcript, err := a.buildInitialTranscript(input)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
@@ -278,8 +280,6 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return a.fail(runID, input, 0, err)
 	}
 
-	emitter.emit(runID, 0, "", RunEventStarted)
-
 	for step := 1; step <= a.maxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
 			emitter.terminal(runID, step, "", RunEventCancelled, RunStatusCancelled, err)
@@ -287,8 +287,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 
 		stepID := a.idSource.NewStepID()
-		modelStart := a.clock.Now()
-		emitter.emit(runID, step, stepID, RunEventModelStarted)
+		modelStart := emitter.emitModelStarted(runID, step, stepID)
 
 		request := ModelRequest{
 			Model:    a.definition.Model,
@@ -296,26 +295,25 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			Tools:    cloneToolDefinitions(toolDefinitions),
 		}
 		response, err := a.model.Generate(runCtx, request)
-		modelDuration := a.clock.Now().Sub(modelStart)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
 				cause := preferContextError(err, cancelledErr)
-				emitter.emitModelFinished(runID, step, stepID, modelDuration, FinishReasonUnspecified, ModelUsage{}, cause)
+				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
 				return a.cancelled(runID, transcript, metadata, step, cause)
 			}
-			emitter.emitModelFinished(runID, step, stepID, modelDuration, FinishReasonUnspecified, ModelUsage{}, err)
+			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
 		}
 		if err := response.Validate(); err != nil {
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
-			emitter.emitModelFinished(runID, step, stepID, modelDuration, FinishReasonUnspecified, ModelUsage{}, failure)
+			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure})
 		}
 
-		emitter.emitModelFinished(runID, step, stepID, modelDuration, response.FinishReason, response.Usage, nil)
+		emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, nil)
 
 		transcript = append(transcript, cloneMessage(response.Message))
 
@@ -335,14 +333,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
 				return a.cancelled(runID, transcript, metadata, step, err)
 			}
-			emitter.emitTool(runID, step, stepID, RunEventToolRequested, call.ID, call.ToolID, 0, ToolExecutionSucceeded, nil)
+			emitter.emitToolRequested(runID, step, stepID, call.ID, call.ToolID)
 
-			toolStart := a.clock.Now()
-			emitter.emitTool(runID, step, stepID, RunEventToolStarted, call.ID, call.ToolID, 0, ToolExecutionSucceeded, nil)
+			toolStart := emitter.emitToolStarted(runID, step, stepID, call.ID, call.ToolID)
 
 			result := a.executeToolCall(runCtx, runID, step, call, metadata)
-			toolDuration := a.clock.Now().Sub(toolStart)
-			emitter.emitTool(runID, step, stepID, RunEventToolFinished, call.ID, call.ToolID, toolDuration, result.State, result.Err)
+			emitter.emitToolFinished(runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {

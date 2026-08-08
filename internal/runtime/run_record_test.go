@@ -784,6 +784,140 @@ func TestAgentEventSequencesAreMonotonic(t *testing.T) {
 	}
 }
 
+func TestAgentEmitsRunStartedBeforeSetupFailures(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	model := newScriptedModel(textResponse("unused"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model"},
+		Model:      model,
+		Listener:   recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: "invalid", Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want validation failure")
+	}
+
+	events := recorder.Events()
+	if len(events) < 2 {
+		t.Fatalf("event count = %d, want at least 2", len(events))
+	}
+	if events[0].Type != RunEventStarted {
+		t.Fatalf("first event type = %q, want run_started", events[0].Type)
+	}
+	if events[len(events)-1].Type != RunEventFailed {
+		t.Fatalf("last event type = %q, want run_failed", events[len(events)-1].Type)
+	}
+}
+
+func TestAgentNoListenerDoesNotInvokeClock(t *testing.T) {
+	t.Parallel()
+
+	panicClock := &panicClock{}
+	model := newScriptedModel(textResponse("hello back"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "echo", Model: "fixture-model"},
+		Model:      model,
+		Clock:      panicClock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+}
+
+func TestAgentPreExecutionToolEventsHaveEmptyState(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	registry, handler := newAgentTestRegistry(t)
+	handler.execute = func(ctx context.Context, input json.RawMessage) (json.RawMessage, error) {
+		return append(json.RawMessage(nil), input...), nil
+	}
+
+	calls, err := NewModelToolCalls(
+		ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newScriptedModel(
+		scriptedResponse{response: ModelResponse{Message: Message{Role: RoleAssistant, ToolCalls: calls}, FinishReason: FinishReasonToolCalls}},
+		textResponse("done"),
+	)
+
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "weather", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+		Listener:   recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	events := recorder.Events()
+	for _, event := range events {
+		if event.Type == RunEventToolRequested || event.Type == RunEventToolStarted {
+			if event.ToolState != "" {
+				t.Fatalf("%s event has ToolState %q, want empty", event.Type, event.ToolState)
+			}
+		}
+		if event.Type == RunEventToolFinished {
+			if event.ToolState != ToolExecutionSucceeded {
+				t.Fatalf("tool_finished ToolState = %q, want succeeded", event.ToolState)
+			}
+		}
+	}
+}
+
+func TestNewFixedIDSourceCopiesInputSlices(t *testing.T) {
+	t.Parallel()
+
+	runIDs := []RunID{"run-a", "run-b"}
+	stepIDs := []StepID{"step-1", "step-2"}
+	source := NewFixedIDSource(runIDs, stepIDs)
+
+	runIDs[0] = "tampered"
+	stepIDs[0] = "tampered"
+
+	if got := source.NewRunID(); got != "run-a" {
+		t.Fatalf("first run ID = %q, want run-a", got)
+	}
+	if got := source.NewStepID(); got != "step-1" {
+		t.Fatalf("first step ID = %q, want step-1", got)
+	}
+}
+
+type panicClock struct{}
+
+func (panicClock) Now() time.Time {
+	panic("clock should not be called when listener is nil")
+}
+
 func TestAgentRunIsConcurrencySafeWithListener(t *testing.T) {
 	t.Parallel()
 
