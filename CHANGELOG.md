@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Durable conversation threads. `AgentConfig.Store` optionally binds an agent
+  to a `Store` so that conversation history survives across runs. When set
+  and `RunInput.ThreadID` is non-empty, the agent loads prior messages from
+  the thread, prepends them to the model request, and appends the new
+  transcript on success. Failed runs leave no messages, so the thread's
+  message sequence stays valid. When `Store` is nil or `ThreadID` is empty,
+  agent behavior is unchanged. The thread is auto-created on the first
+  successful run if it does not already exist.
+- Thread namespace and ownership fields. `ThreadRecord` carries optional
+  `Namespace` and `OwnerID` fields for multi-tenant and embedding
+  applications. Both default to empty strings and do not affect repository
+  behavior when unset. SQLite and PostgreSQL migrations add the columns
+  idempotently; the in-memory adapter handles them via struct copy.
 - Initial public contracts for agent-runtime primitives.
 - Replaceable JSON Schema Draft 2020-12 validation for tool inputs and outputs.
 - Deterministic model fixtures, assertions, streams, and provider contract tests

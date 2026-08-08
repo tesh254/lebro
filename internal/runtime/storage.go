@@ -33,9 +33,13 @@ type Page[T any] struct {
 }
 
 // ThreadRecord owns conversation metadata. Messages are stored separately so
-// adapters can append to long-lived threads efficiently.
+// adapters can append to long-lived threads efficiently. Namespace and OwnerID
+// scope threads for multi-tenant and embedding applications; both are optional
+// and empty values are valid for single-namespace use.
 type ThreadRecord struct {
 	ID        ThreadID        `json:"id"`
+	Namespace string          `json:"namespace,omitempty"`
+	OwnerID   string          `json:"owner_id,omitempty"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
