@@ -1,0 +1,46 @@
+public.go
+  s_fcdc5d36f0d932::t_d65b21dbe332e0 195-202
+  s_fcdc5d36f0d932::t_73e71d0a8f2902 120-129
+  s_fcdc5d36f0d932::t_baa2bac6be5175 6
+  s_fcdc5d36f0d932::t_f3b3cde0ce2945 72-77
+contracts_test.go
+  s_fcdc5d36f0d932::t_3687ae0e21c46b 114-160
+  s_fcdc5d36f0d932::t_a8baffa26c3295 7
+  s_fcdc5d36f0d932::t_2784069dbc2c6f 161
+internal/runtime/run_record_test.go
+  s_fcdc5d36f0d932::t_9a070ad51c3bd1 625
+  s_fcdc5d36f0d932::t_8ab2a06ea011f5 7-8
+  s_fcdc5d36f0d932::t_4d4c4df15da728 378-386
+  s_fcdc5d36f0d932::t_c2e80339f0869b 519
+CHANGELOG.md
+  s_fcdc5d36f0d932::t_f9a0a8b9852af6 25-31
+internal/runtime/agent.go
+  s_fcdc5d36f0d932::t_7341a764566614 258,266
+  s_fcdc5d36f0d932::t_06beda52560b94 249-251,260,282,289-290,302,305,319,339-340,342,346,353,355
+  s_fcdc5d36f0d932::t_8eb66de643b691 177-179,212-219,227-229
+  s_fcdc5d36f0d932::t_9652ce03a72d1e 155-164
+README.md
+  s_fcdc5d36f0d932::t_97fc9b1fa0528a 226-288
+internal/runtime/run_record.go
+  s_fcdc5d36f0d932::t_4d4c4df15da728 258
+  s_fcdc5d36f0d932::t_45574cad7bf4f9 175-257
+  s_fcdc5d36f0d932::t_5e97a6fb8a26a8 1-3,5-105,107-112,114-174,259-313
+  s_fcdc5d36f0d932::t_0d37ad79b27fff 106,113
+  s_fcdc5d36f0d932::t_097d54fa0c9631 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "41a13eb28420f1686438bd414b28a004749273ed",
+  "prompts": {},
+  "sessions": {
+    "s_fcdc5d36f0d932": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01e2058b8ffecSD2j0jtmw3Nj7",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
