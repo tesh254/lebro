@@ -56,3 +56,26 @@ All notable changes to this project are documented in this file.
   metadata. `NewToolStep` invokes a schema-checked `RegisteredTool` with the
   workflow value as arguments and returns validated output. Nested agent run
   events now carry parent workflow run and step correlation fields.
+- Token and event streaming with cancellation. `StreamingModel` extends the
+  provider-neutral `Model` interface with `Stream`, which returns a
+  `StreamReader` over ordered `StreamDelta` values (text, tool calls,
+  structured output, terminal finish reason, usage). `AsStreamingModel`
+  adapts a `Model` into a `StreamingModel` when the concrete value implements
+  `Stream`, returning nil otherwise so callers fall back to `Generate`.
+  `Agent.RunStream` runs the bounded agent loop against a `StreamingModel`
+  and returns a `StreamRun` handle: the caller drains `Deltas` (a
+  `<-chan StreamDelta`) in real time, then calls `Wait` (or `Drain`) for the
+  terminal `RunResult` and error. The caller must `defer` `StreamRun.Cancel`
+  so goroutine and channel resources are released even when the stream is
+  abandoned before completion; closing the consumer does not leak goroutines.
+  Cancellation propagates through the provider stream, tool execution, and the
+  loop itself: cancelling the context (or calling `StreamRun.Cancel`) stops
+  active work, closes the delta channel, and returns a result with status
+  `RunStatusCancelled` wrapping `ErrAgentCancelled`. A `RunEventDelta`
+  (`"model_delta"`) run event is emitted for each delta and flows through the
+  existing `RunListener` / `RunRecorder` infrastructure. Streaming and
+  non-streaming runs produce equivalent final records: when the configured
+  model does not implement `StreamingModel`, `RunStream` falls back to
+  `Generate` and emits a single delta per step. The OpenAI-compatible adapter
+  implements `StreamingModel` over Server-Sent Events, mapping text deltas,
+  usage, finish reasons, and error events into the neutral protocol.

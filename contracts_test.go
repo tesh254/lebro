@@ -3,20 +3,58 @@ package lebro
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"testing"
 	"time"
 )
 
 var (
-	_ Model    = contractModel{}
-	_ Tool     = contractTool{}
-	_ Workflow = contractWorkflow{}
+	_ Model          = contractModel{}
+	_ StreamingModel = contractStreamingModel{}
+	_ Tool           = contractTool{}
+	_ Workflow       = contractWorkflow{}
 )
 
 type contractModel struct{}
 
 func (contractModel) Generate(_ context.Context, request ModelRequest) (ModelResponse, error) {
 	return ModelResponse{Message: Message{Role: RoleAssistant, Content: request.Messages[0].Content}, FinishReason: FinishReasonStop}, nil
+}
+
+type contractStreamingModel struct{}
+
+func (contractStreamingModel) Generate(_ context.Context, request ModelRequest) (ModelResponse, error) {
+	return ModelResponse{Message: Message{Role: RoleAssistant, Content: request.Messages[0].Content}, FinishReason: FinishReasonStop}, nil
+}
+
+func (contractStreamingModel) Stream(ctx context.Context, request ModelRequest) (StreamReader, error) {
+	out := make(chan StreamDelta, 1)
+	closed := make(chan struct{})
+	go func() {
+		defer close(out)
+		select {
+		case out <- StreamDelta{Text: request.Messages[0].Content, FinishReason: FinishReasonStop}:
+		case <-ctx.Done():
+		case <-closed:
+		}
+	}()
+	return StreamReaderFunc{
+		NextFn: func() (StreamDelta, error) {
+			delta, ok := <-out
+			if !ok {
+				return StreamDelta{}, io.EOF
+			}
+			return delta, nil
+		},
+		CloseFn: func() error {
+			select {
+			case <-closed:
+			default:
+				close(closed)
+			}
+			return nil
+		},
+	}, nil
 }
 
 type contractTool struct{}
@@ -188,12 +226,72 @@ func TestMAD20LinearWorkflowPublicContract(t *testing.T) {
 	}
 }
 
+func TestMAD22StreamingPublicContracts(t *testing.T) {
+	t.Parallel()
+
+	if got := string(RunEventDelta); got != "model_delta" {
+		t.Fatalf("RunEventDelta = %q, want %q", got, "model_delta")
+	}
+
+	if (StreamDelta{FinishReason: FinishReasonStop}).IsTerminal() == false {
+		t.Fatal("terminal finish reason delta must report IsTerminal")
+	}
+	if (StreamDelta{Text: "x"}).IsTerminal() == true {
+		t.Fatal("non-terminal delta must not report IsTerminal")
+	}
+	if err := (StreamDelta{}).Validate(); err == nil {
+		t.Fatal("empty StreamDelta must fail Validate")
+	}
+	if err := (StreamDelta{Text: "ok"}).Validate(); err != nil {
+		t.Fatalf("text-only StreamDelta Validate error = %v", err)
+	}
+
+	streaming := AsStreamingModel(contractStreamingModel{})
+	if streaming == nil {
+		t.Fatal("AsStreamingModel(contractStreamingModel{}) = nil, want StreamingModel")
+	}
+	if got := AsStreamingModel(contractModel{}); got != nil {
+		t.Fatalf("AsStreamingModel(contractModel{}) = %v, want nil", got)
+	}
+
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "stream-contract", Model: "fixture"},
+		Model:      contractStreamingModel{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := agent.RunStream(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Metadata: map[string]string{"source": "contract"},
+	})
+	if err != nil {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	defer run.Cancel()
+
+	result, runErr := run.Drain()
+	if runErr != nil {
+		t.Fatalf("Drain() error = %v", runErr)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if result.Messages[len(result.Messages)-1].Content != "hello" {
+		t.Fatalf("final content = %q, want %q", result.Messages[len(result.Messages)-1].Content, "hello")
+	}
+	if result.Metadata["source"] != "contract" {
+		t.Fatalf("metadata = %#v", result.Metadata)
+	}
+}
+
 func TestMAD18RunRecordPublicContract(t *testing.T) {
 
 	eventTypes := map[RunEventType]string{
 		RunEventStarted:       "run_started",
 		RunEventModelStarted:  "model_started",
 		RunEventModelFinished: "model_finished",
+		RunEventDelta:         "model_delta",
 		RunEventToolRequested: "tool_requested",
 		RunEventToolStarted:   "tool_started",
 		RunEventToolFinished:  "tool_finished",

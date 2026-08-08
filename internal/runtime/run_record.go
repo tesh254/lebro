@@ -19,6 +19,10 @@ const (
 	// RunEventModelFinished is emitted after a model Generate call returns,
 	// carrying usage and finish reason.
 	RunEventModelFinished RunEventType = "model_finished"
+	// RunEventDelta is emitted for each text, tool-call, or structured-output
+	// delta produced by a streaming model call. Multiple deltas may be emitted
+	// between RunEventModelStarted and RunEventModelFinished for a single call.
+	RunEventDelta RunEventType = "model_delta"
 	// RunEventToolRequested is emitted when the model requests tool calls,
 	// once per individual tool call.
 	RunEventToolRequested RunEventType = "tool_requested"
@@ -76,6 +80,7 @@ type RunEvent struct {
 	ToolCallID   string
 	ToolID       ToolID
 	ToolState    ToolExecutionState
+	DeltaText    string
 	Status       RunStatus
 	Error        error
 }
@@ -256,6 +261,33 @@ func (e *runEmitter) emitModelStarted(runID RunID, step int, stepID StepID) time
 		Timestamp: ts,
 	})
 	return ts
+}
+
+func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta StreamDelta) {
+	if !e.enabled() {
+		return
+	}
+	toolCallID := ""
+	var toolID ToolID
+	if delta.ToolCall != nil {
+		toolCallID = delta.ToolCall.ID
+		toolID = delta.ToolCall.ToolID
+	}
+	e.seq++
+	e.dispatch(RunEvent{
+		Sequence:     e.seq,
+		Type:         RunEventDelta,
+		RunID:        runID,
+		StepID:       stepID,
+		Step:         step,
+		Timestamp:    e.clock.Now(),
+		DeltaText:    delta.Text,
+		ToolCallID:   toolCallID,
+		ToolID:       toolID,
+		FinishReason: delta.FinishReason,
+		Usage:        delta.Usage,
+		Error:        delta.Err,
+	})
 }
 
 func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, start time.Time, finishReason FinishReason, usage ModelUsage, err error) {

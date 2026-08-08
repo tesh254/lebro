@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -179,6 +180,7 @@ type Model struct {
 }
 
 var _ lebro.Model = (*Model)(nil)
+var _ lebro.StreamingModel = (*Model)(nil)
 
 // NewModel creates a model whose fixtures are consumed in the supplied order.
 func NewModel(fixtures ...Fixture) *Model {
@@ -249,10 +251,141 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	}
 }
 
-// Stream consumes one stream fixture and emits its chunks in FIFO order. This
-// test-only method lets streaming behavior be scripted before a public stream
-// protocol is introduced.
-func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (<-chan StreamEvent, error) {
+// Stream consumes one stream fixture and returns a lebro.StreamReader that
+// delivers ordered lebro.StreamDelta values. The reader honors context
+// cancellation: closing it unblocks the producing goroutine. When the model
+// only has a synchronous fixture, the response is emitted as a single terminal
+// delta so streaming and non-streaming runs produce equivalent output.
+func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.StreamReader, error) {
+	fixture, call, err := m.begin(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+
+	switch fixture.kind {
+	case FixtureFailure:
+		if fixture.err == nil {
+			err := fmt.Errorf("%w: failure error is nil", ErrInvalidFixture)
+			m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, err)
+			return nil, err
+		}
+		m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, fixture.err)
+		return nil, fixture.err
+	case FixtureCancellation:
+		if ctx.Done() == nil {
+			err := fmt.Errorf("%w: cancellation fixture requires a cancellable context", ErrInvalidFixture)
+			m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, err)
+			return nil, err
+		}
+		out := make(chan lebro.StreamDelta, 1)
+		closed := make(chan struct{})
+		go func() {
+			defer close(out)
+			select {
+			case <-ctx.Done():
+			case <-closed:
+			}
+			m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+		}()
+		return lebro.StreamReaderFunc{
+			NextFn: func() (lebro.StreamDelta, error) {
+				delta, ok := <-out
+				if !ok {
+					return lebro.StreamDelta{}, io.EOF
+				}
+				return delta, nil
+			},
+			CloseFn: func() error {
+				select {
+				case <-closed:
+				default:
+					close(closed)
+				}
+				return nil
+			},
+		}, nil
+	case FixtureStream:
+		out := make(chan lebro.StreamDelta, len(fixture.stream))
+		closed := make(chan struct{})
+		go m.emitPublicStream(ctx, call, fixture.stream, out, closed)
+		return lebro.StreamReaderFunc{
+			NextFn: func() (lebro.StreamDelta, error) {
+				delta, ok := <-out
+				if !ok {
+					return lebro.StreamDelta{}, io.EOF
+				}
+				if delta.Err != nil {
+					return delta, delta.Err
+				}
+				return delta, nil
+			},
+			CloseFn: func() error {
+				select {
+				case <-closed:
+				default:
+					close(closed)
+				}
+				return nil
+			},
+		}, nil
+	default:
+		err := fmt.Errorf("%w: %s cannot be used with Stream", ErrUnexpectedFixture, fixture.kind)
+		m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, err)
+		return nil, err
+	}
+}
+
+func (m *Model) emitPublicStream(ctx context.Context, call ModelCall, chunks []StreamChunk, out chan<- lebro.StreamDelta, closed chan struct{}) {
+	defer close(out)
+	for _, chunk := range chunks {
+		delta := m.publicStreamDelta(call.ID, chunk)
+		select {
+		case out <- delta:
+		case <-ctx.Done():
+			m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+			return
+		case <-closed:
+			m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+			return
+		}
+		if delta.Err != nil {
+			m.finish(call.ID, RunEventModelFailed, lebro.Message{}, nil, delta.Err)
+			return
+		}
+	}
+	m.finish(call.ID, RunEventModelCompleted, lebro.Message{}, nil, nil)
+}
+
+func (m *Model) publicStreamDelta(callID string, chunk StreamChunk) lebro.StreamDelta {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamSeq++
+	delta := lebro.StreamDelta{
+		Text: chunk.Text,
+		Err:  chunk.Err,
+	}
+	if chunk.StructuredOutput != nil {
+		delta.StructuredOutput = lebro.NewModelStructuredOutput(chunk.StructuredOutput)
+	}
+	if chunk.ToolCall != nil {
+		call := cloneToolCall(*chunk.ToolCall)
+		if call.ID == "" {
+			m.toolSeq++
+			call.ID = fmt.Sprintf("tool-call-%04d", m.toolSeq)
+		}
+		delta.ToolCall = &call
+	}
+	if chunk.Text == "" && chunk.ToolCall == nil && chunk.StructuredOutput == nil && chunk.Err == nil {
+		delta.FinishReason = lebro.FinishReasonStop
+	}
+	return delta
+}
+
+// StreamEvents consumes one stream fixture and emits its chunks in FIFO order
+// over a channel. This test-only method lets streaming behavior be scripted
+// before a public stream protocol is introduced; production code should use
+// Stream to obtain a lebro.StreamReader.
+func (m *Model) StreamEvents(ctx context.Context, request lebro.ModelRequest) (<-chan StreamEvent, error) {
 	fixture, call, err := m.begin(ctx, request)
 	if err != nil {
 		return nil, err
