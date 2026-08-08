@@ -63,9 +63,9 @@ func (s *AgentStep) Execute(ctx context.Context, input json.RawMessage) (json.Ra
 }
 
 func workflowAgentPrompt(input json.RawMessage) string {
-	var text string
-	if json.Unmarshal(input, &text) == nil {
-		return text
+	var text *string
+	if json.Unmarshal(input, &text) == nil && text != nil {
+		return *text
 	}
 	return string(input)
 }

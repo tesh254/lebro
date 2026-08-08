@@ -182,9 +182,68 @@ func TestAgentStepForwardsWorkflowThreadMetadataAndContext(t *testing.T) {
 	}
 }
 
+func TestAgentStepReturnsStructuredOutputWhenPresent(t *testing.T) {
+	stub := &recordingWorkflow{result: RunResult{
+		Status: RunStatusSucceeded,
+		Messages: []Message{{
+			Role:             RoleAssistant,
+			StructuredOutput: NewModelStructuredOutput(json.RawMessage(`{"answer":42}`)),
+		}},
+	}}
+	step, err := NewAgentStep(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := step.Execute(context.Background(), json.RawMessage(`"ask"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != `{"answer":42}` {
+		t.Fatalf("output = %s", output)
+	}
+}
+
+func TestAgentStepErrorsOnNonSucceededStatus(t *testing.T) {
+	stub := &recordingWorkflow{result: RunResult{Status: RunStatusFailed}}
+	step, err := NewAgentStep(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := step.Execute(context.Background(), json.RawMessage(`"ask"`)); err == nil {
+		t.Fatal("non-succeeded status error = nil")
+	}
+}
+
+func TestAgentStepErrorsWhenNoAssistantMessage(t *testing.T) {
+	stub := &recordingWorkflow{result: RunResult{Status: RunStatusSucceeded}}
+	step, err := NewAgentStep(stub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := step.Execute(context.Background(), json.RawMessage(`"ask"`)); err == nil {
+		t.Fatal("missing assistant message error = nil")
+	}
+}
+
+func TestAgentStepPromptHandlesNullInput(t *testing.T) {
+	if got := workflowAgentPrompt(json.RawMessage(`null`)); got != "null" {
+		t.Fatalf("null input prompt = %q", got)
+	}
+	if got := workflowAgentPrompt(json.RawMessage(`"hi"`)); got != "hi" {
+		t.Fatalf("string input prompt = %q", got)
+	}
+	if got := workflowAgentPrompt(json.RawMessage(`""`)); got != "" {
+		t.Fatalf("empty string input prompt = %q", got)
+	}
+	if got := workflowAgentPrompt(json.RawMessage(`{"task":"go"}`)); got != `{"task":"go"}` {
+		t.Fatalf("object input prompt = %q", got)
+	}
+}
+
 type recordingWorkflow struct {
-	ctx   context.Context
-	input RunInput
+	ctx    context.Context
+	input  RunInput
+	result RunResult
 }
 
 func (*recordingWorkflow) Definition() WorkflowDefinition { return WorkflowDefinition{ID: "recording"} }
@@ -192,5 +251,8 @@ func (*recordingWorkflow) Definition() WorkflowDefinition { return WorkflowDefin
 func (w *recordingWorkflow) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	w.ctx = ctx
 	w.input = input
-	return RunResult{Status: RunStatusSucceeded, Messages: []Message{{Role: RoleAssistant, Content: "done"}}}, nil
+	if w.result.Status == "" {
+		return RunResult{Status: RunStatusSucceeded, Messages: []Message{{Role: RoleAssistant, Content: "done"}}}, nil
+	}
+	return w.result, nil
 }
