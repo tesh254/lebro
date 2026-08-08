@@ -238,6 +238,7 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 	if !e.enabled() {
 		return
 	}
+	now := e.clock.Now()
 	e.seq++
 	e.listener.OnRunEvent(RunEvent{
 		Sequence:     e.seq,
@@ -245,8 +246,8 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 		RunID:        runID,
 		StepID:       stepID,
 		Step:         step,
-		Timestamp:    e.clock.Now(),
-		Duration:     e.clock.Now().Sub(start),
+		Timestamp:    now,
+		Duration:     now.Sub(start),
 		FinishReason: finishReason,
 		Usage:        usage,
 		Error:        err,
@@ -293,6 +294,7 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 	if !e.enabled() {
 		return
 	}
+	now := e.clock.Now()
 	e.seq++
 	e.listener.OnRunEvent(RunEvent{
 		Sequence:   e.seq,
@@ -300,8 +302,8 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 		RunID:      runID,
 		StepID:     stepID,
 		Step:       step,
-		Timestamp:  e.clock.Now(),
-		Duration:   e.clock.Now().Sub(start),
+		Timestamp:  now,
+		Duration:   now.Sub(start),
 		ToolCallID: toolCallID,
 		ToolID:     toolID,
 		ToolState:  toolState,
