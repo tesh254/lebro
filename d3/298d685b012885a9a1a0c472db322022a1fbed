@@ -1,0 +1,21 @@
+internal/testkit/model.go
+  s_3aa285e5638070::t_0c6a19b4cbc0ba 578
+  s_3aa285e5638070::t_f50378ab9db4ae 407
+  s_3aa285e5638070::t_9d8aee93a51f96 387-401
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d3298d685b012885a9a1a0c472db322022a1fbed",
+  "prompts": {},
+  "sessions": {
+    "s_3aa285e5638070": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01d758452ffeyAenxHgqVxR9l7",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
