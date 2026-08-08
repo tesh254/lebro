@@ -125,6 +125,11 @@ const postgresSchemaVersionQuery = `SELECT version FROM schema_migrations ORDER 
 // idempotent; a database already at the current version is a no-op. A
 // failure rolls the transaction back, leaving the database unchanged and
 // the error actionable (it names the failing migration).
+//
+// Concurrent Migrate calls from multiple processes are safe: a session-level
+// advisory lock serializes migration so only one process runs DDL at a time.
+// A process that acquires the lock after another has already migrated sees
+// the updated version and skips its own migrations.
 func (s *PostgresStore) Migrate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -136,7 +141,22 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 		return fmt.Errorf("lebro: postgres: ensure schema_migrations table: %w", postgresError(err))
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	// Acquire a session-level advisory lock on a dedicated connection so
+	// concurrent first-time migrations from multiple processes serialize.
+	// The lock is keyed to a fixed 64-bit integer unique to lebro migrations.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("lebro: postgres: acquire migration connection: %w", postgresError(err))
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", postgresAdvisoryLockKey); err != nil {
+		return fmt.Errorf("lebro: postgres: acquire migration lock: %w", postgresError(err))
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", postgresAdvisoryLockKey)
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("lebro: postgres: begin migration: %w", postgresError(err))
 	}
@@ -166,6 +186,11 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	}
 	return nil
 }
+
+// postgresAdvisoryLockKey is a fixed 64-bit key for the session-level
+// advisory lock that serializes concurrent migrations. The value is
+// arbitrary but must be stable across processes and builds.
+const postgresAdvisoryLockKey int64 = 0x6c6562726f000001
 
 // Transaction runs fn against repositories bound to one PostgreSQL
 // transaction at the READ COMMITTED isolation level. A non-nil fn error or a

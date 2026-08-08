@@ -226,7 +226,7 @@ func TestPostgresStoreMigrationFailuresLeaveDatabaseSafe(t *testing.T) {
 			t.Fatalf("schema version = %d after failed migration, want 0", version)
 		}
 		var hasRuns bool
-		rows, err := store.db.Query("SELECT to_regclass('workflow_runs')")
+		rows, err := store.db.QueryContext(ctx, "SELECT to_regclass('workflow_runs')")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -236,6 +236,9 @@ func TestPostgresStoreMigrationFailuresLeaveDatabaseSafe(t *testing.T) {
 				t.Fatal(err)
 			}
 			hasRuns = name != nil
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
 		}
 		_ = rows.Close()
 		if hasRuns {
