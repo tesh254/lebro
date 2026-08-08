@@ -22,3 +22,10 @@ All notable changes to this project are documented in this file.
   conversation in canonical order; enforces configurable maximum steps and
   deadlines; and returns typed failures for unknown tools, invalid arguments,
   tool failures, provider failures, step-limit exhaustion, and cancellation.
+- Deterministic run record for agent lifecycle events: run start/finish, model
+  request start/finish, tool-call requested, tool started/finished, and
+  terminal events (succeeded, failed, cancelled). Events carry stable run/step
+  IDs, monotonic sequence numbers, timestamps, durations, model usage, and
+  error summaries. A RunListener interface and RunRecorder collector capture
+  events without requiring an observability backend. Injectable Clock and
+  IDSource make event streams reproducible across runs with the same fixture.

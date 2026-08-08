@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 var (
@@ -107,6 +108,54 @@ func TestCanonicalRuntimeValues(t *testing.T) {
 		if string(status) != want {
 			t.Fatalf("RunStatus = %q, want %q", status, want)
 		}
+	}
+}
+
+func TestMAD18RunRecordPublicContract(t *testing.T) {
+	t.Parallel()
+
+	eventTypes := map[RunEventType]string{
+		RunEventStarted:       "run_started",
+		RunEventModelStarted:  "model_started",
+		RunEventModelFinished: "model_finished",
+		RunEventToolRequested: "tool_requested",
+		RunEventToolStarted:   "tool_started",
+		RunEventToolFinished:  "tool_finished",
+		RunEventSucceeded:     "run_succeeded",
+		RunEventFailed:        "run_failed",
+		RunEventCancelled:     "run_cancelled",
+	}
+	for eventType, want := range eventTypes {
+		if string(eventType) != want {
+			t.Fatalf("RunEventType = %q, want %q", eventType, want)
+		}
+	}
+	if !RunEventSucceeded.IsTerminal() || !RunEventFailed.IsTerminal() || !RunEventCancelled.IsTerminal() {
+		t.Fatal("terminal event types must report IsTerminal() = true")
+	}
+	if RunEventStarted.IsTerminal() {
+		t.Fatal("non-terminal event type reported IsTerminal() = true")
+	}
+
+	recorder := NewRunRecorder()
+	if recorder.EventCount() != 0 {
+		t.Fatalf("new recorder count = %d, want 0", recorder.EventCount())
+	}
+	if _, ok := recorder.TerminalEvent(); ok {
+		t.Fatal("empty recorder should have no terminal event")
+	}
+
+	clock := NewFixedClock(time.Unix(0, 0))
+	if clock.Now() != time.Unix(0, 0) {
+		t.Fatalf("fixed clock = %v, want epoch", clock.Now())
+	}
+
+	ids := NewFixedIDSource([]RunID{"run-1"}, []StepID{"step-1"})
+	if ids.NewRunID() != "run-1" {
+		t.Fatalf("fixed run ID = %q", ids.NewRunID())
+	}
+	if ids.NewStepID() != "step-1" {
+		t.Fatalf("fixed step ID = %q", ids.NewStepID())
 	}
 }
 

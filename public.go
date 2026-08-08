@@ -3,6 +3,7 @@ package lebro
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/tesh254/lebro/internal/runtime"
 )
@@ -68,6 +69,12 @@ type (
 	ThreadStore                = runtime.ThreadStore
 	WorkflowRunStore           = runtime.WorkflowRunStore
 	MemoryStore                = runtime.MemoryStore
+	RunEvent                   = runtime.RunEvent
+	RunEventType               = runtime.RunEventType
+	RunListener                = runtime.RunListener
+	RunRecorder                = runtime.RunRecorder
+	Clock                      = runtime.Clock
+	IDSource                   = runtime.IDSource
 )
 
 const (
@@ -109,6 +116,16 @@ const (
 	AgentErrorProviderFailure      = runtime.AgentErrorProviderFailure
 	AgentErrorStepLimitExhausted   = runtime.AgentErrorStepLimitExhausted
 	AgentErrorCancelled            = runtime.AgentErrorCancelled
+
+	RunEventStarted       = runtime.RunEventStarted
+	RunEventModelStarted  = runtime.RunEventModelStarted
+	RunEventModelFinished = runtime.RunEventModelFinished
+	RunEventToolRequested = runtime.RunEventToolRequested
+	RunEventToolStarted   = runtime.RunEventToolStarted
+	RunEventToolFinished  = runtime.RunEventToolFinished
+	RunEventSucceeded     = runtime.RunEventSucceeded
+	RunEventFailed        = runtime.RunEventFailed
+	RunEventCancelled     = runtime.RunEventCancelled
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 
@@ -174,4 +191,12 @@ func NewMemoryStore() *MemoryStore { return runtime.NewMemoryStore() }
 
 func NewAgent(config AgentConfig) (*Agent, error) {
 	return runtime.NewAgent(config)
+}
+
+func NewRunRecorder() *RunRecorder { return runtime.NewRunRecorder() }
+
+func NewFixedClock(t time.Time) Clock { return runtime.NewFixedClock(t) }
+
+func NewFixedIDSource(runIDs []RunID, stepIDs []StepID) IDSource {
+	return runtime.NewFixedIDSource(runIDs, stepIDs)
 }
