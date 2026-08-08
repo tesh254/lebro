@@ -183,6 +183,12 @@ type AgentConfig struct {
 	// sequential source is used. Inject a fixed source for deterministic
 	// tests.
 	IDSource IDSource
+	// Store optionally binds agent runs to a durable thread. When non-nil and
+	// RunInput.ThreadID is set, the agent loads prior messages from the thread
+	// before the run and appends the new transcript on success. Failed runs
+	// leave no messages, so the thread's message sequence stays valid. When
+	// nil, agent behavior is unchanged.
+	Store Store
 }
 
 // Agent repeatedly asks a model, executes requested tools, and feeds results
@@ -201,6 +207,7 @@ type Agent struct {
 	listener       RunListener
 	clock          Clock
 	idSource       IDSource
+	store          Store
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -277,6 +284,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		listener:       config.Listener,
 		clock:          clock,
 		idSource:       idSource,
+		store:          config.Store,
 	}, nil
 }
 
@@ -317,6 +325,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	metadata := cloneMetadata(input.Metadata)
 
 	emitter.emit(runID, 0, "", RunEventStarted)
+
+	loadedCount, err := a.loadPriorMessages(ctx, &input)
+	if err != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return a.fail(runID, input, 0, err)
+	}
 
 	transcript, err := a.buildInitialTranscript(input)
 	if err != nil {
@@ -388,12 +402,16 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
 			}
 			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
-			return RunResult{
+			result := RunResult{
 				ID:       runID,
 				Status:   RunStatusSucceeded,
 				Messages: transcript,
 				Metadata: metadata,
-			}, nil
+			}
+			if persistErr := a.persistNewMessages(ctx, input.ThreadID, runID, transcript, loadedCount); persistErr != nil {
+				return result, persistErr
+			}
+			return result, nil
 		}
 
 		toolCalls := response.Message.ToolCalls.Values()
@@ -521,6 +539,13 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	runID := a.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
 
+	loadedCount, err := a.loadPriorMessages(ctx, &input)
+	if err != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return nil, err
+	}
+
 	transcript, err := a.buildInitialTranscript(input)
 	if err != nil {
 		cancel()
@@ -570,6 +595,8 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		deltas:          deltas,
 		done:            done,
 		finished:        finished,
+		threadID:        input.ThreadID,
+		loadedCount:     loadedCount,
 	})
 
 	return run, nil
@@ -595,6 +622,8 @@ type streamRunParams struct {
 	deltas          chan<- StreamDelta
 	done            chan<- streamOutcome
 	finished        chan<- struct{}
+	threadID        ThreadID
+	loadedCount     int
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -666,7 +695,9 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 				return
 			}
 			p.emitter.terminal(p.runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
-			p.done <- streamOutcome{result: RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata}, err: nil}
+			result := RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata}
+			persistErr := a.persistNewMessages(p.ctx, p.threadID, p.runID, transcript, p.loadedCount)
+			p.done <- streamOutcome{result: result, err: persistErr}
 			return
 		}
 
@@ -1075,4 +1106,75 @@ func cloneToolDefinitions(definitions []ToolDefinition) []ToolDefinition {
 		cloned[i] = cloneToolDefinition(definition)
 	}
 	return cloned
+}
+
+// loadPriorMessages fetches the canonical message history for input.ThreadID
+// from the store and prepends it to input.Messages. When the store is nil or
+// ThreadID is empty, no persistence is configured and the input is unchanged.
+// A missing thread (ErrNotFound) is treated as an empty history so the first
+// run against a new thread starts cleanly.
+func (a *Agent) loadPriorMessages(ctx context.Context, input *RunInput) (int, error) {
+	if a.store == nil || input.ThreadID == "" {
+		return 0, nil
+	}
+	page, err := a.store.Messages().ListMessages(ctx, input.ThreadID, PageRequest{Limit: int(^uint(0) >> 1)})
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("lebro: load thread messages: %w", err)
+	}
+	if len(page.Records) == 0 {
+		return 0, nil
+	}
+	prior := make([]Message, 0, len(page.Records))
+	for _, record := range page.Records {
+		prior = append(prior, cloneMessage(record.Message))
+	}
+	input.Messages = append(prior, input.Messages...)
+	return len(prior), nil
+}
+
+// persistNewMessages appends the new messages produced during a successful run
+// to the thread. The system message and prior loaded messages are excluded so
+// only caller-supplied and loop-produced messages are stored. When the store is
+// nil or threadID is empty, no persistence is configured and the method is a
+// no-op. The thread is created if it does not already exist so the first run
+// against a new thread ID succeeds without a separate CreateThread call.
+func (a *Agent) persistNewMessages(ctx context.Context, threadID ThreadID, runID RunID, transcript []Message, loadedCount int) error {
+	if a.store == nil || threadID == "" {
+		return nil
+	}
+	systemOffset := 0
+	if a.definition.Instructions != "" {
+		systemOffset = 1
+	}
+	start := systemOffset + loadedCount
+	if start >= len(transcript) {
+		return nil
+	}
+	now := a.clock.Now()
+	records := make([]MessageRecord, 0, len(transcript)-start)
+	for i, message := range transcript[start:] {
+		records = append(records, MessageRecord{
+			ID:        fmt.Sprintf("%s-msg-%d", runID, i+1),
+			ThreadID:  threadID,
+			Message:   cloneMessage(message),
+			CreatedAt: now,
+		})
+	}
+	return a.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
+			if err := repos.Threads().CreateThread(ctx, ThreadRecord{
+				ID:        threadID,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}); err != nil {
+				return fmt.Errorf("lebro: create thread for persist: %w", err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("lebro: check thread for persist: %w", err)
+		}
+		return repos.Messages().AppendMessages(ctx, records)
+	})
 }
