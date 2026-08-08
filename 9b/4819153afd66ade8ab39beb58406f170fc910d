@@ -1,0 +1,54 @@
+internal/runtime/agent_test.go
+  s_9bf27f6d5b4461::t_a0136dc668b641 973-974,976,983-984,986,1016-1017,1019,1062-1063,1065,1131-1133,1141-1143,1145,1181-1182,1184,1308-1309
+  s_9bf27f6d5b4461::t_7dced9a4a575ef 1306-1307,1310-1316
+  s_9bf27f6d5b4461::t_ae408f270be6d8 962-972,975,977-982,985,987-1015,1018,1020-1061,1064,1066-1130,1134-1140,1144,1146-1180,1183,1185-1244
+public.go
+  s_9bf27f6d5b4461::t_1da8ce070aaeca 101-104
+  s_9bf27f6d5b4461::t_775b3cb71caf12 113-120
+  s_9bf27f6d5b4461::t_79e9391f29cb77 163-170
+internal/runtime/tool.go
+  s_9bf27f6d5b4461::t_52fcff9169332c 302-310
+examples/README.md
+  s_9bf27f6d5b4461::t_7a75983e78ca30 50-57
+internal/runtime/agent.go
+  s_9bf27f6d5b4461::t_ba0966117d2192 218-239
+  s_9bf27f6d5b4461::t_286fe008f2b498 134-135
+  s_9bf27f6d5b4461::t_2096658f862c16 349
+  s_9bf27f6d5b4461::t_c525f2f38d7333 265-267,269-276
+  s_9bf27f6d5b4461::t_9f7232a468dea9 38-41
+  s_9bf27f6d5b4461::t_48589e247d70cc 330-335
+  s_9bf27f6d5b4461::t_b0ced96c7d2410 375-379
+  s_9bf27f6d5b4461::t_69dcbc9afad697 64-66
+  s_9bf27f6d5b4461::t_a6bae416a94422 167-175
+  s_9bf27f6d5b4461::t_1235c8b33c6dab 240
+  s_9bf27f6d5b4461::t_7b4b90ad6b6272 346-348
+  s_9bf27f6d5b4461::t_344d0c6829731c 461-500
+  s_9bf27f6d5b4461::t_04a4ac24cc4248 268
+  s_9bf27f6d5b4461::t_99eeb8bb0cff47 189-200
+internal/runtime/schema.go
+  s_9bf27f6d5b4461::t_4c50f8a4dded73 33-35
+README.md
+  s_9bf27f6d5b4461::t_069b5064368c34 227-271
+  s_9bf27f6d5b4461::t_857c2d50fc523c 215
+internal/runtime/types.go
+  s_9bf27f6d5b4461::t_91fe614356fa60 84-87
+  s_9bf27f6d5b4461::t_71f49164581d0f 110-136
+CHANGELOG.md
+  s_9bf27f6d5b4461::t_7f76d8291f6c8e 25-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9b4819153afd66ade8ab39beb58406f170fc910d",
+  "prompts": {},
+  "sessions": {
+    "s_9bf27f6d5b4461": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01df49b2fffezVN7aAYKl6Jrpn",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
