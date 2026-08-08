@@ -54,6 +54,17 @@ type (
 	ModelError                 = runtime.ModelError
 	WorkflowDefinition         = runtime.WorkflowDefinition
 	Workflow                   = runtime.Workflow
+	StepDefinition             = runtime.StepDefinition
+	Step                       = runtime.Step
+	StepHandler                = runtime.StepHandler
+	StepHandlerFunc            = runtime.StepHandlerFunc
+	LinearWorkflowConfig       = runtime.LinearWorkflowConfig
+	LinearWorkflow             = runtime.LinearWorkflow
+	WorkflowRunInput           = runtime.WorkflowRunInput
+	WorkflowRunResult          = runtime.WorkflowRunResult
+	WorkflowError              = runtime.WorkflowError
+	WorkflowErrorKind          = runtime.WorkflowErrorKind
+	StepPanicError             = runtime.StepPanicError
 	PageRequest                = runtime.PageRequest
 	Page[T any]                = runtime.Page[T]
 	ThreadRecord               = runtime.ThreadRecord
@@ -101,6 +112,8 @@ const (
 	ValidationTargetToolInput        = runtime.ValidationTargetToolInput
 	ValidationTargetToolOutput       = runtime.ValidationTargetToolOutput
 	ValidationTargetStructuredOutput = runtime.ValidationTargetStructuredOutput
+	ValidationTargetStepInput        = runtime.ValidationTargetStepInput
+	ValidationTargetStepOutput       = runtime.ValidationTargetStepOutput
 	JSONSchemaDraft202012            = runtime.JSONSchemaDraft202012
 
 	FinishReasonStop        = runtime.FinishReasonStop
@@ -119,12 +132,20 @@ const (
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 
+	WorkflowErrorInvalidStepInput  = runtime.WorkflowErrorInvalidStepInput
+	WorkflowErrorInvalidStepOutput = runtime.WorkflowErrorInvalidStepOutput
+	WorkflowErrorStepFailed        = runtime.WorkflowErrorStepFailed
+	WorkflowErrorStepPanicked      = runtime.WorkflowErrorStepPanicked
+	WorkflowErrorCancelled         = runtime.WorkflowErrorCancelled
+
 	RunEventStarted       = runtime.RunEventStarted
 	RunEventModelStarted  = runtime.RunEventModelStarted
 	RunEventModelFinished = runtime.RunEventModelFinished
 	RunEventToolRequested = runtime.RunEventToolRequested
 	RunEventToolStarted   = runtime.RunEventToolStarted
 	RunEventToolFinished  = runtime.RunEventToolFinished
+	RunEventStepStarted   = runtime.RunEventStepStarted
+	RunEventStepFinished  = runtime.RunEventStepFinished
 	RunEventSucceeded     = runtime.RunEventSucceeded
 	RunEventFailed        = runtime.RunEventFailed
 	RunEventCancelled     = runtime.RunEventCancelled
@@ -170,6 +191,12 @@ var (
 	ErrAgentStepLimitExhausted      = runtime.ErrAgentStepLimitExhausted
 	ErrAgentCancelled               = runtime.ErrAgentCancelled
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
+
+	ErrWorkflowInvalidStepInput  = runtime.ErrWorkflowInvalidStepInput
+	ErrWorkflowInvalidStepOutput = runtime.ErrWorkflowInvalidStepOutput
+	ErrWorkflowStepFailure       = runtime.ErrWorkflowStepFailure
+	ErrWorkflowStepPanicked      = runtime.ErrWorkflowStepPanicked
+	ErrWorkflowCancelled         = runtime.ErrWorkflowCancelled
 )
 
 func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {
@@ -196,6 +223,10 @@ func NewMemoryStore() *MemoryStore { return runtime.NewMemoryStore() }
 
 func NewAgent(config AgentConfig) (*Agent, error) {
 	return runtime.NewAgent(config)
+}
+
+func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
+	return runtime.NewLinearWorkflow(config)
 }
 
 func NewRunRecorder() *RunRecorder { return runtime.NewRunRecorder() }

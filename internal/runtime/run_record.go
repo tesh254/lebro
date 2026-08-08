@@ -26,6 +26,12 @@ const (
 	// RunEventToolFinished is emitted after a tool handler returns, carrying
 	// the execution state.
 	RunEventToolFinished RunEventType = "tool_finished"
+	// RunEventStepStarted is emitted before a workflow step handler is invoked.
+	RunEventStepStarted RunEventType = "step_started"
+	// RunEventStepFinished is emitted after a workflow step completes, whether
+	// the step succeeded, failed, or was rejected by input validation before the
+	// handler ran. A non-nil Error distinguishes failures from success.
+	RunEventStepFinished RunEventType = "step_finished"
 	// RunEventSucceeded is the terminal event for a successful run.
 	RunEventSucceeded RunEventType = "run_succeeded"
 	// RunEventFailed is the terminal event for a failed run.
@@ -44,12 +50,13 @@ func (t RunEventType) IsTerminal() bool {
 	}
 }
 
-// RunEvent records one ordered lifecycle event during an agent run. The
-// Sequence field is 1-indexed and monotonic within a single run. Step is the
-// 1-indexed model-call step (0 for run-level events). Duration is the elapsed
-// time since the paired start event; it is zero for events without a paired
-// start. Error is non-nil for events that report a failure or cancellation,
-// including non-terminal model and tool failures as well as terminal events.
+// RunEvent records one ordered lifecycle event during an agent or workflow
+// run. The Sequence field is 1-indexed and monotonic within a single run. Step
+// is the 1-indexed step within the run (0 for run-level events). Duration is
+// the elapsed time since the paired start event; it is zero for events without
+// a paired start. Error is non-nil for events that report a failure or
+// cancellation, including non-terminal model and tool failures as well as
+// terminal events.
 type RunEvent struct {
 	Sequence     int
 	Type         RunEventType
@@ -308,6 +315,41 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 		ToolID:     toolID,
 		ToolState:  toolState,
 		Error:      err,
+	})
+}
+
+func (e *runEmitter) emitStepStarted(runID RunID, step int, stepID StepID) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventStepStarted,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: ts,
+	})
+	return ts
+}
+
+func (e *runEmitter) emitStepFinished(runID RunID, step int, stepID StepID, start time.Time, err error) {
+	if !e.enabled() {
+		return
+	}
+	now := e.clock.Now()
+	e.seq++
+	e.listener.OnRunEvent(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventStepFinished,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: now,
+		Duration:  now.Sub(start),
+		Error:     err,
 	})
 }
 

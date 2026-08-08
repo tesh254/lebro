@@ -33,7 +33,20 @@ All notable changes to this project are documented in this file.
 - Deterministic run record for agent lifecycle events: run start/finish, model
   request start/finish, tool-call requested, tool started/finished, and
   terminal events (succeeded, failed, cancelled). Events carry stable run/step
-  IDs, monotonic sequence numbers, timestamps, durations, model usage, and
-  error summaries. A RunListener interface and RunRecorder collector capture
+  IDs, monotonic sequence numbers, timestamps, durations, model usage, and error
+  summaries. A RunListener interface and RunRecorder collector capture
   events without requiring an observability backend. Injectable Clock and
   IDSource make event streams reproducible across runs with the same fixture.
+- Typed linear workflow execution. `LinearWorkflow` composes ordered, named
+  steps (`Step`) whose handlers implement `StepHandler` (or `StepHandlerFunc`
+  for ordinary Go functions). Each step declares optional JSON Schemas for its
+  input and output; the executor compiles them once and validates every
+  handoff: a step's input is validated against its `InputSchema` before the
+  handler runs, and the handler's output is validated against its
+  `OutputSchema` before passing it to the next step. A failed step stops the
+  workflow and the returned `*WorkflowError` identifies the failing step by
+  1-indexed position and declared ID. Workflow and step lifecycle records
+  (`step_started`, `step_finished`) flow through the existing `RunListener` /
+  `RunRecorder` event model, ordered and correlated to one run ID. `WorkflowRunInput`
+  and `WorkflowRunResult` carry raw JSON input and output; `DecodeOutput`
+  unmarshals the final step result into a caller-supplied value.

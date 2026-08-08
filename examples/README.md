@@ -55,5 +55,12 @@ network or API key required):
 go run ./examples/structured-output
 ```
 
+Run the typed linear-workflow example (two-step workflow with schema-backed
+handoffs; no network or API key required):
+
+```sh
+go run ./examples/workflow-linear
+```
+
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.

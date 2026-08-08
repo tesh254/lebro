@@ -24,6 +24,7 @@ func TestRunEventTypeIsTerminal(t *testing.T) {
 	nonTerminal := []RunEventType{
 		RunEventStarted, RunEventModelStarted, RunEventModelFinished,
 		RunEventToolRequested, RunEventToolStarted, RunEventToolFinished,
+		RunEventStepStarted, RunEventStepFinished,
 	}
 	for _, eventType := range nonTerminal {
 		if eventType.IsTerminal() {

@@ -111,8 +111,84 @@ func TestCanonicalRuntimeValues(t *testing.T) {
 	}
 }
 
-func TestMAD18RunRecordPublicContract(t *testing.T) {
+func TestMAD20LinearWorkflowPublicContract(t *testing.T) {
 	t.Parallel()
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "contract-wf", Name: "Contract"},
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "double"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.Definition().ID != "contract-wf" {
+		t.Fatalf("Definition() = %#v", wf.Definition())
+	}
+
+	result, err := wf.Run(context.Background(), WorkflowRunInput{
+		Input:    json.RawMessage(`{"v":1}`),
+		Metadata: map[string]string{"source": "test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if string(result.Output) != `{"v":1}` {
+		t.Fatalf("output = %s", result.Output)
+	}
+	if result.Metadata["source"] != "test" {
+		t.Fatalf("metadata = %#v", result.Metadata)
+	}
+
+	var decoded struct {
+		V int `json:"v"`
+	}
+	if err := result.DecodeOutput(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.V != 1 {
+		t.Fatalf("decoded = %d, want 1", decoded.V)
+	}
+
+	kinds := map[WorkflowErrorKind]string{
+		WorkflowErrorInvalidStepInput:  "invalid_step_input",
+		WorkflowErrorInvalidStepOutput: "invalid_step_output",
+		WorkflowErrorStepFailed:        "step_failed",
+		WorkflowErrorStepPanicked:      "step_panicked",
+		WorkflowErrorCancelled:         "cancelled",
+	}
+	for kind, want := range kinds {
+		if string(kind) != want {
+			t.Fatalf("WorkflowErrorKind = %q, want %q", kind, want)
+		}
+	}
+
+	sentinels := []error{
+		ErrWorkflowInvalidStepInput, ErrWorkflowInvalidStepOutput,
+		ErrWorkflowStepFailure, ErrWorkflowStepPanicked, ErrWorkflowCancelled,
+	}
+	for _, sentinel := range sentinels {
+		if sentinel == nil {
+			t.Fatalf("sentinel error is nil: %v", sentinel)
+		}
+	}
+
+	targets := map[ValidationTarget]string{
+		ValidationTargetStepInput:  "step_input",
+		ValidationTargetStepOutput: "step_output",
+	}
+	for target, want := range targets {
+		if string(target) != want {
+			t.Fatalf("ValidationTarget = %q, want %q", target, want)
+		}
+	}
+}
+
+func TestMAD18RunRecordPublicContract(t *testing.T) {
 
 	eventTypes := map[RunEventType]string{
 		RunEventStarted:       "run_started",
@@ -121,6 +197,8 @@ func TestMAD18RunRecordPublicContract(t *testing.T) {
 		RunEventToolRequested: "tool_requested",
 		RunEventToolStarted:   "tool_started",
 		RunEventToolFinished:  "tool_finished",
+		RunEventStepStarted:   "step_started",
+		RunEventStepFinished:  "step_finished",
 		RunEventSucceeded:     "run_succeeded",
 		RunEventFailed:        "run_failed",
 		RunEventCancelled:     "run_cancelled",

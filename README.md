@@ -332,6 +332,85 @@ agent, _ := lebro.NewAgent(lebro.AgentConfig{
 | `RunEventFailed` | Terminal: run failed |
 | `RunEventCancelled` | Terminal: run was cancelled |
 
+## Typed linear workflow execution
+
+`lebro.NewLinearWorkflow` composes ordered, named steps whose handlers are
+ordinary Go functions. Each step may declare optional JSON Schemas for its
+input and output; the executor compiles them once and validates every handoff
+so a step only runs when its input matches the previous step's validated
+output.
+
+```go
+wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+    Definition:     lebro.WorkflowDefinition{ID: "double-and-add", Name: "Double and Add One"},
+    SchemaCompiler: lebrojsonschema.NewCompiler(),
+    Steps: []lebro.Step{
+        {
+            Definition: lebro.StepDefinition{
+                ID:           "double",
+                InputSchema:  json.RawMessage(`{"type":"integer"}`),
+                OutputSchema: json.RawMessage(`{"type":"integer"}`),
+            },
+            Handler: lebro.StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+                var n int
+                if err := json.Unmarshal(input, &n); err != nil {
+                    return nil, err
+                }
+                return json.Marshal(n * 2)
+            }),
+        },
+        {
+            Definition: lebro.StepDefinition{
+                ID:           "add-one",
+                InputSchema:  json.RawMessage(`{"type":"integer"}`),
+                OutputSchema: json.RawMessage(`{"type":"integer"}`),
+            },
+            Handler: lebro.StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+                var n int
+                if err := json.Unmarshal(input, &n); err != nil {
+                    return nil, err
+                }
+                return json.Marshal(n + 1)
+            }),
+        },
+    },
+})
+
+result, err := wf.Run(context.Background(), lebro.WorkflowRunInput{
+    Input: json.RawMessage(`5`),
+})
+
+var final int
+if err := result.DecodeOutput(&final); err != nil {
+    panic(err) // final == 11
+}
+```
+
+A failed step stops the workflow immediately and the returned
+`*lebro.WorkflowError` identifies the failing step by its 1-indexed position and
+declared ID. `errors.Is` works against the `lebro.ErrWorkflow*` sentinels:
+
+| Kind | Cause |
+|------|-------|
+| `WorkflowErrorInvalidStepInput` | Step input schema rejected the handoff from the previous step |
+| `WorkflowErrorInvalidStepOutput` | Step output schema rejected a handler result |
+| `WorkflowErrorStepFailed` | Handler returned an error |
+| `WorkflowErrorStepPanicked` | Handler panicked during invocation |
+| `WorkflowErrorCancelled` | Run context cancelled before completion |
+
+When a `RunListener` is configured, the executor emits ordered lifecycle events
+through the same run-event model as the agent loop: `run_started`, per-step
+`step_started` / `step_finished`, and a terminal `run_succeeded` /
+`run_failed` / `run_cancelled`. Events carry stable run IDs, monotonic sequence
+numbers, and step identifiers, so the full execution is inspectable without an
+observability backend. When the listener is nil, workflow behavior is unchanged.
+
+Run the linear-workflow example (no network or API key required):
+
+```sh
+go run ./examples/workflow-linear
+```
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per
