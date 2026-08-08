@@ -384,21 +384,27 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 	}
 }
 
+func (m *Model) waitDelay(ctx context.Context, closed chan struct{}, d time.Duration, callID string) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		m.finish(callID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+		return false
+	case <-closed:
+		m.finish(callID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+		return false
+	}
+}
+
 func (m *Model) emitPublicStream(ctx context.Context, call ModelCall, chunks []StreamChunk, out chan<- lebro.StreamDelta, closed chan struct{}) {
 	defer close(out)
 	hasToolCall := false
 	for _, chunk := range chunks {
 		if chunk.Delay > 0 {
-			timer := time.NewTimer(chunk.Delay)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-				m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
-				return
-			case <-closed:
-				timer.Stop()
-				m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+			if !m.waitDelay(ctx, closed, chunk.Delay, call.ID) {
 				return
 			}
 		}
@@ -569,12 +575,7 @@ func (m *Model) emitStream(ctx context.Context, call ModelCall, chunks []StreamC
 	defer close(out)
 	for _, chunk := range chunks {
 		if chunk.Delay > 0 {
-			timer := time.NewTimer(chunk.Delay)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-				m.finish(call.ID, RunEventModelCancelled, lebro.Message{}, nil, ctx.Err())
+			if !m.waitDelay(ctx, nil, chunk.Delay, call.ID) {
 				return
 			}
 		}
