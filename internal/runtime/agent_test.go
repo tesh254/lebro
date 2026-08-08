@@ -1083,6 +1083,51 @@ func TestAgentStructuredOutputMissing(t *testing.T) {
 	}
 }
 
+func TestAgentStructuredOutputMalformedJSON(t *testing.T) {
+	t.Parallel()
+
+	agent, err := NewAgent(AgentConfig{
+		Definition:     AgentDefinition{ID: "weather", Model: "fixture-model"},
+		Model:          newScriptedModel(structuredResponse(json.RawMessage(`{`))),
+		SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+		OutputSchema:   &ModelOutputSchema{Name: "weather_result", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "weather?"}},
+	})
+	if !errors.Is(err, ErrAgentInvalidStructuredOutput) {
+		t.Fatalf("error = %v, want ErrAgentInvalidStructuredOutput", err)
+	}
+	var agentErr *AgentError
+	if !errors.As(err, &agentErr) || agentErr.Kind != AgentErrorInvalidStructuredOutput {
+		t.Fatalf("error = %v, want AgentErrorInvalidStructuredOutput", err)
+	}
+	if !strings.Contains(err.Error(), "structured output must be valid JSON") {
+		t.Fatalf("error = %v, want valid JSON message", err)
+	}
+}
+
+func TestRunResultStructuredOutputReturnsFinalAssistantOnly(t *testing.T) {
+	t.Parallel()
+
+	earlier := Message{Role: RoleAssistant, StructuredOutput: NewModelStructuredOutput(json.RawMessage(`{"earlier":true}`))}
+	final := Message{Role: RoleAssistant, Content: "no structured payload here"}
+	result := RunResult{Messages: []Message{{Role: RoleUser, Content: "hi"}, earlier, {Role: RoleTool, ToolCallID: "call-1", Content: "{}"}, final}}
+	if got := result.StructuredOutput(); got != "" {
+		t.Fatalf("StructuredOutput() = %q, want empty (final assistant has no payload)", got)
+	}
+
+	finalWithPayload := Message{Role: RoleAssistant, StructuredOutput: NewModelStructuredOutput(json.RawMessage(`{"final":true}`))}
+	result2 := RunResult{Messages: []Message{earlier, finalWithPayload}}
+	if got := string(result2.StructuredOutput().Raw()); got != `{"final":true}` {
+		t.Fatalf("StructuredOutput() = %s, want final payload", got)
+	}
+}
+
 func TestAgentStructuredOutputSchemaMismatch(t *testing.T) {
 	t.Parallel()
 

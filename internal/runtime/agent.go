@@ -361,6 +361,13 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
 		}
 		if err := response.Validate(); err != nil {
+			if compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
+				response.Message.StructuredOutput != "" && !json.Valid(response.Message.StructuredOutput.Raw()) {
+				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
+				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
+				return a.failWithMessages(runID, metadata, step, transcript, structuredErr)
+			}
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, failure)

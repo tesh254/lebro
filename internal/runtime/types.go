@@ -109,12 +109,13 @@ type RunResult struct {
 }
 
 // StructuredOutput returns the structured JSON payload of the final assistant
-// message in the transcript. The value is empty when the run produced no
-// structured output. When the run was driven by an agent with an output schema,
-// the returned value has already passed local schema validation.
+// message in the transcript. The value is empty when the final assistant
+// message produced no structured output. When the run was driven by an agent
+// with an output schema, the returned value has already passed local schema
+// validation.
 func (r RunResult) StructuredOutput() ModelStructuredOutput {
 	for i := len(r.Messages) - 1; i >= 0; i-- {
-		if r.Messages[i].Role == RoleAssistant && r.Messages[i].StructuredOutput != "" {
+		if r.Messages[i].Role == RoleAssistant {
 			return r.Messages[i].StructuredOutput
 		}
 	}
