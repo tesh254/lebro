@@ -362,7 +362,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 		if err := response.Validate(); err != nil {
 			if compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
-				response.Message.StructuredOutput != "" && !json.Valid(response.Message.StructuredOutput.Raw()) {
+				errors.Is(err, ErrMessageStructuredOutputInvalidJSON) {
 				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
 				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)

@@ -17,6 +17,11 @@ type (
 	WorkflowID string
 )
 
+// ErrMessageStructuredOutputInvalidJSON is returned by Message.Validate when
+// structured output is present but not valid JSON. It lets callers distinguish
+// a structured-output JSON defect from other message validation failures.
+var ErrMessageStructuredOutputInvalidJSON = errors.New("lebro: message structured output must be valid JSON")
+
 // Role identifies the author of a message in an agent conversation.
 type Role string
 
@@ -62,7 +67,7 @@ func (m Message) Validate() error {
 			return errors.New("lebro: only assistant messages can contain structured output")
 		}
 		if !json.Valid(m.StructuredOutput.Raw()) {
-			return errors.New("lebro: message structured output must be valid JSON")
+			return ErrMessageStructuredOutputInvalidJSON
 		}
 	}
 

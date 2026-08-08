@@ -149,6 +149,8 @@ var (
 	ErrConflict     = runtime.ErrConflict
 	ErrInvalidPage  = runtime.ErrInvalidPage
 
+	ErrMessageStructuredOutputInvalidJSON = runtime.ErrMessageStructuredOutputInvalidJSON
+
 	ErrModelInvalidRequest    = runtime.ErrModelInvalidRequest
 	ErrModelAuthentication    = runtime.ErrModelAuthentication
 	ErrModelPermissionDenied  = runtime.ErrModelPermissionDenied

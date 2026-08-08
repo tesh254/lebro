@@ -1111,6 +1111,34 @@ func TestAgentStructuredOutputMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestAgentStructuredOutputMalformedJSONUnrelatedValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	nonAssistantWithMalformedOutput := scriptedResponse{response: ModelResponse{
+		Message:      Message{Role: RoleUser, StructuredOutput: NewModelStructuredOutput(json.RawMessage(`{`))},
+		FinishReason: FinishReasonStop,
+	}}
+	agent, err := NewAgent(AgentConfig{
+		Definition:     AgentDefinition{ID: "weather", Model: "fixture-model"},
+		Model:          newScriptedModel(nonAssistantWithMalformedOutput),
+		SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+		OutputSchema:   &ModelOutputSchema{Name: "weather_result", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "weather?"}},
+	})
+	if errors.Is(err, ErrAgentInvalidStructuredOutput) {
+		t.Fatalf("error = %v, should not be ErrAgentInvalidStructuredOutput for unrelated validation failure", err)
+	}
+	if !errors.Is(err, ErrAgentProviderFailure) {
+		t.Fatalf("error = %v, want ErrAgentProviderFailure for unrelated validation failure", err)
+	}
+}
+
 func TestRunResultStructuredOutputReturnsFinalAssistantOnly(t *testing.T) {
 	t.Parallel()
 
