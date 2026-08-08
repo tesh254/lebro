@@ -47,5 +47,13 @@ a local schema-backed tool (no network or API key required):
 go run ./examples/agent-loop
 ```
 
+Run the schema-constrained structured-output example (agent requests a final
+JSON value that conforms to a caller-supplied schema, validated locally; no
+network or API key required):
+
+```sh
+go run ./examples/structured-output
+```
+
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.

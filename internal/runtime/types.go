@@ -81,9 +81,10 @@ type AgentDefinition struct {
 
 // RunInput is the common input shape for future agent and workflow runs.
 type RunInput struct {
-	Messages []Message
-	ThreadID ThreadID
-	Metadata map[string]string
+	Messages     []Message
+	ThreadID     ThreadID
+	Metadata     map[string]string
+	OutputSchema *ModelOutputSchema
 }
 
 // RunStatus identifies the terminal or in-progress state of a run.
@@ -105,4 +106,31 @@ type RunResult struct {
 	Status   RunStatus
 	Messages []Message
 	Metadata map[string]string
+}
+
+// StructuredOutput returns the structured JSON payload of the final assistant
+// message in the transcript. The value is empty when the run produced no
+// structured output. When the run was driven by an agent with an output schema,
+// the returned value has already passed local schema validation.
+func (r RunResult) StructuredOutput() ModelStructuredOutput {
+	for i := len(r.Messages) - 1; i >= 0; i-- {
+		if r.Messages[i].Role == RoleAssistant && r.Messages[i].StructuredOutput != "" {
+			return r.Messages[i].StructuredOutput
+		}
+	}
+	return ""
+}
+
+// DecodeStructuredOutput unmarshals the final assistant structured payload into
+// the caller-provided value. It returns an error when the run produced no
+// structured output or the payload cannot be decoded into v.
+func (r RunResult) DecodeStructuredOutput(v any) error {
+	output := r.StructuredOutput()
+	if output == "" {
+		return errors.New("lebro: run result has no structured output")
+	}
+	if err := json.Unmarshal(output.Raw(), v); err != nil {
+		return fmt.Errorf("lebro: decode structured output: %w", err)
+	}
+	return nil
 }

@@ -299,6 +299,15 @@ func cloneToolDefinition(definition ToolDefinition) ToolDefinition {
 	return definition
 }
 
+func cloneModelOutputSchema(schema *ModelOutputSchema) *ModelOutputSchema {
+	if schema == nil {
+		return nil
+	}
+	clone := *schema
+	clone.Schema = cloneRawMessage(schema.Schema)
+	return &clone
+}
+
 func cloneRawMessage(value json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), value...)
 }

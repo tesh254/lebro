@@ -98,9 +98,10 @@ const (
 	ToolExecutionCancelled     = runtime.ToolExecutionCancelled
 	ToolExecutionNotFound      = runtime.ToolExecutionNotFound
 
-	ValidationTargetToolInput  = runtime.ValidationTargetToolInput
-	ValidationTargetToolOutput = runtime.ValidationTargetToolOutput
-	JSONSchemaDraft202012      = runtime.JSONSchemaDraft202012
+	ValidationTargetToolInput        = runtime.ValidationTargetToolInput
+	ValidationTargetToolOutput       = runtime.ValidationTargetToolOutput
+	ValidationTargetStructuredOutput = runtime.ValidationTargetStructuredOutput
+	JSONSchemaDraft202012            = runtime.JSONSchemaDraft202012
 
 	FinishReasonStop        = runtime.FinishReasonStop
 	FinishReasonLength      = runtime.FinishReasonLength
@@ -109,13 +110,14 @@ const (
 	FinishReasonCancelled   = runtime.FinishReasonCancelled
 	FinishReasonUnspecified = runtime.FinishReasonUnspecified
 
-	AgentErrorUnknownTool          = runtime.AgentErrorUnknownTool
-	AgentErrorInvalidToolArguments = runtime.AgentErrorInvalidToolArguments
-	AgentErrorInvalidToolOutput    = runtime.AgentErrorInvalidToolOutput
-	AgentErrorToolFailure          = runtime.AgentErrorToolFailure
-	AgentErrorProviderFailure      = runtime.AgentErrorProviderFailure
-	AgentErrorStepLimitExhausted   = runtime.AgentErrorStepLimitExhausted
-	AgentErrorCancelled            = runtime.AgentErrorCancelled
+	AgentErrorUnknownTool             = runtime.AgentErrorUnknownTool
+	AgentErrorInvalidToolArguments    = runtime.AgentErrorInvalidToolArguments
+	AgentErrorInvalidToolOutput       = runtime.AgentErrorInvalidToolOutput
+	AgentErrorToolFailure             = runtime.AgentErrorToolFailure
+	AgentErrorProviderFailure         = runtime.AgentErrorProviderFailure
+	AgentErrorStepLimitExhausted      = runtime.AgentErrorStepLimitExhausted
+	AgentErrorCancelled               = runtime.AgentErrorCancelled
+	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 
 	RunEventStarted       = runtime.RunEventStarted
 	RunEventModelStarted  = runtime.RunEventModelStarted
@@ -158,13 +160,14 @@ var (
 	ErrModelMalformedResponse = runtime.ErrModelMalformedResponse
 	ErrModelUnknown           = runtime.ErrModelUnknown
 
-	ErrAgentUnknownTool          = runtime.ErrAgentUnknownTool
-	ErrAgentInvalidToolArguments = runtime.ErrAgentInvalidToolArguments
-	ErrAgentInvalidToolOutput    = runtime.ErrAgentInvalidToolOutput
-	ErrAgentToolFailure          = runtime.ErrAgentToolFailure
-	ErrAgentProviderFailure      = runtime.ErrAgentProviderFailure
-	ErrAgentStepLimitExhausted   = runtime.ErrAgentStepLimitExhausted
-	ErrAgentCancelled            = runtime.ErrAgentCancelled
+	ErrAgentUnknownTool             = runtime.ErrAgentUnknownTool
+	ErrAgentInvalidToolArguments    = runtime.ErrAgentInvalidToolArguments
+	ErrAgentInvalidToolOutput       = runtime.ErrAgentInvalidToolOutput
+	ErrAgentToolFailure             = runtime.ErrAgentToolFailure
+	ErrAgentProviderFailure         = runtime.ErrAgentProviderFailure
+	ErrAgentStepLimitExhausted      = runtime.ErrAgentStepLimitExhausted
+	ErrAgentCancelled               = runtime.ErrAgentCancelled
+	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
 )
 
 func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {

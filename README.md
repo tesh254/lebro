@@ -212,6 +212,7 @@ to `lebro.DefaultAgentMaxSteps` when zero. Failures are returned as
 | `AgentErrorProviderFailure` | Model adapter failure or invalid model response |
 | `AgentErrorStepLimitExhausted` | Loop consumed every permitted step |
 | `AgentErrorCancelled` | Run context or deadline cancelled |
+| `AgentErrorInvalidStructuredOutput` | Terminal response omitted or failed schema validation of requested structured output |
 
 `errors.Is` works against the `lebro.ErrAgent*` sentinels and against
 `context.Canceled` / `context.DeadlineExceeded`. The wrapped error preserves the
@@ -222,6 +223,51 @@ Run the bounded agent-loop example (no network or API key required):
 ```sh
 go run ./examples/agent-loop
 ```
+
+## Schema-constrained structured output
+
+An agent can request a final JSON value that conforms to a caller-supplied
+schema. Set `AgentConfig.OutputSchema` (per agent) or `RunInput.OutputSchema`
+(per run, overrides the agent default) alongside `AgentConfig.SchemaCompiler`.
+The agent forwards the schema to the model adapter on every step and validates
+the final assistant payload locally before returning a successful result.
+
+```go
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "weather-agent", Model: "gpt-4o"},
+    Model:       model,
+    SchemaCompiler: lebrojsonschema.NewCompiler(),
+    OutputSchema: &lebro.ModelOutputSchema{
+        Name:   "weather_result",
+        Schema: json.RawMessage(`{"type":"object","required":["temperature_c"]}`),
+    },
+})
+if err != nil {
+    panic(err)
+}
+
+result, err := agent.Run(context.Background(), lebro.RunInput{
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Weather in Nairobi?"}},
+})
+if err != nil {
+    panic(err)
+}
+
+var report struct {
+    TemperatureC float64 `json:"temperature_c"`
+}
+if err := result.DecodeStructuredOutput(&report); err != nil {
+    panic(err)
+}
+```
+
+A run that ends without structured output, or whose final payload fails schema
+validation, returns `*lebro.AgentError` with `Kind` set to
+`AgentErrorInvalidStructuredOutput` (sentinel `lebro.ErrAgentInvalidStructuredOutput`).
+Tool use and a structured final response work in the same run: validation runs
+only on the terminal non-tool response. `RunResult.StructuredOutput()` returns
+the validated raw JSON; `RunResult.DecodeStructuredOutput` unmarshals it into a
+caller-provided value.
 
 ## Deterministic run recording
 
@@ -319,6 +365,13 @@ against a recorded HTTP endpoint (no network or API key required):
 
 ```sh
 go run ./examples/model-openai
+```
+
+The structured-output example runs an agent that requests a schema-constrained
+JSON result, validates it locally, and decodes it into a typed Go value:
+
+```sh
+go run ./examples/structured-output
 ```
 
 ## Development

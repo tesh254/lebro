@@ -959,6 +959,289 @@ func TestAgentFailOnNil(t *testing.T) {
 	}
 }
 
+func TestNewAgentValidatesOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  AgentConfig
+		want string
+	}{
+		{
+			name: "empty output schema",
+			cfg: AgentConfig{
+				Definition:     AgentDefinition{ID: "agent"},
+				Model:          echoModel{},
+				SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+				OutputSchema:   &ModelOutputSchema{Name: "result", Schema: json.RawMessage(``)},
+			},
+			want: "agent output schema must not be empty",
+		},
+		{
+			name: "invalid output schema JSON",
+			cfg: AgentConfig{
+				Definition:     AgentDefinition{ID: "agent"},
+				Model:          echoModel{},
+				SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+				OutputSchema:   &ModelOutputSchema{Name: "result", Schema: json.RawMessage(`{`)},
+			},
+			want: "agent output schema must be valid JSON",
+		},
+		{
+			name: "missing schema compiler",
+			cfg: AgentConfig{
+				Definition:   AgentDefinition{ID: "agent"},
+				Model:        echoModel{},
+				OutputSchema: &ModelOutputSchema{Name: "result", Schema: json.RawMessage(`{"type":"object"}`)},
+			},
+			want: "agent schema compiler is required when output schema is set",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewAgent(test.cfg)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewAgent() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestAgentStructuredOutputSuccess(t *testing.T) {
+	t.Parallel()
+
+	schema := json.RawMessage(`{"type":"object"}`)
+	model := newScriptedModel(structuredResponse(json.RawMessage(`{"temperature_c":24.5}`)))
+	agent, err := NewAgent(AgentConfig{
+		Definition:     AgentDefinition{ID: "weather", Model: "fixture-model"},
+		Model:          model,
+		SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+		OutputSchema:   &ModelOutputSchema{Name: "weather_result", Schema: schema},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "what is the weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	output := result.StructuredOutput()
+	if output == "" {
+		t.Fatal("StructuredOutput() is empty")
+	}
+	if string(output.Raw()) != `{"temperature_c":24.5}` {
+		t.Fatalf("StructuredOutput() = %s", output.Raw())
+	}
+	var decoded struct {
+		TemperatureC float64 `json:"temperature_c"`
+	}
+	if err := result.DecodeStructuredOutput(&decoded); err != nil {
+		t.Fatalf("DecodeStructuredOutput() error = %v", err)
+	}
+	if decoded.TemperatureC != 24.5 {
+		t.Fatalf("decoded temperature = %v, want 24.5", decoded.TemperatureC)
+	}
+	if len(model.calls) == 0 || model.calls[0].OutputSchema == nil {
+		t.Fatal("model request did not carry OutputSchema")
+	}
+	if model.calls[0].OutputSchema.Name != "weather_result" {
+		t.Fatalf("request OutputSchema name = %q", model.calls[0].OutputSchema.Name)
+	}
+}
+
+func TestAgentStructuredOutputMissing(t *testing.T) {
+	t.Parallel()
+
+	agent, err := NewAgent(AgentConfig{
+		Definition:     AgentDefinition{ID: "weather", Model: "fixture-model"},
+		Model:          newScriptedModel(textResponse("it is sunny")),
+		SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+		OutputSchema:   &ModelOutputSchema{Name: "weather_result", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "weather?"}},
+	})
+	if !errors.Is(err, ErrAgentInvalidStructuredOutput) {
+		t.Fatalf("error = %v, want ErrAgentInvalidStructuredOutput", err)
+	}
+	var agentErr *AgentError
+	if !errors.As(err, &agentErr) || agentErr.Kind != AgentErrorInvalidStructuredOutput {
+		t.Fatalf("error = %v, want AgentErrorInvalidStructuredOutput", err)
+	}
+	if !strings.Contains(err.Error(), "structured output is missing") {
+		t.Fatalf("error = %v, want missing message", err)
+	}
+}
+
+func TestAgentStructuredOutputSchemaMismatch(t *testing.T) {
+	t.Parallel()
+
+	validationErr := &ValidationError{
+		Target: ValidationTargetStructuredOutput,
+		Issues: []ValidationIssue{{Path: "/", Keyword: "type", Message: "expected object"}},
+	}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "weather", Model: "fixture-model"},
+		Model:      newScriptedModel(structuredResponse(json.RawMessage(`"not-an-object"`))),
+		SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+			return stubCompiledSchema{validationErr: validationErr}, nil
+		}},
+		OutputSchema: &ModelOutputSchema{Name: "weather_result", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "weather?"}},
+	})
+	if !errors.Is(err, ErrAgentInvalidStructuredOutput) {
+		t.Fatalf("error = %v, want ErrAgentInvalidStructuredOutput", err)
+	}
+	var validationFailure *ValidationError
+	if !errors.As(err, &validationFailure) {
+		t.Fatalf("error = %v, want wrapped *ValidationError", err)
+	}
+	if validationFailure.Target != ValidationTargetStructuredOutput {
+		t.Fatalf("validation target = %q, want structured_output", validationFailure.Target)
+	}
+}
+
+func TestAgentStructuredOutputAfterToolUse(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		return stubCompiledSchema{}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(toolFunc{
+		definition: ToolDefinition{ID: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		execute: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{"city":"nairobi"}`), nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	call := ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"q":"nairobi"}`)}
+	model := newScriptedModel(toolCallThenStructuredResponse(call, json.RawMessage(`{"temperature_c":21}`))...)
+	agent, err := NewAgent(AgentConfig{
+		Definition:     AgentDefinition{ID: "weather", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:          model,
+		Tools:          registry,
+		SchemaCompiler: stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }},
+		OutputSchema:   &ModelOutputSchema{Name: "weather_result", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "weather in nairobi?"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if result.StructuredOutput() == "" {
+		t.Fatal("expected structured output after tool use")
+	}
+	if len(model.calls) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(model.calls))
+	}
+	if model.calls[0].OutputSchema == nil || model.calls[1].OutputSchema == nil {
+		t.Fatal("OutputSchema not forwarded on every step")
+	}
+}
+
+func TestAgentRunOutputSchemaOverride(t *testing.T) {
+	t.Parallel()
+
+	compiledRuns := 0
+	var compiled CompiledSchema = stubCompiledSchema{}
+	compiler := stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		compiledRuns++
+		return compiled, nil
+	}}
+	agent, err := NewAgent(AgentConfig{
+		Definition:     AgentDefinition{ID: "agent", Model: "fixture-model"},
+		Model:          newScriptedModel(structuredResponse(json.RawMessage(`{"ok":true}`))),
+		SchemaCompiler: compiler,
+		OutputSchema:   &ModelOutputSchema{Name: "default", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compiledRuns != 1 {
+		t.Fatalf("agent-level compiles = %d, want 1", compiledRuns)
+	}
+
+	override := &ModelOutputSchema{Name: "override", Schema: json.RawMessage(`{"type":"object","required":["ok"]}`)}
+	result, err := agent.Run(context.Background(), RunInput{
+		Messages:     []Message{{Role: RoleUser, Content: "hi"}},
+		OutputSchema: override,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if compiledRuns != 2 {
+		t.Fatalf("total compiles = %d, want 2 (agent + run override)", compiledRuns)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+}
+
+func TestAgentRunOutputSchemaOverrideWithoutCompiler(t *testing.T) {
+	t.Parallel()
+
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model"},
+		Model:      newScriptedModel(structuredResponse(json.RawMessage(`{}`))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		Messages:     []Message{{Role: RoleUser, Content: "hi"}},
+		OutputSchema: &ModelOutputSchema{Name: "override", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if !errors.Is(err, ErrAgentInvalidStructuredOutput) {
+		t.Fatalf("error = %v, want ErrAgentInvalidStructuredOutput", err)
+	}
+	if !strings.Contains(err.Error(), "schema compiler is required") {
+		t.Fatalf("error = %v, want compiler required message", err)
+	}
+}
+
+func TestRunResultDecodeStructuredOutputEmpty(t *testing.T) {
+	t.Parallel()
+
+	result := RunResult{Messages: []Message{{Role: RoleAssistant, Content: "no json here"}}}
+	if result.StructuredOutput() != "" {
+		t.Fatalf("StructuredOutput() = %q, want empty", result.StructuredOutput())
+	}
+	var v map[string]any
+	if err := result.DecodeStructuredOutput(&v); err == nil {
+		t.Fatal("DecodeStructuredOutput() error = nil, want error")
+	}
+}
+
 // scriptedModel is a minimal FIFO model used only by agent tests. The
 // internal/testkit harness cannot be imported here because it would create an
 // import cycle with the root package.
@@ -1018,6 +1301,17 @@ func toolCallResponse(call ModelToolCall) scriptedResponse {
 		Message:      Message{Role: RoleAssistant, ToolCalls: encoded},
 		FinishReason: FinishReasonToolCalls,
 	}}
+}
+
+func structuredResponse(value json.RawMessage) scriptedResponse {
+	return scriptedResponse{response: ModelResponse{
+		Message:      Message{Role: RoleAssistant, StructuredOutput: NewModelStructuredOutput(value)},
+		FinishReason: FinishReasonStop,
+	}}
+}
+
+func toolCallThenStructuredResponse(call ModelToolCall, value json.RawMessage) []scriptedResponse {
+	return []scriptedResponse{toolCallResponse(call), structuredResponse(value)}
 }
 
 type echoModel struct{}
