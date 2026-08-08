@@ -182,7 +182,7 @@ func (s *PostgresStore) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// postgresAdvisoryLockKey is a fixed 64-bit key for the session-level
+// postgresAdvisoryLockKey is a fixed 64-bit key for the transaction-scoped
 // advisory lock that serializes concurrent migrations. The value is
 // arbitrary but must be stable across processes and builds.
 const postgresAdvisoryLockKey int64 = 0x6c6562726f000001
