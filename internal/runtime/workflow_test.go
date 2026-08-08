@@ -728,14 +728,10 @@ func TestLinearWorkflowRunIsConcurrencySafeWithListener(t *testing.T) {
 func TestLinearWorkflowMetadataPropagated(t *testing.T) {
 	t.Parallel()
 
-	var captured map[string]string
 	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
 		Definition: WorkflowDefinition{ID: "meta-wf"},
 		Steps: []Step{
-			{Definition: StepDefinition{ID: "capture"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
-				captured = map[string]string{"trace": "set"}
-				return input, nil
-			})},
+			{Definition: StepDefinition{ID: "echo"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
 		},
 	})
 	if err != nil {
@@ -752,7 +748,6 @@ func TestLinearWorkflowMetadataPropagated(t *testing.T) {
 	if result.Metadata["request_id"] != "req-9" {
 		t.Fatalf("metadata = %#v", result.Metadata)
 	}
-	_ = captured
 }
 
 func TestLinearWorkflowDecodeOutputEmpty(t *testing.T) {
@@ -790,5 +785,56 @@ func TestLinearWorkflowDefinitionReturnsConfigured(t *testing.T) {
 	def := wf.Definition()
 	if def.ID != WorkflowID("def-wf") || def.Name != "Definition" || def.Description != "desc" {
 		t.Fatalf("Definition() = %#v", def)
+	}
+}
+
+func TestLinearWorkflowTypedNilClockFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "typed-nil-clock"},
+		Listener:   NewRunRecorder(),
+		Clock:      (*panicClock)(nil),
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+}
+
+func TestLinearWorkflowTypedNilIDSourceFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "typed-nil-ids"},
+		Listener:   NewRunRecorder(),
+		IDSource:   (*fixedIDSource)(nil),
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if !strings.HasPrefix(string(result.ID), "agent-run-") {
+		t.Fatalf("run ID = %q, want agent-run-* (default fallback)", result.ID)
 	}
 }

@@ -353,7 +353,9 @@ wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
             },
             Handler: lebro.StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
                 var n int
-                _ = json.Unmarshal(input, &n)
+                if err := json.Unmarshal(input, &n); err != nil {
+                    return nil, err
+                }
                 return json.Marshal(n * 2)
             }),
         },
@@ -365,7 +367,9 @@ wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
             },
             Handler: lebro.StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
                 var n int
-                _ = json.Unmarshal(input, &n)
+                if err := json.Unmarshal(input, &n); err != nil {
+                    return nil, err
+                }
                 return json.Marshal(n + 1)
             }),
         },
@@ -377,7 +381,9 @@ result, err := wf.Run(context.Background(), lebro.WorkflowRunInput{
 })
 
 var final int
-_ = result.DecodeOutput(&final) // 11
+if err := result.DecodeOutput(&final); err != nil {
+    panic(err) // final == 11
+}
 ```
 
 A failed step stops the workflow immediately and the returned

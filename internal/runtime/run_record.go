@@ -28,8 +28,9 @@ const (
 	RunEventToolFinished RunEventType = "tool_finished"
 	// RunEventStepStarted is emitted before a workflow step handler is invoked.
 	RunEventStepStarted RunEventType = "step_started"
-	// RunEventStepFinished is emitted after a workflow step handler returns,
-	// carrying any failure that stopped the workflow.
+	// RunEventStepFinished is emitted after a workflow step completes, whether
+	// the step succeeded, failed, or was rejected by input validation before the
+	// handler ran. A non-nil Error distinguishes failures from success.
 	RunEventStepFinished RunEventType = "step_finished"
 	// RunEventSucceeded is the terminal event for a successful run.
 	RunEventSucceeded RunEventType = "run_succeeded"

@@ -275,11 +275,11 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 	}
 
 	clock := config.Clock
-	if clock == nil {
+	if clock == nil || isNilInterface(clock) {
 		clock = defaultClock{}
 	}
 	idSource := config.IDSource
-	if idSource == nil {
+	if idSource == nil || isNilInterface(idSource) {
 		idSource = &sequentialIDSource{}
 	}
 
