@@ -86,6 +86,17 @@ func storageContractRepository(t *testing.T, newStore StoreFactory) {
 		t.Fatalf("second page = %#v, want final message only", second)
 	}
 
+	// Message IDs are scoped per thread: the same ID may be appended to a
+	// different thread.
+	if err := store.Threads().CreateThread(ctx, runtime.ThreadRecord{ID: "thread-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Messages().AppendMessages(ctx, []runtime.MessageRecord{{
+		ID: "message-1", ThreadID: "thread-2", Message: runtime.Message{Role: runtime.RoleAssistant, Content: "other thread"}, CreatedAt: now,
+	}}); err != nil {
+		t.Fatalf("same message ID in another thread rejected: %v", err)
+	}
+
 	run := runtime.WorkflowRunRecord{ID: "run-1", WorkflowID: "workflow-1", Status: runtime.RunStatusRunning, StartedAt: now, UpdatedAt: now}
 	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, run); err != nil {
 		t.Fatal(err)
@@ -102,6 +113,17 @@ func storageContractRepository(t *testing.T, newStore StoreFactory) {
 	}
 	if len(snapshots.Records) != 2 || snapshots.Records[0].Sequence != 1 {
 		t.Fatalf("snapshots = %#v, want ordered records", snapshots)
+	}
+
+	// Snapshot IDs are scoped per run: the same ID and sequence may be used
+	// in a different run.
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, runtime.WorkflowRunRecord{ID: "run-2", WorkflowID: "workflow-1", Status: runtime.RunStatusRunning, StartedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, runtime.WorkflowSnapshotRecord{
+		ID: "snapshot-1", RunID: "run-2", Sequence: 1, State: json.RawMessage(`{"index":1}`), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("same snapshot ID in another run rejected: %v", err)
 	}
 }
 
@@ -461,9 +483,11 @@ func storageContractOuterReads(t *testing.T, newStore StoreFactory) {
 		t.Fatal(err)
 	}
 
+	txCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- store.Transaction(ctx, func(ctx context.Context, repositories runtime.Repositories) error {
+		done <- store.Transaction(txCtx, func(ctx context.Context, repositories runtime.Repositories) error {
 			if _, err := store.Threads().GetThread(ctx, "thread-1"); err != nil {
 				return err
 			}
@@ -476,6 +500,14 @@ func storageContractOuterReads(t *testing.T, newStore StoreFactory) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
+		// If the transaction blocks, cancel it and join the goroutine so it
+		// is torn down deterministically instead of outliving the store.
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("Transaction did not unwind after cancellation")
+		}
 		t.Fatal("Transaction deadlocked after outer-store read")
 	}
 }

@@ -12,6 +12,8 @@ import (
 
 func TestExample(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "example.db")
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
 	os.Args = []string{"storage-sqlite", path}
 	main()
 

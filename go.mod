@@ -7,6 +7,7 @@ toolchain go1.26.5
 require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	go.uber.org/goleak v1.3.0
+	modernc.org/sqlite v1.56.0
 )
 
 require (
@@ -20,5 +21,4 @@ require (
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.56.0 // indirect
 )

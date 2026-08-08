@@ -107,6 +107,13 @@ func TestSQLiteStorePersistsAcrossReopen(t *testing.T) {
 	if len(messages.Records) != 1 {
 		t.Fatalf("messages = %d, want 1", len(messages.Records))
 	}
+	assertEqualJSON(t, "message", MessageRecord{
+		ID:        "message-1",
+		ThreadID:  "thread-1",
+		Message:   Message{Role: RoleUser, Content: "hello"},
+		Metadata:  json.RawMessage(`{"attempt":1}`),
+		CreatedAt: now,
+	}, messages.Records[0])
 
 	gotRun, err := reopened.WorkflowRuns().GetWorkflowRun(ctx, "run-1")
 	if err != nil {
@@ -122,9 +129,12 @@ func TestSQLiteStorePersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshots.Records) != 1 || snapshots.Records[0].State == nil {
-		t.Fatalf("snapshots = %#v", snapshots)
+	if len(snapshots.Records) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snapshots.Records))
 	}
+	assertEqualJSON(t, "workflow snapshot", WorkflowSnapshotRecord{
+		ID: "snapshot-1", RunID: "run-1", Sequence: 1, State: json.RawMessage(`{"step":"done"}`), CreatedAt: now,
+	}, snapshots.Records[0])
 }
 
 func TestSQLiteStoreMigrationFailuresLeaveDatabaseSafe(t *testing.T) {

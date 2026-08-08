@@ -30,10 +30,21 @@ type SQLiteStore struct {
 // store whose repositories share the database handle. The DSN may be a plain
 // file path, a file: URI, or ":memory:". The database is left uninitialized;
 // call Migrate to install the schema.
+//
+// A ":memory:" DSN gives every pooled connection its own private database,
+// which would scatter records across connections, so such DSNs are pinned to
+// a single connection; pass an explicit shared-cache URI
+// (file::memory:?cache=shared) to share one in-memory database across the
+// pool instead.
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", sqliteDSN(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("lebro: sqlite: open %q: %w", dsn, err)
+	}
+	// For a plain in-memory DSN the pool must not open a second connection,
+	// because each :memory: connection is its own empty database.
+	if strings.Contains(dsn, ":memory:") && !strings.Contains(dsn, "cache=shared") {
+		db.SetMaxOpenConns(1)
 	}
 	if err := db.Ping(); err != nil {
 		// Close best-effort so a failed open leaks nothing.
@@ -97,20 +108,22 @@ var sqliteSchemaMigrations = []string{
 		updated_at  TEXT NOT NULL
 	)`,
 	`CREATE TABLE messages (
-		id         TEXT NOT NULL UNIQUE,
+		id         TEXT NOT NULL,
 		thread_id  TEXT NOT NULL REFERENCES threads(id),
 		seq        INTEGER PRIMARY KEY AUTOINCREMENT,
 		message    TEXT NOT NULL,
 		metadata   TEXT,
-		created_at TEXT NOT NULL
+		created_at TEXT NOT NULL,
+		UNIQUE (thread_id, id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_messages_thread_seq ON messages(thread_id, seq)`,
 	`CREATE TABLE workflow_snapshots (
-		id         TEXT PRIMARY KEY,
+		id         TEXT NOT NULL,
 		run_id     TEXT NOT NULL REFERENCES workflow_runs(id),
 		sequence   INTEGER NOT NULL,
 		state      TEXT NOT NULL,
 		created_at TEXT NOT NULL,
+		UNIQUE (run_id, id),
 		UNIQUE (run_id, sequence)
 	)`,
 }
@@ -278,7 +291,12 @@ func (r *sqliteRepositories) AppendMessages(ctx context.Context, vs []MessageRec
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	seen := make(map[string]struct{}, len(vs))
+	// Validate the whole batch before writing anything, mirroring
+	// MemoryStore: message and thread IDs are required, the thread must
+	// exist, the message role must be legal, JSON payloads must be valid,
+	// and IDs must be unique per thread against both the batch and the
+	// stored records.
+	seen := make(map[ThreadID]map[string]struct{}, len(vs))
 	existing := make(map[ThreadID]map[string]struct{}, len(vs))
 	for _, v := range vs {
 		if v.ID == "" || v.ThreadID == "" {
@@ -297,28 +315,65 @@ func (r *sqliteRepositories) AppendMessages(ctx context.Context, vs []MessageRec
 			return fmt.Errorf("lebro: message: %w", err)
 		}
 		if existing[v.ThreadID] == nil {
-			existing[v.ThreadID] = make(map[string]struct{})
+			var err error
+			existing[v.ThreadID], err = r.messageIDs(ctx, v.ThreadID)
+			if err != nil {
+				return err
+			}
 		}
 		if _, ok := existing[v.ThreadID][v.ID]; ok {
 			return fmt.Errorf("lebro: message %q already exists", v.ID)
 		}
-		if _, ok := seen[v.ID]; ok {
+		if seen[v.ThreadID] == nil {
+			seen[v.ThreadID] = map[string]struct{}{}
+		}
+		if _, ok := seen[v.ThreadID][v.ID]; ok {
 			return fmt.Errorf("lebro: message %q already exists", v.ID)
 		}
-		seen[v.ID] = struct{}{}
+		seen[v.ThreadID][v.ID] = struct{}{}
 		existing[v.ThreadID][v.ID] = struct{}{}
 	}
+	// One multi-row statement makes the batch atomic: if any row violates
+	// the per-thread ID constraint (a concurrent writer since validation),
+	// the whole append is rejected without partial writes. The UNIQUE
+	// constraint stays as the concurrency backstop.
+	placeholders := make([]string, 0, len(vs))
+	args := make([]any, 0, len(vs)*5)
 	for _, v := range vs {
 		message, err := json.Marshal(v.Message)
 		if err != nil {
 			return fmt.Errorf("lebro: encode message %q: %w", v.ID, err)
 		}
-		if _, err := r.q.ExecContext(ctx, `INSERT INTO messages (id, thread_id, message, metadata, created_at) VALUES (?, ?, ?, ?, ?)`,
-			v.ID, v.ThreadID, string(message), sqliteJSON(v.Metadata), sqliteTime(v.CreatedAt)); err != nil {
-			return fmt.Errorf("lebro: append message %q: %w", v.ID, sqliteError(err))
-		}
+		placeholders = append(placeholders, "(?, ?, ?, ?, ?)")
+		args = append(args, v.ID, v.ThreadID, string(message), sqliteJSON(v.Metadata), sqliteTime(v.CreatedAt))
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO messages (id, thread_id, message, metadata, created_at) VALUES `+strings.Join(placeholders, ", "), args...); err != nil {
+		return fmt.Errorf("lebro: append messages: %w", sqliteError(err))
 	}
 	return nil
+}
+
+// messageIDs loads the stored message IDs for a thread so AppendMessages can
+// reject duplicates up front with the same error as MemoryStore, instead of
+// deferring them to the UNIQUE constraint.
+func (r *sqliteRepositories) messageIDs(ctx context.Context, id ThreadID) (map[string]struct{}, error) {
+	rows, err := r.q.QueryContext(ctx, `SELECT id FROM messages WHERE thread_id = ?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: load message IDs for thread %q: %w", id, sqliteError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	ids := make(map[string]struct{})
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			return nil, fmt.Errorf("lebro: scan message ID: %w", sqliteError(err))
+		}
+		ids[messageID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("lebro: load message IDs for thread %q: %w", id, sqliteError(err))
+	}
+	return ids, nil
 }
 
 func (r *sqliteRepositories) ListMessages(ctx context.Context, id ThreadID, p PageRequest) (Page[MessageRecord], error) {
@@ -403,6 +458,23 @@ func (r *sqliteRepositories) SaveWorkflowSnapshot(ctx context.Context, v Workflo
 	}
 	if err := r.runExists(ctx, v.RunID); err != nil {
 		return err
+	}
+	// Snapshot IDs are scoped per run like MemoryStore's, so the same ID may
+	// be reused across runs; duplicates within a run are rejected here with
+	// the memory adapter's error instead of deferring to the constraints.
+	var found string
+	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM workflow_snapshots WHERE run_id = ? AND id = ?`, v.RunID, v.ID).Scan(&found); {
+	case err == nil:
+		return errors.New("lebro: workflow snapshot already exists")
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("lebro: check workflow snapshot %q: %w", v.ID, sqliteError(err))
+	}
+	var foundSequence int64
+	switch err := r.q.QueryRowContext(ctx, `SELECT sequence FROM workflow_snapshots WHERE run_id = ? AND sequence = ?`, v.RunID, v.Sequence).Scan(&foundSequence); {
+	case err == nil:
+		return errors.New("lebro: workflow snapshot already exists")
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("lebro: check workflow snapshot sequence %d: %w", v.Sequence, sqliteError(err))
 	}
 	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_snapshots (id, run_id, sequence, state, created_at) VALUES (?, ?, ?, ?, ?)`,
 		v.ID, v.RunID, v.Sequence, string(v.State), sqliteTime(v.CreatedAt)); err != nil {
