@@ -1,0 +1,21 @@
+internal/runtime/postgres_storage.go
+  s_aada9ebcc5a6be::t_d4350d14aa037a 128-132,144-159,190-193
+internal/runtime/postgres_storage_test.go
+  s_aada9ebcc5a6be::t_64c8574dfd62e3 229,240-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9f5784463b8d4e9a7a2ecc593d4effb8b354e2d6",
+  "prompts": {},
+  "sessions": {
+    "s_aada9ebcc5a6be": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01ca1d2b1ffeAl9bGFMkyZEwO2",
+        "model": "accounts/fireworks/models/glm-5p2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
