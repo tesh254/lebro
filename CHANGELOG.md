@@ -14,3 +14,6 @@ All notable changes to this project are documented in this file.
   opaque vendor extensions and typed error mapping.
 - Schema-backed tool registration and execution with request metadata,
   cancellation, and distinct normalized failure states.
+- OpenAI-compatible text-generation model adapter with authenticated HTTP
+  requests, timeouts, opaque request extensions, typed error translation, and
+  recorded-HTTP contract tests.
