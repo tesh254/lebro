@@ -1,0 +1,24 @@
+internal/runtime/agent_test.go
+  s_9bf27f6d5b4461::t_597a032af2af04 1086-1089,1092,1094-1127
+  s_9bf27f6d5b4461::t_6615271fafef2a 1090-1091,1093
+internal/runtime/types.go
+  ai_agent 112-115,118
+internal/runtime/agent.go
+  s_9bf27f6d5b4461::t_99591f776eb41c 364-370
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ea7ce8358b7e5d99fcddf5b5964b96d489b1e725",
+  "prompts": {},
+  "sessions": {
+    "s_9bf27f6d5b4461": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01df49b2fffezVN7aAYKl6Jrpn",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
