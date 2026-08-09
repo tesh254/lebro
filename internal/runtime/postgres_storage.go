@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -115,6 +116,12 @@ var postgresSchemaMigrations = []string{
 	`CREATE INDEX IF NOT EXISTS idx_workflow_snapshots_run_seq ON workflow_snapshots(run_id, sequence)`,
 	`ALTER TABLE threads ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE threads ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS current_step INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS current_step_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS step_outputs TEXT`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS failure TEXT`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS workflow_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_snapshots ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 0`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -458,6 +465,16 @@ func (r *postgresRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRu
 			return fmt.Errorf("lebro: workflow run %s: %w", name, err)
 		}
 	}
+	for i, output := range v.StepOutputs {
+		if err := validateJSON(output); err != nil {
+			return fmt.Errorf("lebro: workflow run step output %d: %w", i, err)
+		}
+	}
+	if v.Failure != nil {
+		if err := validateRecord(v.Failure); err != nil {
+			return fmt.Errorf("lebro: workflow run failure: %w", err)
+		}
+	}
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: workflow run: %w", err)
 	}
@@ -469,19 +486,33 @@ func (r *postgresRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRu
 	if v.FinishedAt != nil {
 		finishedAt = v.FinishedAt.UTC()
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	stepOutputs, err := postgresJSONArray(v.StepOutputs)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	failure, err := postgresFailureJSON(v.Failure)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (id) DO UPDATE SET
-			workflow_id = EXCLUDED.workflow_id,
-			thread_id   = EXCLUDED.thread_id,
-			status      = EXCLUDED.status,
-			input       = EXCLUDED.input,
-			output      = EXCLUDED.output,
-			metadata    = EXCLUDED.metadata,
-			started_at  = EXCLUDED.started_at,
-			finished_at = EXCLUDED.finished_at,
-			updated_at  = EXCLUDED.updated_at`,
-		v.ID, v.WorkflowID, threadID, v.Status, postgresJSON(v.Input), postgresJSON(v.Output), postgresJSON(v.Metadata), v.StartedAt.UTC(), finishedAt, v.UpdatedAt.UTC()); err != nil {
+			workflow_id      = EXCLUDED.workflow_id,
+			thread_id        = EXCLUDED.thread_id,
+			status           = EXCLUDED.status,
+			input            = EXCLUDED.input,
+			output           = EXCLUDED.output,
+			metadata         = EXCLUDED.metadata,
+			started_at       = EXCLUDED.started_at,
+			finished_at      = EXCLUDED.finished_at,
+			updated_at       = EXCLUDED.updated_at,
+			current_step     = EXCLUDED.current_step,
+			current_step_id  = EXCLUDED.current_step_id,
+			step_outputs     = EXCLUDED.step_outputs,
+			failure          = EXCLUDED.failure,
+			workflow_version = EXCLUDED.workflow_version`,
+		v.ID, v.WorkflowID, threadID, v.Status, postgresJSON(v.Input), postgresJSON(v.Output), postgresJSON(v.Metadata), v.StartedAt.UTC(), finishedAt, v.UpdatedAt.UTC(),
+		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, postgresError(err))
 	}
 	return nil
@@ -491,7 +522,7 @@ func (r *postgresRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Wo
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at FROM workflow_runs WHERE id = $1`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs WHERE id = $1`, id)
 	record, err := scanWorkflowRunPG(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -500,6 +531,41 @@ func (r *postgresRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Wo
 		return WorkflowRunRecord{}, fmt.Errorf("lebro: get workflow run %q: %w", id, postgresError(err))
 	}
 	return record, nil
+}
+
+func (r *postgresRepositories) ListWorkflowRuns(ctx context.Context, filter WorkflowRunFilter, p PageRequest) (Page[WorkflowRunRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[WorkflowRunRecord]{}, err
+	}
+	offset, limit, err := sqlPageBounds(p)
+	if err != nil {
+		return Page[WorkflowRunRecord]{}, err
+	}
+	query := `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs`
+	args := []any{}
+	param := 1
+	where := []string{}
+	if filter.WorkflowID != "" {
+		where = append(where, fmt.Sprintf("workflow_id = $%d", param))
+		args = append(args, filter.WorkflowID)
+		param++
+	}
+	if filter.Status != "" {
+		where = append(where, fmt.Sprintf("status = $%d", param))
+		args = append(args, filter.Status)
+		param++
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY started_at, id LIMIT $%d OFFSET $%d", param, param+1)
+	args = append(args, postgresFetchLimit(limit), offset)
+	rows, err := r.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return Page[WorkflowRunRecord]{}, fmt.Errorf("lebro: list workflow runs: %w", postgresError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	return scanWorkflowRunPagePG(rows, offset, limit)
 }
 
 func (r *postgresRepositories) SaveWorkflowSnapshot(ctx context.Context, v WorkflowSnapshotRecord) error {
@@ -532,8 +598,8 @@ func (r *postgresRepositories) SaveWorkflowSnapshot(ctx context.Context, v Workf
 	case !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("lebro: check workflow snapshot sequence %d: %w", v.Sequence, postgresError(err))
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_snapshots (id, run_id, sequence, state, created_at) VALUES ($1, $2, $3, $4, $5)`,
-		v.ID, v.RunID, v.Sequence, postgresJSON(v.State), v.CreatedAt.UTC()); err != nil {
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_snapshots (id, run_id, sequence, schema_version, state, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		v.ID, v.RunID, v.Sequence, v.SchemaVersion, postgresJSON(v.State), v.CreatedAt.UTC()); err != nil {
 		return fmt.Errorf("lebro: save workflow snapshot %q: %w", v.ID, postgresError(err))
 	}
 	return nil
@@ -550,7 +616,7 @@ func (r *postgresRepositories) ListWorkflowSnapshots(ctx context.Context, id Run
 	if err != nil {
 		return Page[WorkflowSnapshotRecord]{}, err
 	}
-	rows, err := r.q.QueryContext(ctx, `SELECT id, run_id, sequence, state, created_at FROM workflow_snapshots WHERE run_id = $1 ORDER BY sequence LIMIT $2 OFFSET $3`, id, postgresFetchLimit(limit), offset)
+	rows, err := r.q.QueryContext(ctx, `SELECT id, run_id, sequence, schema_version, state, created_at FROM workflow_snapshots WHERE run_id = $1 ORDER BY sequence LIMIT $2 OFFSET $3`, id, postgresFetchLimit(limit), offset)
 	if err != nil {
 		return Page[WorkflowSnapshotRecord]{}, fmt.Errorf("lebro: list workflow snapshots for run %q: %w", id, postgresError(err))
 	}
@@ -642,9 +708,9 @@ func scanMessagePagePG(rows *sql.Rows, offset, limit int) (Page[MessageRecord], 
 func scanWorkflowRunPG(row messagePageScanner) (WorkflowRunRecord, error) {
 	var record WorkflowRunRecord
 	var threadID sql.NullString
-	var input, output, metadata sql.NullString
+	var input, output, metadata, stepOutputs, failure sql.NullString
 	var finishedAt sql.NullTime
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &record.StartedAt, &finishedAt, &record.UpdatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &record.StartedAt, &finishedAt, &record.UpdatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
@@ -653,6 +719,8 @@ func scanWorkflowRunPG(row messagePageScanner) (WorkflowRunRecord, error) {
 	record.Input = postgresRawJSON([]byte(input.String))
 	record.Output = postgresRawJSON([]byte(output.String))
 	record.Metadata = postgresRawJSON([]byte(metadata.String))
+	record.StepOutputs = postgresRawJSONArray(stepOutputs)
+	record.Failure = postgresParseFailure(failure)
 	if finishedAt.Valid {
 		finished := finishedAt.Time.UTC()
 		record.FinishedAt = &finished
@@ -662,12 +730,31 @@ func scanWorkflowRunPG(row messagePageScanner) (WorkflowRunRecord, error) {
 	return record, nil
 }
 
+func scanWorkflowRunPagePG(rows *sql.Rows, offset, limit int) (Page[WorkflowRunRecord], error) {
+	var page Page[WorkflowRunRecord]
+	for rows.Next() && len(page.Records) <= limit {
+		record, err := scanWorkflowRunPG(rows)
+		if err != nil {
+			return Page[WorkflowRunRecord]{}, fmt.Errorf("lebro: scan workflow run: %w", postgresError(err))
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return Page[WorkflowRunRecord]{}, fmt.Errorf("lebro: list workflow runs: %w", postgresError(err))
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
+}
+
 func scanSnapshotPagePG(rows *sql.Rows, offset, limit int) (Page[WorkflowSnapshotRecord], error) {
 	var page Page[WorkflowSnapshotRecord]
 	for rows.Next() && len(page.Records) <= limit {
 		var record WorkflowSnapshotRecord
 		var state sql.NullString
-		if err := rows.Scan(&record.ID, &record.RunID, &record.Sequence, &state, &record.CreatedAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.RunID, &record.Sequence, &record.SchemaVersion, &state, &record.CreatedAt); err != nil {
 			return Page[WorkflowSnapshotRecord]{}, fmt.Errorf("lebro: scan workflow snapshot: %w", postgresError(err))
 		}
 		record.State = postgresRawJSON([]byte(state.String))
@@ -708,9 +795,62 @@ func postgresRawJSON(v []byte) json.RawMessage {
 	return json.RawMessage(v)
 }
 
+// postgresJSONArray marshals a slice of JSON values into a JSON array string
+// for the step_outputs column. A nil slice becomes NULL so readers can
+// distinguish "no outputs" from "empty array".
+func postgresJSONArray(outputs []json.RawMessage) (any, error) {
+	if len(outputs) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(outputs)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode step outputs: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// postgresRawJSONArray decodes a nullable JSON-array column back into a slice.
+// NULL, empty, and invalid JSON all yield nil so a corrupted row remains
+// inspectable instead of failing the read.
+func postgresRawJSONArray(v sql.NullString) []json.RawMessage {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var outputs []json.RawMessage
+	if err := json.Unmarshal([]byte(v.String), &outputs); err != nil {
+		return nil
+	}
+	return outputs
+}
+
+// postgresFailureJSON marshals failure data for the failure column. nil
+// becomes NULL so readers can distinguish "no failure" from "empty object".
+func postgresFailureJSON(failure *WorkflowFailureData) (any, error) {
+	if failure == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode workflow failure: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// postgresParseFailure decodes a nullable failure column. NULL, empty, and
+// invalid JSON all yield nil; a corrupted row stays inspectable.
+func postgresParseFailure(v sql.NullString) *WorkflowFailureData {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var failure WorkflowFailureData
+	if err := json.Unmarshal([]byte(v.String), &failure); err != nil {
+		return nil
+	}
+	return &failure
+}
+
 // stringsBuilder is a thin wrapper around a string buffer for building
-// multi-row VALUES clauses. It avoids importing strings in this file since
-// the SQLite adapter already owns that import for DSN rewriting.
+// multi-row VALUES clauses.
 type stringsBuilder struct{ buf []byte }
 
 func (b *stringsBuilder) WriteString(s string) { b.buf = append(b.buf, s...) }

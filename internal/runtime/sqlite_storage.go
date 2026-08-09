@@ -132,6 +132,12 @@ var sqliteSchemaMigrations = []string{
 	)`,
 	`ALTER TABLE threads ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE threads ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN current_step INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workflow_runs ADD COLUMN current_step_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN step_outputs TEXT`,
+	`ALTER TABLE workflow_runs ADD COLUMN failure TEXT`,
+	`ALTER TABLE workflow_runs ADD COLUMN workflow_version TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -468,22 +474,46 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 			return fmt.Errorf("lebro: workflow run %s: %w", name, err)
 		}
 	}
+	for i, output := range v.StepOutputs {
+		if err := validateJSON(output); err != nil {
+			return fmt.Errorf("lebro: workflow run step output %d: %w", i, err)
+		}
+	}
+	if v.Failure != nil {
+		if err := validateRecord(v.Failure); err != nil {
+			return fmt.Errorf("lebro: workflow run failure: %w", err)
+		}
+	}
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: workflow run: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	stepOutputs, err := sqliteJSONArray(v.StepOutputs)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	failure, err := sqliteFailureJSON(v.Failure)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
-			workflow_id = excluded.workflow_id,
-			thread_id   = excluded.thread_id,
-			status      = excluded.status,
-			input       = excluded.input,
-			output      = excluded.output,
-			metadata    = excluded.metadata,
-			started_at  = excluded.started_at,
-			finished_at = excluded.finished_at,
-			updated_at  = excluded.updated_at`,
-		v.ID, v.WorkflowID, sqliteNullableString(string(v.ThreadID)), v.Status, sqliteJSON(v.Input), sqliteJSON(v.Output), sqliteJSON(v.Metadata), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), sqliteTime(v.UpdatedAt)); err != nil {
+			workflow_id     = excluded.workflow_id,
+			thread_id       = excluded.thread_id,
+			status          = excluded.status,
+			input           = excluded.input,
+			output          = excluded.output,
+			metadata        = excluded.metadata,
+			started_at      = excluded.started_at,
+			finished_at     = excluded.finished_at,
+			updated_at      = excluded.updated_at,
+			current_step    = excluded.current_step,
+			current_step_id = excluded.current_step_id,
+			step_outputs    = excluded.step_outputs,
+			failure         = excluded.failure,
+			workflow_version= excluded.workflow_version`,
+		v.ID, v.WorkflowID, sqliteNullableString(string(v.ThreadID)), v.Status, sqliteJSON(v.Input), sqliteJSON(v.Output), sqliteJSON(v.Metadata), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), sqliteTime(v.UpdatedAt),
+		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -493,7 +523,7 @@ func (r *sqliteRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Work
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at FROM workflow_runs WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs WHERE id = ?`, id)
 	record, err := scanWorkflowRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -502,6 +532,40 @@ func (r *sqliteRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Work
 		return WorkflowRunRecord{}, fmt.Errorf("lebro: get workflow run %q: %w", id, sqliteError(err))
 	}
 	return record, nil
+}
+
+func (r *sqliteRepositories) ListWorkflowRuns(ctx context.Context, filter WorkflowRunFilter, p PageRequest) (Page[WorkflowRunRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[WorkflowRunRecord]{}, err
+	}
+	offset, limit, err := sqlPageBounds(p)
+	if err != nil {
+		return Page[WorkflowRunRecord]{}, err
+	}
+	var (
+		query = `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs`
+		args  []any
+		where []string
+	)
+	if filter.WorkflowID != "" {
+		where = append(where, "workflow_id = ?")
+		args = append(args, filter.WorkflowID)
+	}
+	if filter.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY started_at, id LIMIT ? OFFSET ?"
+	args = append(args, limit+1, offset)
+	rows, err := r.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return Page[WorkflowRunRecord]{}, fmt.Errorf("lebro: list workflow runs: %w", sqliteError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	return scanWorkflowRunPage(rows, offset, limit)
 }
 
 func (r *sqliteRepositories) SaveWorkflowSnapshot(ctx context.Context, v WorkflowSnapshotRecord) error {
@@ -537,8 +601,8 @@ func (r *sqliteRepositories) SaveWorkflowSnapshot(ctx context.Context, v Workflo
 	case !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("lebro: check workflow snapshot sequence %d: %w", v.Sequence, sqliteError(err))
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_snapshots (id, run_id, sequence, state, created_at) VALUES (?, ?, ?, ?, ?)`,
-		v.ID, v.RunID, v.Sequence, string(v.State), sqliteTime(v.CreatedAt)); err != nil {
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_snapshots (id, run_id, sequence, schema_version, state, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		v.ID, v.RunID, v.Sequence, v.SchemaVersion, string(v.State), sqliteTime(v.CreatedAt)); err != nil {
 		return fmt.Errorf("lebro: save workflow snapshot %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -555,7 +619,7 @@ func (r *sqliteRepositories) ListWorkflowSnapshots(ctx context.Context, id RunID
 	if err != nil {
 		return Page[WorkflowSnapshotRecord]{}, err
 	}
-	rows, err := r.q.QueryContext(ctx, `SELECT id, run_id, sequence, state, created_at FROM workflow_snapshots WHERE run_id = ? ORDER BY sequence LIMIT ? OFFSET ?`, id, limit+1, offset)
+	rows, err := r.q.QueryContext(ctx, `SELECT id, run_id, sequence, schema_version, state, created_at FROM workflow_snapshots WHERE run_id = ? ORDER BY sequence LIMIT ? OFFSET ?`, id, limit+1, offset)
 	if err != nil {
 		return Page[WorkflowSnapshotRecord]{}, fmt.Errorf("lebro: list workflow snapshots for run %q: %w", id, sqliteError(err))
 	}
@@ -678,15 +742,18 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	var record WorkflowRunRecord
 	var threadID sql.NullString
 	var input, output, metadata sql.NullString
+	var stepOutputs, failure sql.NullString
 	var finishedAt sql.NullString
 	var startedAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
 		record.ThreadID = ThreadID(threadID.String)
 	}
 	record.Input, record.Output, record.Metadata = sqliteRawJSON(input), sqliteRawJSON(output), sqliteRawJSON(metadata)
+	record.StepOutputs = sqliteRawJSONArray(stepOutputs)
+	record.Failure = sqliteParseFailure(failure)
 	started, err := sqliteParseTime(startedAt)
 	if err != nil {
 		return WorkflowRunRecord{}, err
@@ -707,12 +774,31 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	return record, nil
 }
 
+func scanWorkflowRunPage(rows *sql.Rows, offset, limit int) (Page[WorkflowRunRecord], error) {
+	var page Page[WorkflowRunRecord]
+	for rows.Next() && len(page.Records) <= limit {
+		record, err := scanWorkflowRun(rows)
+		if err != nil {
+			return Page[WorkflowRunRecord]{}, fmt.Errorf("lebro: scan workflow run: %w", sqliteError(err))
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return Page[WorkflowRunRecord]{}, fmt.Errorf("lebro: list workflow runs: %w", sqliteError(err))
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
+}
+
 func scanSnapshotPage(rows *sql.Rows, offset, limit int) (Page[WorkflowSnapshotRecord], error) {
 	var page Page[WorkflowSnapshotRecord]
 	for rows.Next() && len(page.Records) <= limit {
 		var record WorkflowSnapshotRecord
 		var state, createdAt string
-		if err := rows.Scan(&record.ID, &record.RunID, &record.Sequence, &state, &createdAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.RunID, &record.Sequence, &record.SchemaVersion, &state, &createdAt); err != nil {
 			return Page[WorkflowSnapshotRecord]{}, fmt.Errorf("lebro: scan workflow snapshot: %w", sqliteError(err))
 		}
 		record.State = json.RawMessage(state)
@@ -769,4 +855,58 @@ func sqliteRawJSON(v sql.NullString) json.RawMessage {
 		return nil
 	}
 	return json.RawMessage(v.String)
+}
+
+// sqliteJSONArray marshals a slice of JSON values into a JSON array string
+// suitable for the step_outputs column. A nil slice becomes NULL so readers
+// can distinguish "no outputs" from "empty array".
+func sqliteJSONArray(outputs []json.RawMessage) (any, error) {
+	if len(outputs) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(outputs)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode step outputs: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// sqliteRawJSONArray decodes a nullable JSON-array column back into a slice.
+// NULL and an empty array both yield a nil slice; invalid JSON is an error.
+func sqliteRawJSONArray(v sql.NullString) []json.RawMessage {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var outputs []json.RawMessage
+	if err := json.Unmarshal([]byte(v.String), &outputs); err != nil {
+		return nil
+	}
+	return outputs
+}
+
+// sqliteFailureJSON marshals failure data for the failure column. nil becomes
+// NULL so readers can distinguish "no failure" from "empty object".
+func sqliteFailureJSON(failure *WorkflowFailureData) (any, error) {
+	if failure == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode workflow failure: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// sqliteParseFailure decodes a nullable failure column. NULL and invalid JSON
+// both yield nil; a malformed payload is treated as no failure rather than
+// failing the read so a corrupted row remains inspectable.
+func sqliteParseFailure(v sql.NullString) *WorkflowFailureData {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var failure WorkflowFailureData
+	if err := json.Unmarshal([]byte(v.String), &failure); err != nil {
+		return nil
+	}
+	return &failure
 }

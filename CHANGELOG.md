@@ -95,6 +95,24 @@ All notable changes to this project are documented in this file.
   `idx_workflow_snapshots_run_seq`) and migration versioning are documented
   in the README. The adapter passes the shared storage contract suite when
   `LEBRO_POSTGRES_TEST_DSN` is set to a disposable database.
+- Durable workflow run snapshots. `LinearWorkflowConfig.Store` optionally
+  binds a linear workflow to a `Store` so run state survives at safe step
+  boundaries. When set, the executor persists the run record as `Running`
+  before the first step, and after every successful step writes a
+  `WorkflowSnapshotRecord` plus an updated `WorkflowRunRecord` inside one
+  `Store.Transaction` so the boundary is atomic. A persistence failure fails
+  the run with `WorkflowErrorStepFailed` wrapping the storage error, so a
+  process restart never observes a partially persisted step. `WorkflowRunRecord`
+  now carries `CurrentStep`, `CurrentStepID`, `StepOutputs` (ordered completed
+  outputs), `Failure` (`*WorkflowFailureData` with kind, step, step ID, and
+  message), and `WorkflowVersion` (the opaque definition/version reference from
+  `WorkflowDefinition.Version`). `WorkflowSnapshotRecord` carries
+  `SchemaVersion` (the executor writes `1`; readers tolerate `0` as legacy).
+  A new `ListWorkflowRuns(context.Context, WorkflowRunFilter, PageRequest)`
+  method on `WorkflowRunRepository` lists runs for inspection, optionally
+  filtered by `WorkflowID` and `Status`. SQLite and PostgreSQL add append-only
+  migrations for the new columns; the in-memory adapter handles them via
+  struct copy. When `Store` is nil, workflow behavior is unchanged.
 - Token and event streaming with cancellation. `StreamingModel` extends the
   provider-neutral `Model` interface with `Stream`, which returns a
   `StreamReader` over ordered `StreamDelta` values (text, tool calls,

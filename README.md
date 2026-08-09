@@ -527,6 +527,63 @@ Run the linear-workflow example (no network or API key required):
 go run ./examples/workflow-linear
 ```
 
+### Durable workflow runs
+
+`LinearWorkflowConfig.Store` optionally binds a linear workflow to a `Store`
+so run state survives at safe step boundaries. When set, the executor persists
+the run record as `Running` before the first step and, after every successful
+step, writes a `WorkflowSnapshotRecord` plus an updated `WorkflowRunRecord`
+inside one `Store.Transaction` so the boundary is atomic. A persistence failure
+fails the run with `WorkflowErrorStepFailed` wrapping the storage error, so a
+process restart never observes a partially persisted step.
+
+```go
+store, _ := lebro.NewSQLiteStore("lebro.db")
+defer store.Close()
+_ = store.Migrate(context.Background())
+
+wf, _ := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+    Definition: lebro.WorkflowDefinition{ID: "durable", Version: "v1"},
+    Steps:      /* ... */,
+    Store:      store,
+})
+
+result, _ := wf.Run(context.Background(), lebro.WorkflowRunInput{
+    Input: json.RawMessage(`5`),
+})
+
+run, _ := store.WorkflowRuns().GetWorkflowRun(context.Background(), result.ID)
+// run.Status, run.CurrentStep, run.StepOutputs, run.Failure are persisted.
+
+page, _ := store.WorkflowRuns().ListWorkflowRuns(
+    context.Background(),
+    lebro.WorkflowRunFilter{Status: lebro.RunStatusSucceeded},
+    lebro.PageRequest{Limit: 50},
+)
+
+snapshots, _ := store.WorkflowSnapshots().ListWorkflowSnapshots(
+    context.Background(),
+    result.ID,
+    lebro.PageRequest{},
+)
+// snapshots.Records[i].State is a versioned envelope of the step boundary.
+```
+
+`WorkflowRunRecord` carries `CurrentStep`, `CurrentStepID`, `StepOutputs`
+(ordered completed outputs), `Failure` (`*WorkflowFailureData` with kind,
+step, step ID, and message), and `WorkflowVersion` (the opaque
+definition/version reference from `WorkflowDefinition.Version`).
+`WorkflowSnapshotRecord` carries `SchemaVersion`; the executor writes `1` and
+readers tolerate `0` as legacy. When `Store` is nil, workflow behavior is
+unchanged. SQLite and PostgreSQL add append-only migrations for the new
+columns; the in-memory adapter handles them via struct copy.
+
+Run the durable-workflow example (no network or API key required):
+
+```sh
+go run ./examples/workflow-durable
+```
+
 ## Agent and tool workflow steps
 
 `lebro.NewAgentStep` adapts an `Agent` (or another `Workflow`) to a typed
