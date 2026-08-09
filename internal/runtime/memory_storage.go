@@ -357,7 +357,13 @@ func listWorkflowRuns(ctx context.Context, s memoryState, filter WorkflowRunFilt
 	for id := range s.runs {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := s.runs[ids[i]], s.runs[ids[j]]
+		if left.StartedAt.Equal(right.StartedAt) {
+			return ids[i] < ids[j]
+		}
+		return left.StartedAt.Before(right.StartedAt)
+	})
 	filtered := make([]WorkflowRunRecord, 0, len(ids))
 	for _, id := range ids {
 		run := s.runs[id]

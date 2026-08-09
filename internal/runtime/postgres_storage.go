@@ -850,8 +850,7 @@ func postgresParseFailure(v sql.NullString) *WorkflowFailureData {
 }
 
 // stringsBuilder is a thin wrapper around a string buffer for building
-// multi-row VALUES clauses. It avoids importing strings in this file since
-// the SQLite adapter already owns that import for DSN rewriting.
+// multi-row VALUES clauses.
 type stringsBuilder struct{ buf []byte }
 
 func (b *stringsBuilder) WriteString(s string) { b.buf = append(b.buf, s...) }

@@ -67,10 +67,11 @@ type WorkflowFailureData struct {
 }
 
 // WorkflowRunRecord captures the durable state of a workflow execution.
-// Input, Output, StepOutputs, Failure, and Metadata are raw JSON so
-// applications can evolve their payload schemas without a storage-adapter
-// change. CurrentStep and CurrentStepID identify the last step the run
-// reached (0 and "" before the first step). WorkflowVersion is an opaque
+// Input, Output, StepOutputs, and Metadata are raw JSON so applications can
+// evolve their payload schemas without a storage-adapter change. Failure is a
+// typed *WorkflowFailureData (not raw JSON) so the failure context is stable
+// across adapters. CurrentStep and CurrentStepID identify the last step the
+// run reached (0 and "" before the first step). WorkflowVersion is an opaque
 // caller-supplied definition/version reference for forward-compatible
 // migrations; the executor never interprets it.
 type WorkflowRunRecord struct {

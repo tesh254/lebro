@@ -23,8 +23,12 @@ func main() {
 
 func run(output io.Writer) error {
 	ctx := context.Background()
-	dsn := filepath.Join(os.TempDir(), "lebro-workflow-durable.db")
-	_ = os.Remove(dsn)
+	dir, err := os.MkdirTemp("", "lebro-workflow-durable-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	dsn := filepath.Join(dir, "durable.db")
 
 	store, err := lebro.NewSQLiteStore(dsn)
 	if err != nil {

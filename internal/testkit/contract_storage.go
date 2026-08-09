@@ -669,7 +669,7 @@ func storageContractWorkflowRunDurableFields(t *testing.T, newStore StoreFactory
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotFailed.Failure == nil || gotFailed.Failure.Kind != failed.Failure.Kind || gotFailed.Failure.Message != failed.Failure.Message {
+	if gotFailed.Failure == nil || gotFailed.Failure.Kind != failed.Failure.Kind || gotFailed.Failure.Step != failed.Failure.Step || gotFailed.Failure.StepID != failed.Failure.StepID || gotFailed.Failure.Message != failed.Failure.Message {
 		t.Fatalf("failure = %#v, want %#v", gotFailed.Failure, failed.Failure)
 	}
 
