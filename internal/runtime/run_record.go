@@ -54,12 +54,31 @@ const (
 	RunEventFailed RunEventType = "run_failed"
 	// RunEventCancelled is the terminal event for a cancelled run.
 	RunEventCancelled RunEventType = "run_cancelled"
+	// RunEventSuspended is emitted when a run suspends at a step boundary.
+	// It is non-terminal: a subsequent Resume emits RunEventResumed and the
+	// run continues to a terminal succeeded/failed/cancelled event.
+	RunEventSuspended RunEventType = "run_suspended"
+	// RunEventResumed is emitted when a previously suspended run resumes from
+	// its durable snapshot. It is followed by per-step step_started/finished
+	// events for the remaining steps.
+	RunEventResumed RunEventType = "run_resumed"
 )
 
 // IsTerminal reports whether the event type is a terminal run event.
 func (t RunEventType) IsTerminal() bool {
 	switch t {
 	case RunEventSucceeded, RunEventFailed, RunEventCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsSuspended reports whether the event type marks a run-level suspension or
+// resumption boundary. These events are non-terminal.
+func (t RunEventType) IsSuspended() bool {
+	switch t {
+	case RunEventSuspended, RunEventResumed:
 		return true
 	default:
 		return false
@@ -482,6 +501,46 @@ func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType Ru
 		Timestamp: e.clock.Now(),
 		Status:    status,
 		Error:     err,
+	})
+}
+
+// emitSuspended records a run_suspended event at the suspend boundary. The
+// step is the 1-indexed position of the suspending step and stepID is its
+// declared identifier.
+func (e *runEmitter) emitSuspended(runID RunID, step int, stepID StepID) {
+	if !e.enabled() {
+		return
+	}
+	e.seq++
+	e.dispatch(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventSuspended,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: e.clock.Now(),
+		Status:    RunStatusSuspended,
+	})
+}
+
+// emitResumed records a run_resumed event at the start of Resume. The step is
+// the 1-indexed position of the next step to execute (envelope.Step + 1) and
+// stepID is its declared identifier ("" when resuming past the last step,
+// which only happens when the workflow had no remaining steps at suspend —
+// Resume treats that as an immediate terminal success).
+func (e *runEmitter) emitResumed(runID RunID, step int, stepID StepID) {
+	if !e.enabled() {
+		return
+	}
+	e.seq++
+	e.dispatch(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventResumed,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Timestamp: e.clock.Now(),
+		Status:    RunStatusRunning,
 	})
 }
 

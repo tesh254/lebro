@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Suspend and resume from durable snapshots. A linear workflow step handler
+  can suspend the run by returning a `*SuspendError` wrapping a
+  `SuspendSignal` (matched via `errors.Is(err, ErrWorkflowSuspend)`). The
+  executor validates the signal's `Contract` against the step's new
+  `StepDefinition.SuspendSchema` and persists a suspend snapshot plus a
+  `RunStatusSuspended` run record; `WorkflowRunResult.Suspend` carries the
+  validated contract and opaque payload. `LinearWorkflow.Resume` loads the
+  suspended run and latest suspend snapshot from the bound `Store`, validates
+  `WorkflowResumeInput.Input` against the persisted contract, and runs the
+  remaining steps without re-executing completed ones. Invalid resume input
+  returns `ErrInvalidResumeInput` before any step runs or persistence occurs,
+  so the suspended snapshot is not corrupted. Resuming a non-suspended run
+  returns `ErrNotSuspended`; resuming without a bound `Store` returns
+  `ErrWorkflowResumeRequiresStore`. Two new run events, `RunEventSuspended`
+  ("run_suspended") and `RunEventResumed` ("run_resumed"), mark the suspend
+  and resume boundaries; both are non-terminal. The snapshot envelope version
+  is bumped to `2` and adds the optional `suspend` field; readers tolerate
+  `0` and `1` as legacy.
+
 - Durable conversation threads. `AgentConfig.Store` optionally binds an agent
   to a `Store` so that conversation history survives across runs. When set
   and `RunInput.ThreadID` is non-empty, the agent loads prior messages from

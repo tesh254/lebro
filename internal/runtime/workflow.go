@@ -51,15 +51,20 @@ func (f StepHandlerFunc) Execute(ctx context.Context, input json.RawMessage) (js
 // InputSchema and OutputSchema are optional JSON Schemas; when present, the
 // executor compiles them once and validates each handoff. A step with no
 // InputSchema accepts any value; a step with no OutputSchema returns unchecked
-// output. Retry optionally configures retry behavior for transient handler
-// failures; a nil Retry means the step runs exactly once with no retry.
+// output. SuspendSchema is an optional JSON Schema that the executor compiles
+// once and validates a SuspendSignal.Contract against when a handler signals
+// suspend; a step that may suspend without a SuspendSchema is rejected as an
+// invalid step output so a process restart never observes an unvalidated
+// resume contract. Retry optionally configures retry behavior for transient
+// handler failures; a nil Retry means the step runs exactly once with no retry.
 type StepDefinition struct {
-	ID           StepID
-	Name         string
-	Description  string
-	InputSchema  json.RawMessage
-	OutputSchema json.RawMessage
-	Retry        *RetryPolicy
+	ID            StepID
+	Name          string
+	Description   string
+	InputSchema   json.RawMessage
+	OutputSchema  json.RawMessage
+	SuspendSchema json.RawMessage
+	Retry         *RetryPolicy
 }
 
 // Step pairs a declared step with its handler.
@@ -256,12 +261,15 @@ type WorkflowRunInput struct {
 }
 
 // WorkflowRunResult is the JSON-centric result of a linear workflow run. Output
-// is the validated output of the final step.
+// is the validated output of the final step. Suspend is non-nil iff the run
+// suspended at a step boundary; in that case Output is empty and Status is
+// RunStatusSuspended.
 type WorkflowRunResult struct {
 	ID       RunID
 	Status   RunStatus
 	Output   json.RawMessage
 	Metadata map[string]string
+	Suspend  *SuspendResult
 }
 
 // DecodeOutput unmarshals the final step output into the caller-provided value.
@@ -276,6 +284,105 @@ func (r WorkflowRunResult) DecodeOutput(v any) error {
 	}
 	return nil
 }
+
+// SuspendSignal is returned by a step handler to suspend the run with a typed
+// payload so it can later resume from its durable snapshot. A handler returns
+// it as the error result wrapped by ErrWorkflowSuspend (see SuspendError).
+//
+// Contract is an optional JSON Schema-validated payload persisted with the
+// snapshot; Resume validates WorkflowResumeInput.Input against it before any
+// step runs. Payload is an opaque caller-defined context that is also
+// persisted so the resuming process can rebuild any non-step state.
+//
+// A step whose handler signals suspend must declare SuspendSchema on its
+// StepDefinition; otherwise the executor rejects the suspend as an invalid
+// step output so a process restart never observes an unvalidated resume
+// contract.
+type SuspendSignal struct {
+	StepID   StepID
+	Contract json.RawMessage
+	Payload  json.RawMessage
+}
+
+// SuspendError carries a SuspendSignal through the error channel so the
+// StepHandler signature stays (json.RawMessage, error). It wraps the
+// ErrWorkflowSuspend sentinel for errors.Is/As detection.
+type SuspendError struct {
+	Signal SuspendSignal
+}
+
+// Error implements the error interface.
+func (e *SuspendError) Error() string {
+	if e == nil {
+		return "lebro: workflow suspend"
+	}
+	return "lebro: workflow suspend at step " + string(e.Signal.StepID)
+}
+
+// Is supports errors.Is against ErrWorkflowSuspend.
+func (e *SuspendError) Is(target error) bool {
+	return target == ErrWorkflowSuspend
+}
+
+// Unwrap is intentionally absent: ErrWorkflowSuspend is matched via Is so a
+// single sentinel can coexist with per-signal data.
+
+// ErrWorkflowSuspend is the sentinel matched by errors.Is to detect a handler
+// that returned a SuspendError. Handlers should wrap SuspendSignal with
+// SuspendError (or any error whose Is matches ErrWorkflowSuspend) rather than
+// returning ErrWorkflowSuspend directly.
+var ErrWorkflowSuspend = errors.New("lebro: workflow suspend")
+
+// suspendSignalFromError extracts the SuspendSignal from a SuspendError. It
+// returns ok=false when err is not a *SuspendError so the executor can reject
+// handlers that match ErrWorkflowSuspend via a custom Is without carrying a
+// signal.
+func suspendSignalFromError(err error) (SuspendSignal, bool) {
+	var suspendErr *SuspendError
+	if errors.As(err, &suspendErr) {
+		return suspendErr.Signal, true
+	}
+	return SuspendSignal{}, false
+}
+
+// SuspendResult is the non-output portion of a suspended WorkflowRunResult.
+// Step is the 1-indexed position of the suspend boundary; StepID is the
+// declared step identifier. Contract is the validated resume contract that
+// Resume will check WorkflowResumeInput.Input against. Payload is the opaque
+// caller-defined context persisted alongside the snapshot.
+type SuspendResult struct {
+	Step     int
+	StepID   StepID
+	Contract json.RawMessage
+	Payload  json.RawMessage
+}
+
+// WorkflowResumeInput is the JSON-centric input for resuming a suspended
+// workflow run. RunID identifies the suspended run to resume; Input is
+// validated against the SuspendSignal.Contract persisted at the suspend
+// boundary before any step runs; Metadata is merged into the run metadata for
+// the resumed run.
+type WorkflowResumeInput struct {
+	RunID    RunID
+	Input    json.RawMessage
+	Metadata map[string]string
+}
+
+// ErrNotSuspended is returned by Resume when the referenced run is not in the
+// suspended status (e.g. Running, Succeeded, Failed, Cancelled, or unknown).
+var ErrNotSuspended = errors.New("lebro: workflow run is not suspended")
+
+// ErrInvalidResumeInput is returned by Resume when WorkflowResumeInput.Input
+// fails validation against the persisted SuspendSignal.Contract. The snapshot
+// and run record are not modified on this path so a caller can retry with a
+// corrected input.
+var ErrInvalidResumeInput = errors.New("lebro: workflow resume input invalid")
+
+// ErrWorkflowResumeRequiresStore is returned by Resume when the workflow has
+// no bound Store. Resume is a durable operation: it loads the suspended
+// snapshot from storage, so a workflow configured without LinearWorkflowConfig
+// .Store cannot resume.
+var ErrWorkflowResumeRequiresStore = errors.New("lebro: workflow resume requires a bound store")
 
 // LinearWorkflowConfig describes a linear workflow composed of ordered, typed
 // steps. Definition is required; Steps must contain at least one entry.
@@ -331,7 +438,7 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		if step.Handler == nil || isNilInterface(step.Handler) {
 			return nil, fmt.Errorf("lebro: workflow step %q handler is required", step.Definition.ID)
 		}
-		if len(step.Definition.InputSchema) > 0 || len(step.Definition.OutputSchema) > 0 {
+		if len(step.Definition.InputSchema) > 0 || len(step.Definition.OutputSchema) > 0 || len(step.Definition.SuspendSchema) > 0 {
 			hasSchema = true
 		}
 	}
@@ -383,19 +490,30 @@ func (w *LinearWorkflow) Definition() WorkflowDefinition {
 }
 
 // workflowSnapshotSchemaVersion is the envelope version the linear workflow
-// executor writes on every snapshot. Readers tolerate 0 (legacy/unspecified);
-// the initial release line never writes any other value.
-const workflowSnapshotSchemaVersion = 1
+// executor writes on every snapshot. Readers tolerate 0 (legacy/unspecified)
+// and 1 (pre-suspend); the suspend release writes 2 and adds the optional
+// Suspend field.
+const workflowSnapshotSchemaVersion = 2
 
 // workflowSnapshotEnvelope is the JSON state persisted at each successful step
 // boundary. It carries the current step's output and the ordered completed
 // outputs so a future resumable executor can rebuild state without replaying
-// the run record.
+// the run record. Suspend is populated only on a suspend boundary so Resume
+// can validate the resume input against the persisted contract.
 type workflowSnapshotEnvelope struct {
 	Step    int               `json:"step"`
 	StepID  StepID            `json:"step_id,omitempty"`
 	Output  json.RawMessage   `json:"output,omitempty"`
 	Outputs []json.RawMessage `json:"outputs,omitempty"`
+	Suspend *suspendEnvelope  `json:"suspend,omitempty"`
+}
+
+// suspendEnvelope carries the validated resume contract and opaque caller
+// payload persisted at a suspend boundary. Resume decodes it to validate
+// WorkflowResumeInput.Input before any step runs.
+type suspendEnvelope struct {
+	Contract json.RawMessage `json:"contract,omitempty"`
+	Payload  json.RawMessage `json:"payload,omitempty"`
 }
 
 // runAnchor captures the stable run fields at start time so every persistence
@@ -462,7 +580,23 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 
 	emitter.emit(runID, 0, "", RunEventStarted)
 
-	for i, step := range w.steps {
+	return w.executeSteps(ctx, anchor, emitter, runID, metadata, current, completedOutputs, 0, input.RetryOverrides, input.ThreadID)
+}
+
+// executeSteps runs the workflow steps from startIndex through the last step,
+// validating each handoff, emitting lifecycle events, and persisting step
+// boundaries. It is shared by Run (startIndex == 0) and Resume (startIndex ==
+// number of previously completed steps). current is the input to the first
+// step to execute (the resume input for Resume, or WorkflowRunInput.Input for
+// Run); completedOutputs is the ordered list of outputs already produced
+// before startIndex (empty for Run, preloaded from the snapshot for Resume).
+// retryOverrides and threadID are the run-level inputs forwarded to each step.
+//
+// On suspend the returned WorkflowRunResult has Status RunStatusSuspended and
+// Suspend populated. On terminal success the run is persisted as Succeeded.
+func (w *LinearWorkflow) executeSteps(ctx context.Context, anchor runAnchor, emitter *runEmitter, runID RunID, metadata map[string]string, current json.RawMessage, completedOutputs []json.RawMessage, startIndex int, retryOverrides map[StepID]RetryPolicy, threadID ThreadID) (WorkflowRunResult, error) {
+	for i := startIndex; i < len(w.steps); i++ {
+		step := w.steps[i]
 		position := i + 1
 		stepID := step.definition.ID
 
@@ -482,8 +616,8 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 			return w.fail(runID, metadata, stepErr)
 		}
 
-		stepCtx := withWorkflowInvocation(ctx, runID, position, stepID, input.ThreadID, metadata)
-		policy := resolveRetryPolicy(step.retry, input.RetryOverrides, stepID)
+		stepCtx := withWorkflowInvocation(ctx, runID, position, stepID, threadID, metadata)
+		policy := resolveRetryPolicy(step.retry, retryOverrides, stepID)
 
 		output, runErr := w.runStepWithRetry(stepCtx, step, position, stepID, stepStart, current, policy, emitter, runID)
 		if runErr != nil {
@@ -508,6 +642,30 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
 				w.persistTerminalBestEffort(anchor, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, stepErr)
+			}
+			if runErr.kind == retrySuspended {
+				suspendErr := runErr.cause.(*SuspendError)
+				signal := suspendErr.Signal
+				if perr := w.persistSuspend(ctx, anchor, position, stepID, completedOutputs, signal); perr != nil {
+					stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow suspend at step %q: %w", stepID, perr)}
+					emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+					emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+					w.persistTerminalBestEffort(anchor, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
+					return w.fail(runID, metadata, stepErr)
+				}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
+				emitter.emitSuspended(runID, position, stepID)
+				return WorkflowRunResult{
+					ID:       runID,
+					Status:   RunStatusSuspended,
+					Metadata: metadata,
+					Suspend: &SuspendResult{
+						Step:     position,
+						StepID:   signal.StepID,
+						Contract: cloneRawMessage(signal.Contract),
+						Payload:  cloneRawMessage(signal.Payload),
+					},
+				}, nil
 			}
 			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: runErr.cause}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
@@ -544,6 +702,157 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	}, nil
 }
 
+// Resume continues a previously suspended workflow run from its durable
+// snapshot. It loads the run record and latest snapshot from the bound Store,
+// validates WorkflowResumeInput.Input against the SuspendSignal.Contract
+// persisted at the suspend boundary, and runs the remaining steps without
+// re-executing completed ones.
+//
+// Resume requires a bound Store (LinearWorkflowConfig.Store). A workflow
+// configured without a Store cannot resume because the suspended state is not
+// durable. The referenced run must be in RunStatusSuspended; resuming a run in
+// any other status returns ErrNotSuspended.
+//
+// Invalid resume input is rejected with ErrInvalidResumeInput before any step
+// runs or persistence occurs, so the suspended snapshot and run record are not
+// corrupted. Resume metadata is merged into the run's existing metadata for
+// the resumed run.
+func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) (WorkflowRunResult, error) {
+	if w == nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: errors.New("lebro: workflow is nil")}
+	}
+	if w.store == nil || isNilInterface(w.store) {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrWorkflowResumeRequiresStore}
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err}
+	}
+
+	run, err := w.store.WorkflowRuns().GetWorkflowRun(ctx, input.RunID)
+	if err != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Step: 0, Err: fmt.Errorf("lebro: load suspended run %q: %w", input.RunID, err)}
+	}
+	if run.Status != RunStatusSuspended {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: run %q %w: %s", input.RunID, ErrNotSuspended, run.Status)}
+	}
+
+	snapshots, err := w.store.WorkflowSnapshots().ListWorkflowSnapshots(ctx, input.RunID, PageRequest{Limit: 1000})
+	if err != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: list snapshots for run %q: %w", input.RunID, err)}
+	}
+	if len(snapshots.Records) == 0 {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: no snapshot for suspended run %q", input.RunID)}
+	}
+	// Select the suspend snapshot with the highest sequence. Only suspend
+	// boundaries populate the envelope's Suspend field, so we decode each
+	// candidate and pick the matching one with the largest Sequence.
+	var (
+		snapshot     WorkflowSnapshotRecord
+		envelope     workflowSnapshotEnvelope
+		foundSuspend bool
+	)
+	for _, cand := range snapshots.Records {
+		var env workflowSnapshotEnvelope
+		if err := json.Unmarshal(cand.State, &env); err != nil {
+			continue
+		}
+		if env.Suspend == nil {
+			continue
+		}
+		if !foundSuspend || cand.Sequence > snapshot.Sequence {
+			snapshot = cand
+			envelope = env
+			foundSuspend = true
+		}
+	}
+	if !foundSuspend {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: no suspend snapshot for run %q", input.RunID)}
+	}
+
+	resumeInput := cloneRawMessage(input.Input)
+	if len(envelope.Suspend.Contract) > 0 {
+		compiled := w.suspendSchemaForStep(envelope.StepID)
+		if compiled == nil {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: cannot resolve SuspendSchema for step %q to validate resume input", envelope.StepID)}
+		}
+		if verr := validateStepValue(compiled, ValidationTargetResumeInput, resumeInput); verr != nil {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: %w: %s", ErrInvalidResumeInput, verr)}
+		}
+	}
+
+	mergedMetadata := decodeMetadata(run.Metadata)
+	for k, v := range input.Metadata {
+		if mergedMetadata == nil {
+			mergedMetadata = map[string]string{}
+		}
+		mergedMetadata[k] = v
+	}
+
+	anchor := runAnchor{
+		runID:     run.ID,
+		input:     WorkflowRunInput{Input: cloneRawMessage(run.Input), ThreadID: run.ThreadID, Metadata: mergedMetadata},
+		metadata:  mergedMetadata,
+		startedAt: run.StartedAt,
+	}
+
+	if perr := w.persistResumeStart(ctx, anchor); perr != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: persist workflow resume start: %w", perr)}
+	}
+
+	emitter := newRunEmitter(ctx, w.listener, w.clock, w.idSource)
+	resumePosition := envelope.Step + 1
+	var resumeStepID StepID
+	if resumePosition <= len(w.steps) {
+		resumeStepID = w.steps[resumePosition-1].definition.ID
+	}
+	emitter.emitResumed(run.ID, resumePosition, resumeStepID)
+
+	completedOutputs := cloneRawOutputs(envelope.Outputs)
+	return w.executeSteps(ctx, anchor, emitter, run.ID, mergedMetadata, resumeInput, completedOutputs, envelope.Step, nil, run.ThreadID)
+}
+
+// suspendSchemaForStep returns the compiled SuspendSchema for the declared
+// step, or nil when the step is not declared or has no SuspendSchema. Resume
+// uses it to validate WorkflowResumeInput.Input against the same schema that
+// validated the persisted SuspendSignal.Contract at the suspend boundary.
+func (w *LinearWorkflow) suspendSchemaForStep(stepID StepID) CompiledSchema {
+	for _, step := range w.steps {
+		if step.definition.ID == stepID {
+			return step.suspendSchema
+		}
+	}
+	return nil
+}
+
+// persistResumeStart flips the run record back to Running so a process stop
+// during resume leaves an inspectable in-progress record. The original
+// StartedAt and Input are preserved from the stored run record via the anchor.
+func (w *LinearWorkflow) persistResumeStart(ctx context.Context, anchor runAnchor) error {
+	if w.store == nil || isNilInterface(w.store) {
+		return nil
+	}
+	now := w.clock.Now()
+	record := w.baseRunRecord(anchor)
+	record.Status = RunStatusRunning
+	record.CurrentStep = 0
+	record.CurrentStepID = ""
+	record.UpdatedAt = now
+	return w.store.WorkflowRuns().SaveWorkflowRun(ctx, record)
+}
+
+// decodeMetadata unmarshals a stored run's metadata JSON into a string map.
+// A nil or empty payload returns nil.
+func decodeMetadata(raw json.RawMessage) map[string]string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	return m
+}
+
 // lastStepID returns the step ID at index i, or "" when i is out of range. It
 // is used to populate WorkflowRunRecord.CurrentStepID on terminal persistence
 // where the current step is the last step that completed.
@@ -560,6 +869,55 @@ func lastStepID(steps []compiledStep, i int) StepID {
 // preserved for the caller.
 func (w *LinearWorkflow) persistTerminalBestEffort(anchor runAnchor, currentStep int, currentStepID StepID, completed []json.RawMessage, status RunStatus, failure *WorkflowError) {
 	_ = w.persistTerminal(anchor, currentStep, currentStepID, completed, status, failure)
+}
+
+// persistSuspend writes a suspend snapshot and updates the run record to
+// Suspended inside a single Store.Transaction so the suspend boundary is
+// atomic. The snapshot carries the validated resume contract and opaque
+// payload so Resume can validate WorkflowResumeInput.Input without re-running
+// the suspending step. The run record's CurrentStep/CurrentStepID identify
+// the suspending step; FinishedAt stays nil because the run is resumable.
+// When no Store is bound the suspend is in-memory only and the caller still
+// receives a suspended WorkflowRunResult.
+func (w *LinearWorkflow) persistSuspend(ctx context.Context, anchor runAnchor, position int, stepID StepID, completed []json.RawMessage, signal SuspendSignal) error {
+	if w.store == nil || isNilInterface(w.store) {
+		return nil
+	}
+	envelope := workflowSnapshotEnvelope{
+		Step:    position,
+		StepID:  stepID,
+		Output:  nil,
+		Outputs: cloneRawOutputs(completed),
+		Suspend: &suspendEnvelope{
+			Contract: cloneRawMessage(signal.Contract),
+			Payload:  cloneRawMessage(signal.Payload),
+		},
+	}
+	state, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("lebro: encode workflow suspend snapshot: %w", err)
+	}
+	now := w.clock.Now()
+	snapshot := WorkflowSnapshotRecord{
+		ID:            fmt.Sprintf("%s-snapshot-%d", anchor.runID, position),
+		RunID:         anchor.runID,
+		Sequence:      int64(position),
+		SchemaVersion: workflowSnapshotSchemaVersion,
+		State:         state,
+		CreatedAt:     now,
+	}
+	updated := w.baseRunRecord(anchor)
+	updated.Status = RunStatusSuspended
+	updated.CurrentStep = position
+	updated.CurrentStepID = stepID
+	updated.StepOutputs = cloneRawOutputs(completed)
+	updated.UpdatedAt = now
+	return w.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		if err := repos.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, snapshot); err != nil {
+			return err
+		}
+		return repos.WorkflowRuns().SaveWorkflowRun(ctx, updated)
+	})
 }
 
 // newAnchor captures the stable run fields at start time. The anchor is read
@@ -752,11 +1110,12 @@ func (w *LinearWorkflow) cancelled(runID RunID, metadata map[string]string, step
 }
 
 type compiledStep struct {
-	definition   StepDefinition
-	handler      StepHandler
-	inputSchema  CompiledSchema
-	outputSchema CompiledSchema
-	retry        *RetryPolicy
+	definition    StepDefinition
+	handler       StepHandler
+	inputSchema   CompiledSchema
+	outputSchema  CompiledSchema
+	suspendSchema CompiledSchema
+	retry         *RetryPolicy
 }
 
 func newCompiledStep(compiler SchemaCompiler, step Step) (compiledStep, error) {
@@ -794,6 +1153,19 @@ func newCompiledStep(compiler SchemaCompiler, step Step) (compiledStep, error) {
 		}
 		cs.outputSchema = compiled
 	}
+	if len(step.Definition.SuspendSchema) > 0 {
+		if !json.Valid(step.Definition.SuspendSchema) {
+			return cs, errors.New("suspend schema must be valid JSON")
+		}
+		compiled, err := compiler.Compile(step.Definition.SuspendSchema)
+		if err != nil {
+			return cs, fmt.Errorf("compile suspend schema: %w", err)
+		}
+		if compiled == nil || isNilInterface(compiled) {
+			return cs, errors.New("schema compiler returned a nil suspend schema")
+		}
+		cs.suspendSchema = compiled
+	}
 	return cs, nil
 }
 
@@ -826,6 +1198,7 @@ func invokeStepHandler(ctx context.Context, handler StepHandler, input json.RawM
 func cloneStepDefinition(def StepDefinition) StepDefinition {
 	def.InputSchema = cloneRawMessage(def.InputSchema)
 	def.OutputSchema = cloneRawMessage(def.OutputSchema)
+	def.SuspendSchema = cloneRawMessage(def.SuspendSchema)
 	def.Retry = cloneRetryPolicy(def.Retry)
 	return def
 }
@@ -929,6 +1302,7 @@ const (
 	retryCancelled
 	retryPanicked
 	retryInvalidOutput
+	retrySuspended
 )
 
 // retryOutcome bundles the terminal result of runStepWithRetry. On success
@@ -1014,6 +1388,33 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 		}
 
 		if handlerErr != nil {
+			// Suspend is terminal and non-retryable. The handler signalled
+			// suspend via a SuspendError (or any error matching
+			// ErrWorkflowSuspend). Validate the resume contract against the
+			// step's SuspendSchema and surface a retrySuspended outcome so the
+			// caller persists the suspend boundary and stops the run.
+			if errors.Is(handlerErr, ErrWorkflowSuspend) {
+				signal, ok := suspendSignalFromError(handlerErr)
+				if !ok {
+					return nil, &retryOutcome{kind: retryFailed, cause: fmt.Errorf("lebro: handler returned an error matching ErrWorkflowSuspend but it carried no SuspendSignal: %w", handlerErr)}
+				}
+				if step.suspendSchema == nil {
+					return nil, &retryOutcome{kind: retryInvalidOutput, cause: fmt.Errorf("lebro: step %q signalled suspend but declares no SuspendSchema", stepID)}
+				}
+				if err := validateStepValue(step.suspendSchema, ValidationTargetSuspendContract, signal.Contract); err != nil {
+					if attempt != 1 {
+						emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, err)
+					}
+					return nil, &retryOutcome{kind: retryInvalidOutput, cause: err}
+				}
+				if signal.StepID == "" {
+					signal.StepID = stepID
+				}
+				if attempt != 1 {
+					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, nil)
+				}
+				return nil, &retryOutcome{kind: retrySuspended, cause: &SuspendError{Signal: signal}}
+			}
 			if errors.Is(handlerErr, context.Canceled) || errors.Is(handlerErr, context.DeadlineExceeded) {
 				if attempt != 1 {
 					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, handlerErr)
