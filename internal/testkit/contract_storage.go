@@ -32,6 +32,7 @@ func StorageContractSuite(t *testing.T, newStore StoreFactory) {
 	t.Run("pagination bounds", func(t *testing.T) { storageContractPaginationBounds(t, newStore) })
 	t.Run("defensive copies and transaction cancellation", func(t *testing.T) { storageContractDefensiveCopies(t, newStore) })
 	t.Run("outer store reads in transaction", func(t *testing.T) { storageContractOuterReads(t, newStore) })
+	t.Run("thread namespace and owner round-trip", func(t *testing.T) { storageContractThreadNamespaceOwner(t, newStore) })
 }
 
 func storageContractRepository(t *testing.T, newStore StoreFactory) {
@@ -506,8 +507,6 @@ func storageContractOuterReads(t *testing.T, newStore StoreFactory) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		// If the transaction blocks, cancel it and join the goroutine so it
-		// is torn down deterministically instead of outliving the store.
 		cancel()
 		select {
 		case <-done:
@@ -515,5 +514,65 @@ func storageContractOuterReads(t *testing.T, newStore StoreFactory) {
 			t.Fatal("Transaction did not unwind after cancellation")
 		}
 		t.Fatal("Transaction deadlocked after outer-store read")
+	}
+}
+
+func storageContractThreadNamespaceOwner(t *testing.T, newStore StoreFactory) {
+	t.Helper()
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+
+	thread := runtime.ThreadRecord{
+		ID:        "thread-ns-1",
+		Namespace: "tenant-acme",
+		OwnerID:   "user-42",
+		Metadata:  json.RawMessage(`{"tag":"ns"}`),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.Threads().CreateThread(ctx, thread); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.Threads().GetThread(ctx, "thread-ns-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Namespace != "tenant-acme" || got.OwnerID != "user-42" {
+		t.Fatalf("namespace/owner = %q/%q, want tenant-acme/user-42", got.Namespace, got.OwnerID)
+	}
+
+	if err := store.Threads().UpdateThread(ctx, runtime.ThreadRecord{
+		ID:        "thread-ns-1",
+		Namespace: "tenant-beta",
+		OwnerID:   "user-99",
+		Metadata:  json.RawMessage(`{"tag":"updated"}`),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.Threads().GetThread(ctx, "thread-ns-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Namespace != "tenant-beta" || updated.OwnerID != "user-99" {
+		t.Fatalf("updated namespace/owner = %q/%q, want tenant-beta/user-99", updated.Namespace, updated.OwnerID)
+	}
+	if string(updated.Metadata) != `{"tag":"updated"}` {
+		t.Fatalf("updated metadata = %s, want {\"tag\":\"updated\"}", updated.Metadata)
+	}
+
+	emptyThread := runtime.ThreadRecord{ID: "thread-empty-ns", CreatedAt: now, UpdatedAt: now}
+	if err := store.Threads().CreateThread(ctx, emptyThread); err != nil {
+		t.Fatal(err)
+	}
+	emptyGot, err := store.Threads().GetThread(ctx, "thread-empty-ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyGot.Namespace != "" || emptyGot.OwnerID != "" {
+		t.Fatalf("empty namespace/owner = %q/%q, want empty", emptyGot.Namespace, emptyGot.OwnerID)
 	}
 }

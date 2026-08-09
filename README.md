@@ -224,6 +224,51 @@ Run the bounded agent-loop example (no network or API key required):
 go run ./examples/agent-loop
 ```
 
+## Durable conversation threads
+
+An agent can optionally bind to a `Store` so that conversation history
+survives across runs. Set `AgentConfig.Store` to a `MemoryStore`,
+`SQLiteStore`, or `PostgresStore` and pass a `ThreadID` in `RunInput`. On
+each run the agent loads prior messages from the thread, prepends them to
+the model request, and appends the new transcript on success. Failed runs
+leave no messages, so the thread's message sequence stays valid. When
+`Store` is nil or `ThreadID` is empty, agent behavior is unchanged.
+
+```go
+store, _ := lebro.NewSQLiteStore("state.db")
+defer store.Close()
+store.Migrate(ctx)
+
+agent, _ := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "chat-agent", Model: "gpt-4o"},
+    Model:      model,
+    Store:      store,
+})
+
+result, _ := agent.Run(ctx, lebro.RunInput{
+    ThreadID: "thread-1",
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Hello"}},
+})
+
+// A second run with the same ThreadID receives the prior messages.
+result2, _ := agent.Run(ctx, lebro.RunInput{
+    ThreadID: "thread-1",
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Follow up?"}},
+})
+```
+
+`ThreadRecord` carries optional `Namespace` and `OwnerID` fields for
+multi-tenant and embedding applications. Both default to empty strings and
+do not affect repository behavior when unset.
+
+```go
+store.Threads().CreateThread(ctx, lebro.ThreadRecord{
+    ID:        "thread-1",
+    Namespace: "tenant-acme",
+    OwnerID:   "user-42",
+})
+```
+
 ## Schema-constrained structured output
 
 An agent can request a final JSON value that conforms to a caller-supplied

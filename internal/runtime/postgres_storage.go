@@ -113,6 +113,8 @@ var postgresSchemaMigrations = []string{
 		UNIQUE (run_id, sequence)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_workflow_snapshots_run_seq ON workflow_snapshots(run_id, sequence)`,
+	`ALTER TABLE threads ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE threads ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -250,8 +252,8 @@ func (r *postgresRepositories) CreateThread(ctx context.Context, v ThreadRecord)
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: thread: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO threads (id, metadata, created_at, updated_at) VALUES ($1, $2, $3, $4)`,
-		v.ID, postgresJSON(v.Metadata), v.CreatedAt.UTC(), v.UpdatedAt.UTC()); err != nil {
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO threads (id, namespace, owner_id, metadata, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)`,
+		v.ID, v.Namespace, v.OwnerID, postgresJSON(v.Metadata), v.CreatedAt.UTC(), v.UpdatedAt.UTC()); err != nil {
 		return fmt.Errorf("lebro: create thread %q: %w", v.ID, postgresError(err))
 	}
 	return nil
@@ -261,7 +263,7 @@ func (r *postgresRepositories) GetThread(ctx context.Context, id ThreadID) (Thre
 	if err := ctx.Err(); err != nil {
 		return ThreadRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, metadata, created_at, updated_at FROM threads WHERE id = $1`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, namespace, owner_id, metadata, created_at, updated_at FROM threads WHERE id = $1`, id)
 	record, err := scanThreadPG(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ThreadRecord{}, ErrNotFound
@@ -285,8 +287,8 @@ func (r *postgresRepositories) UpdateThread(ctx context.Context, v ThreadRecord)
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: thread: %w", err)
 	}
-	result, err := r.q.ExecContext(ctx, `UPDATE threads SET metadata = $1, updated_at = $2 WHERE id = $3`,
-		postgresJSON(v.Metadata), v.UpdatedAt.UTC(), v.ID)
+	result, err := r.q.ExecContext(ctx, `UPDATE threads SET namespace = $1, owner_id = $2, metadata = $3, updated_at = $4 WHERE id = $5`,
+		v.Namespace, v.OwnerID, postgresJSON(v.Metadata), v.UpdatedAt.UTC(), v.ID)
 	if err != nil {
 		return fmt.Errorf("lebro: update thread %q: %w", v.ID, postgresError(err))
 	}
@@ -592,7 +594,7 @@ func postgresError(err error) error {
 	switch pgErr.Code {
 	case "23503":
 		return ErrNotFound
-	case "40001", "55P03":
+	case "23505", "40001", "55P03":
 		return ErrConflict
 	default:
 		return fmt.Errorf("%w (postgres %s)", err, pgErr.Code)
@@ -602,7 +604,7 @@ func postgresError(err error) error {
 func scanThreadPG(row messagePageScanner) (ThreadRecord, error) {
 	var record ThreadRecord
 	var metadata sql.NullString
-	if err := row.Scan(&record.ID, &metadata, &record.CreatedAt, &record.UpdatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.Namespace, &record.OwnerID, &metadata, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return ThreadRecord{}, err
 	}
 	record.Metadata = postgresRawJSON([]byte(metadata.String))

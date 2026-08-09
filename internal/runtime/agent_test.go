@@ -1315,6 +1315,229 @@ func TestRunResultDecodeStructuredOutputEmpty(t *testing.T) {
 	}
 }
 
+func TestAgentPersistsThreadOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	model := newScriptedModel(textResponse("hello back"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "persist-agent", Instructions: "be brief"},
+		Model:      model,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		ThreadID: "thread-persist-1",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+
+	page, err := store.Messages().ListMessages(context.Background(), "thread-persist-1", PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Records) != 2 {
+		t.Fatalf("stored messages = %d, want 2 (user + assistant)", len(page.Records))
+	}
+	if page.Records[0].Message.Role != RoleUser || page.Records[0].Message.Content != "hello" {
+		t.Fatalf("stored user message = %#v", page.Records[0].Message)
+	}
+	if page.Records[1].Message.Role != RoleAssistant || page.Records[1].Message.Content != "hello back" {
+		t.Fatalf("stored assistant message = %#v", page.Records[1].Message)
+	}
+}
+
+func TestAgentLoadsPriorMessagesOnSecondRun(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	ctx := context.Background()
+	now := timeUTC()
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-load-1", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Messages().AppendMessages(ctx, []MessageRecord{
+		{ID: "msg-1", ThreadID: "thread-load-1", Message: Message{Role: RoleUser, Content: "first question"}, CreatedAt: now},
+		{ID: "msg-2", ThreadID: "thread-load-1", Message: Message{Role: RoleAssistant, Content: "first answer"}, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedRequest ModelRequest
+	model := &capturingModel{capture: &capturedRequest, response: textResponse("second answer").response}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "load-agent", Instructions: "be brief"},
+		Model:      model,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(ctx, RunInput{
+		ThreadID: "thread-load-1",
+		Messages: []Message{{Role: RoleUser, Content: "second question"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+
+	roles := []Role{RoleSystem, RoleUser, RoleAssistant, RoleUser}
+	if len(capturedRequest.Messages) != len(roles) {
+		t.Fatalf("model received %d messages, want %d", len(capturedRequest.Messages), len(roles))
+	}
+	for i, want := range roles {
+		if capturedRequest.Messages[i].Role != want {
+			t.Fatalf("message %d role = %q, want %q", i, capturedRequest.Messages[i].Role, want)
+		}
+	}
+	if capturedRequest.Messages[1].Content != "first question" {
+		t.Fatalf("prior user message = %q, want first question", capturedRequest.Messages[1].Content)
+	}
+	if capturedRequest.Messages[2].Content != "first answer" {
+		t.Fatalf("prior assistant message = %q, want first answer", capturedRequest.Messages[2].Content)
+	}
+	if capturedRequest.Messages[3].Content != "second question" {
+		t.Fatalf("new user message = %q, want second question", capturedRequest.Messages[3].Content)
+	}
+
+	page, err := store.Messages().ListMessages(ctx, "thread-load-1", PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Records) != 4 {
+		t.Fatalf("total stored messages = %d, want 4", len(page.Records))
+	}
+}
+
+func TestAgentFailedRunLeavesPriorMessagesUnchanged(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	ctx := context.Background()
+	now := timeUTC()
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-fail-1", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Messages().AppendMessages(ctx, []MessageRecord{
+		{ID: "prior-1", ThreadID: "thread-fail-1", Message: Message{Role: RoleUser, Content: "prior question"}, CreatedAt: now},
+		{ID: "prior-2", ThreadID: "thread-fail-1", Message: Message{Role: RoleAssistant, Content: "prior answer"}, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	model := newScriptedModel(scriptedResponse{err: errors.New("provider down")})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "fail-agent"},
+		Model:      model,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(ctx, RunInput{
+		ThreadID: "thread-fail-1",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want provider failure")
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+
+	page, err := store.Messages().ListMessages(ctx, "thread-fail-1", PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Records) != 2 {
+		t.Fatalf("stored messages after failed run = %d, want 2 (prior messages unchanged)", len(page.Records))
+	}
+	if page.Records[0].Message.Content != "prior question" || page.Records[1].Message.Content != "prior answer" {
+		t.Fatalf("prior messages changed after failed run: %#v", page.Records)
+	}
+}
+
+func TestAgentWithoutStoreIsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	model := newScriptedModel(textResponse("echo"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "no-store-agent"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{
+		ThreadID: "thread-no-store",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if len(result.Messages) != 2 {
+		t.Fatalf("transcript = %d, want 2", len(result.Messages))
+	}
+}
+
+func TestAgentAutoCreatesThreadOnFirstRun(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryStore()
+	model := newScriptedModel(textResponse("created"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "auto-create-agent"},
+		Model:      model,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{
+		ThreadID: "thread-auto-1",
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	thread, err := store.Threads().GetThread(context.Background(), "thread-auto-1")
+	if err != nil {
+		t.Fatalf("GetThread after auto-create: %v", err)
+	}
+	if thread.ID != "thread-auto-1" {
+		t.Fatalf("thread ID = %q, want thread-auto-1", thread.ID)
+	}
+}
+
+type capturingModel struct {
+	capture  *ModelRequest
+	response ModelResponse
+}
+
+func (m *capturingModel) Generate(_ context.Context, request ModelRequest) (ModelResponse, error) {
+	*m.capture = request
+	return m.response, nil
+}
+
 // scriptedModel is a minimal FIFO model used only by agent tests. The
 // internal/testkit harness cannot be imported here because it would create an
 // import cycle with the root package.

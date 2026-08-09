@@ -130,6 +130,8 @@ var sqliteSchemaMigrations = []string{
 		UNIQUE (run_id, id),
 		UNIQUE (run_id, sequence)
 	)`,
+	`ALTER TABLE threads ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE threads ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -249,8 +251,8 @@ func (r *sqliteRepositories) CreateThread(ctx context.Context, v ThreadRecord) e
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: thread: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO threads (id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		v.ID, sqliteJSON(v.Metadata), sqliteTime(v.CreatedAt), sqliteTime(v.UpdatedAt)); err != nil {
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO threads (id, namespace, owner_id, metadata, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		v.ID, v.Namespace, v.OwnerID, sqliteJSON(v.Metadata), sqliteTime(v.CreatedAt), sqliteTime(v.UpdatedAt)); err != nil {
 		return fmt.Errorf("lebro: create thread %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -260,7 +262,7 @@ func (r *sqliteRepositories) GetThread(ctx context.Context, id ThreadID) (Thread
 	if err := ctx.Err(); err != nil {
 		return ThreadRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, metadata, created_at, updated_at FROM threads WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, namespace, owner_id, metadata, created_at, updated_at FROM threads WHERE id = ?`, id)
 	record, err := scanThread(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ThreadRecord{}, ErrNotFound
@@ -284,8 +286,8 @@ func (r *sqliteRepositories) UpdateThread(ctx context.Context, v ThreadRecord) e
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: thread: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `UPDATE threads SET metadata = ?, updated_at = ? WHERE id = ?`,
-		sqliteJSON(v.Metadata), sqliteTime(v.UpdatedAt), v.ID); err != nil {
+	if _, err := r.q.ExecContext(ctx, `UPDATE threads SET namespace = ?, owner_id = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+		v.Namespace, v.OwnerID, sqliteJSON(v.Metadata), sqliteTime(v.UpdatedAt), v.ID); err != nil {
 		return fmt.Errorf("lebro: update thread %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -626,7 +628,7 @@ func scanThread(row messagePageScanner) (ThreadRecord, error) {
 	var record ThreadRecord
 	var metadata sql.NullString
 	var createdAt, updatedAt string
-	if err := row.Scan(&record.ID, &metadata, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.Namespace, &record.OwnerID, &metadata, &createdAt, &updatedAt); err != nil {
 		return ThreadRecord{}, err
 	}
 	record.Metadata = sqliteRawJSON(metadata)
