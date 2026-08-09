@@ -1240,6 +1240,11 @@ func TestLinearWorkflowRetryCancelledDuringBackoff(t *testing.T) {
 	recorder := NewRunRecorder()
 	var attempts int32
 	transient := errors.New("transient")
+	// longBackoff is long enough that the retry wait never completes before
+	// the test cancels the context, so the run cannot reach a second attempt
+	// through normal scheduling. This removes the wall-clock race.
+	longBackoff := 30 * time.Second
+	firstAttemptDone := make(chan struct{})
 	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
 		Definition: WorkflowDefinition{ID: "cancel-backoff-wf"},
 		Listener:   recorder,
@@ -1247,10 +1252,12 @@ func TestLinearWorkflowRetryCancelledDuringBackoff(t *testing.T) {
 			{
 				Definition: StepDefinition{
 					ID:    "s1",
-					Retry: &RetryPolicy{Attempts: 5, Delay: 200 * time.Millisecond},
+					Retry: &RetryPolicy{Attempts: 5, Delay: longBackoff},
 				},
 				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
-					atomic.AddInt32(&attempts, 1)
+					if atomic.AddInt32(&attempts, 1) == 1 {
+						close(firstAttemptDone)
+					}
 					return nil, transient
 				}),
 			},
@@ -1261,25 +1268,42 @@ func TestLinearWorkflowRetryCancelledDuringBackoff(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDone := make(chan error, 1)
+	start := time.Now()
 	go func() {
-		time.Sleep(20 * time.Millisecond)
-		cancel()
+		_, runErr := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`{}`)})
+		runDone <- runErr
 	}()
 
-	start := time.Now()
-	_, err = wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`{}`)})
-	elapsed := time.Since(start)
-	if err == nil {
-		t.Fatal("Run() error = nil, want cancellation")
+	select {
+	case <-firstAttemptDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first attempt did not complete in time")
 	}
-	if !errors.Is(err, ErrWorkflowCancelled) {
-		t.Fatalf("error = %v, want ErrWorkflowCancelled", err)
-	}
-	if atomic.LoadInt32(&attempts) != 1 {
-		t.Fatalf("attempts = %d, want 1", atomic.LoadInt32(&attempts))
-	}
-	if elapsed > 150*time.Millisecond {
-		t.Fatalf("elapsed = %v, want < 150ms (cancel promptly)", elapsed)
+	cancel()
+
+	select {
+	case runErr := <-runDone:
+		elapsed := time.Since(start)
+		if runErr == nil {
+			t.Fatal("Run() error = nil, want cancellation")
+		}
+		if !errors.Is(runErr, ErrWorkflowCancelled) {
+			t.Fatalf("error = %v, want ErrWorkflowCancelled", runErr)
+		}
+		if atomic.LoadInt32(&attempts) != 1 {
+			t.Fatalf("attempts = %d, want 1", atomic.LoadInt32(&attempts))
+		}
+		// Cancellation is prompt: the backoff (30s) never elapsed, so the
+		// run must return well before it. A generous bound guards against
+		// slow CI scheduling without depending on the backoff duration.
+		if elapsed > 2*time.Second {
+			t.Fatalf("elapsed = %v, want < 2s (cancel promptly)", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after cancel within 5s")
 	}
 
 	terminal, ok := recorder.TerminalEvent()
@@ -1524,10 +1548,13 @@ func TestLinearWorkflowRetryDelayEmittedOnAttemptStarted(t *testing.T) {
 	}
 
 	events := recorder.Events()
-	var attemptStart RunEvent
+	var attemptStart, attemptFinish RunEvent
 	for _, e := range events {
 		if e.Type == RunEventStepAttemptStarted {
 			attemptStart = e
+		}
+		if e.Type == RunEventStepAttemptFinished {
+			attemptFinish = e
 		}
 	}
 	if attemptStart.Type != RunEventStepAttemptStarted {
@@ -1535,6 +1562,71 @@ func TestLinearWorkflowRetryDelayEmittedOnAttemptStarted(t *testing.T) {
 	}
 	if attemptStart.Delay != delay {
 		t.Fatalf("attempt started Delay = %v, want %v", attemptStart.Delay, delay)
+	}
+	if attemptFinish.Type != RunEventStepAttemptFinished {
+		t.Fatalf("no step_attempt_finished event emitted")
+	}
+	if attemptFinish.Delay != delay {
+		t.Fatalf("attempt finished Delay = %v, want %v (mirrored from started)", attemptFinish.Delay, delay)
+	}
+	if attemptFinish.Attempt != attemptStart.Attempt {
+		t.Fatalf("attempt finished Attempt = %d, want %d (matched)", attemptFinish.Attempt, attemptStart.Attempt)
+	}
+}
+
+func TestLinearWorkflowRetryOverrideInvalidFailsBeforeAnyStepRuns(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	step1Ran := false
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "override-upfront-wf"},
+		Listener:   recorder,
+		Steps: []Step{
+			{
+				Definition: StepDefinition{ID: "s1"},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					step1Ran = true
+					return json.RawMessage(`{}`), nil
+				}),
+			},
+			{
+				Definition: StepDefinition{ID: "s2"},
+				Handler:    StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil }),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Invalid override targets a later step (s2); validation must fail before
+	// s1 runs so no side-effecting work executes.
+	_, err = wf.Run(context.Background(), WorkflowRunInput{
+		Input:          json.RawMessage(`{}`),
+		RetryOverrides: map[StepID]RetryPolicy{"s2": {Attempts: 0}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want invalid override")
+	}
+	if !strings.Contains(err.Error(), "invalid retry override for step \"s2\"") {
+		t.Fatalf("error = %v, want invalid retry override for step s2", err)
+	}
+	if step1Ran {
+		t.Fatal("step 1 ran before invalid override for step 2 was rejected")
+	}
+
+	// No run_started event: validation fails before the run starts. The
+	// terminal event is run_failed.
+	events := recorder.Events()
+	for _, e := range events {
+		if e.Type == RunEventStarted {
+			t.Fatal("run_started emitted before override validation")
+		}
+	}
+	terminal, ok := recorder.TerminalEvent()
+	if !ok || terminal.Type != RunEventFailed {
+		t.Fatalf("terminal = %#v, want run_failed", terminal)
 	}
 }
 

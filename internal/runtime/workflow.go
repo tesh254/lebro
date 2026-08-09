@@ -443,6 +443,13 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	completedOutputs := make([]json.RawMessage, 0, len(w.steps))
 	anchor := w.newAnchor(runID, input, metadata)
 
+	if perr := validateRetryOverrides(input.RetryOverrides); perr != nil {
+		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Err: perr}
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, stepErr)
+		w.persistTerminalBestEffort(anchor, 0, "", nil, RunStatusFailed, stepErr)
+		return w.fail(runID, metadata, stepErr)
+	}
+
 	if perr := w.persistRunStart(ctx, anchor); perr != nil {
 		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: persist workflow run start: %w", perr)}
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, stepErr)
@@ -474,13 +481,6 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 
 		stepCtx := withWorkflowInvocation(ctx, runID, position, stepID, input.ThreadID, metadata)
 		policy := resolveRetryPolicy(step.retry, input.RetryOverrides, stepID)
-		if perr := validateRetryPolicy(policy); perr != nil {
-			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: invalid retry override for step %q: %w", stepID, perr)}
-			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
-			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-			w.persistTerminalBestEffort(anchor, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
-			return w.fail(runID, metadata, stepErr)
-		}
 
 		output, runErr := w.runStepWithRetry(stepCtx, step, position, stepID, stepStart, current, policy, emitter, runID)
 		if runErr != nil {
@@ -852,14 +852,27 @@ func validateRetryPolicy(p *RetryPolicy) error {
 	return nil
 }
 
+// validateRetryOverrides checks every per-run retry override up front so an
+// invalid run configuration fails before any step runs or persistence occurs.
+// Unknown step IDs are tolerated: an override for a step that is not in the
+// workflow is simply never selected by resolveRetryPolicy, so it cannot
+// affect behavior and is ignored.
+func validateRetryOverrides(overrides map[StepID]RetryPolicy) error {
+	for stepID, policy := range overrides {
+		if err := validateRetryPolicy(&policy); err != nil {
+			return fmt.Errorf("lebro: invalid retry override for step %q: %w", stepID, err)
+		}
+	}
+	return nil
+}
+
 // retryOutcomeKind classifies the terminal outcome of runStepWithRetry so the
 // caller can map it back to the appropriate WorkflowErrorKind without re-
 // inspecting the wrapped error.
 type retryOutcomeKind int
 
 const (
-	retrySucceeded retryOutcomeKind = iota
-	retryFailed
+	retryFailed retryOutcomeKind = iota
 	retryCancelled
 	retryPanicked
 	retryInvalidOutput
@@ -934,7 +947,7 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 		if err := ctx.Err(); err != nil {
 			cause := preferContextError(err, err)
 			if attempt != 1 {
-				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, cause)
+				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, cause)
 			}
 			return nil, &retryOutcome{kind: retryCancelled, cause: cause}
 		}
@@ -942,7 +955,7 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 		if panicked {
 			panicErr := &StepPanicError{Value: panicValue}
 			if attempt != 1 {
-				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, panicErr)
+				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, panicErr)
 			}
 			return nil, &retryOutcome{kind: retryPanicked, cause: panicErr}
 		}
@@ -950,7 +963,7 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 		if handlerErr != nil {
 			if errors.Is(handlerErr, context.Canceled) || errors.Is(handlerErr, context.DeadlineExceeded) {
 				if attempt != 1 {
-					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, handlerErr)
+					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, handlerErr)
 				}
 				return nil, &retryOutcome{kind: retryCancelled, cause: handlerErr}
 			}
@@ -958,25 +971,25 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 			retryable := policy != nil && policy.IsRetryable(handlerErr)
 			if isLast || !retryable {
 				if attempt != 1 {
-					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, handlerErr)
+					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, handlerErr)
 				}
 				return nil, &retryOutcome{kind: retryFailed, cause: handlerErr}
 			}
 			if attempt != 1 {
-				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, handlerErr)
+				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, handlerErr)
 			}
 			continue
 		}
 
 		if err := validateStepValue(step.outputSchema, ValidationTargetStepOutput, output); err != nil {
 			if attempt != 1 {
-				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, err)
+				emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, err)
 			}
 			return nil, &retryOutcome{kind: retryInvalidOutput, cause: err}
 		}
 
 		if attempt != 1 {
-			emitter.emitStepAttemptFinished(runID, position, stepID, attempt, attemptStart, nil)
+			emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, nil)
 		}
 		return output, nil
 	}

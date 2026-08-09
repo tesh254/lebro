@@ -216,10 +216,13 @@ var (
 	ErrWorkflowCancelled         = runtime.ErrWorkflowCancelled
 )
 
-// DefaultRetryable is the default retryable-error predicate for RetryPolicy.
-// It rejects context cancellation and deadline errors and accepts all other
-// handler errors.
-var DefaultRetryable = runtime.DefaultRetryable
+// DefaultRetryable reports whether a handler error is eligible for retry
+// under the default policy. It rejects context cancellation and deadline
+// errors and accepts all other handler errors. Use it as a building block for
+// custom RetryablePredicate implementations. Because it is a function, it
+// cannot be reassigned to change runtime behavior; pass it (or a function
+// that delegates to it) to RetryPolicy.Retryable instead.
+func DefaultRetryable(err error) bool { return runtime.DefaultRetryable(err) }
 
 func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {
 	return runtime.NewToolRegistry(compiler)

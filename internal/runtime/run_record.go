@@ -445,7 +445,10 @@ func (e *runEmitter) emitStepAttemptStarted(runID RunID, step int, stepID StepID
 }
 
 // emitStepAttemptFinished records the end of a retry attempt for a step.
-func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepID, attempt int, start time.Time, err error) {
+// delay is the same backoff waited before the attempt and is mirrored onto
+// the event so consumers can read the configured delay from either lifecycle
+// event (started or finished) without cross-referencing.
+func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepID, attempt int, delay time.Duration, start time.Time, err error) {
 	if !e.enabled() {
 		return
 	}
@@ -458,6 +461,7 @@ func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepI
 		StepID:    stepID,
 		Step:      step,
 		Attempt:   attempt,
+		Delay:     delay,
 		Timestamp: now,
 		Duration:  now.Sub(start),
 		Error:     err,
