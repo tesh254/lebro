@@ -31,12 +31,23 @@ const (
 	// RunEventToolFinished is emitted after a tool handler returns, carrying
 	// the execution state.
 	RunEventToolFinished RunEventType = "tool_finished"
-	// RunEventStepStarted is emitted before a workflow step handler is invoked.
+	// RunEventStepStarted is emitted before a workflow step's first attempt
+	// is invoked. One per step; per-attempt lifecycle uses
+	// RunEventStepAttemptStarted/Finished.
 	RunEventStepStarted RunEventType = "step_started"
-	// RunEventStepFinished is emitted after a workflow step completes, whether
-	// the step succeeded, failed, or was rejected by input validation before the
-	// handler ran. A non-nil Error distinguishes failures from success.
+	// RunEventStepFinished is emitted after a workflow step reaches a terminal
+	// outcome (success, failure, or rejection by input validation before any
+	// attempt ran). A non-nil Error distinguishes failures from success.
 	RunEventStepFinished RunEventType = "step_finished"
+	// RunEventStepAttemptStarted is emitted before each step handler attempt
+	// past the first. The first attempt is bracketed by RunEventStepStarted;
+	// retries use this event and RunEventStepAttemptFinished. Attempt is the
+	// 1-indexed attempt number and Delay is the backoff waited before it.
+	RunEventStepAttemptStarted RunEventType = "step_attempt_started"
+	// RunEventStepAttemptFinished is emitted after each step handler attempt
+	// past the first. Attempt matches the paired started event and Error
+	// carries the attempt's failure (nil on success).
+	RunEventStepAttemptFinished RunEventType = "step_attempt_finished"
 	// RunEventSucceeded is the terminal event for a successful run.
 	RunEventSucceeded RunEventType = "run_succeeded"
 	// RunEventFailed is the terminal event for a failed run.
@@ -64,6 +75,11 @@ func (t RunEventType) IsTerminal() bool {
 // terminal events. ParentRunID, ParentStepID, and ParentStep identify the
 // workflow invocation that started a nested run; they are zero values for a
 // top-level run.
+//
+// Attempt and Delay carry retry-attempt metadata for
+// RunEventStepAttemptStarted/Finished events only. Attempt is the 1-indexed
+// retry attempt (2 for the first retry). Delay is the backoff waited before
+// the attempt began. Both are zero on other event types.
 type RunEvent struct {
 	Sequence              int
 	Type                  RunEventType
@@ -73,6 +89,8 @@ type RunEvent struct {
 	ParentStep            int
 	StepID                StepID
 	Step                  int
+	Attempt               int
+	Delay                 time.Duration
 	Timestamp             time.Time
 	Duration              time.Duration
 	FinishReason          FinishReason
@@ -398,6 +416,48 @@ func (e *runEmitter) emitStepFinished(runID RunID, step int, stepID StepID, star
 		RunID:     runID,
 		StepID:    stepID,
 		Step:      step,
+		Timestamp: now,
+		Duration:  now.Sub(start),
+		Error:     err,
+	})
+}
+
+// emitStepAttemptStarted records the beginning of a retry attempt for a step.
+// attempt is the 1-indexed attempt number (>= 2 for retries). delay is the
+// backoff waited before this attempt.
+func (e *runEmitter) emitStepAttemptStarted(runID RunID, step int, stepID StepID, attempt int, delay time.Duration) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.seq++
+	e.dispatch(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventStepAttemptStarted,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Attempt:   attempt,
+		Delay:     delay,
+		Timestamp: ts,
+	})
+	return ts
+}
+
+// emitStepAttemptFinished records the end of a retry attempt for a step.
+func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepID, attempt int, start time.Time, err error) {
+	if !e.enabled() {
+		return
+	}
+	now := e.clock.Now()
+	e.seq++
+	e.dispatch(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventStepAttemptFinished,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Attempt:   attempt,
 		Timestamp: now,
 		Duration:  now.Sub(start),
 		Error:     err,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -875,5 +876,681 @@ func TestLinearWorkflowTypedNilIDSourceFallsBackToDefault(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(result.ID), "agent-run-") {
 		t.Fatalf("run ID = %q, want agent-run-* (default fallback)", result.ID)
+	}
+}
+
+func TestNewLinearWorkflowRejectsInvalidRetryPolicy(t *testing.T) {
+	t.Parallel()
+
+	handler := StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })
+	tests := []struct {
+		name string
+		step Step
+		want string
+	}{
+		{
+			name: "attempts zero",
+			step: Step{Definition: StepDefinition{ID: "s1", Retry: &RetryPolicy{Attempts: 0}}, Handler: handler},
+			want: "retry policy attempts must be >= 1",
+		},
+		{
+			name: "attempts negative",
+			step: Step{Definition: StepDefinition{ID: "s1", Retry: &RetryPolicy{Attempts: -2}}, Handler: handler},
+			want: "retry policy attempts must be >= 1",
+		},
+		{
+			name: "negative delay",
+			step: Step{Definition: StepDefinition{ID: "s1", Retry: &RetryPolicy{Attempts: 2, Delay: -time.Millisecond}}, Handler: handler},
+			want: "retry policy delay must be >= 0",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewLinearWorkflow(LinearWorkflowConfig{
+				Definition: WorkflowDefinition{ID: "retry-wf"},
+				Steps:      []Step{test.step},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLinearWorkflowRetrySucceedsAfterTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	clock := NewFixedClock(time.Unix(9000, 0))
+	var attempts int32
+	transient := errors.New("transient")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "retry-succeed-wf"},
+		Listener:   recorder,
+		Clock:      clock,
+		IDSource:   NewFixedIDSource([]RunID{"retry-run-1"}, nil),
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:    "flaky",
+					Retry: &RetryPolicy{Attempts: 3},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+					n := atomic.AddInt32(&attempts, 1)
+					if n < 2 {
+						return nil, transient
+					}
+					return input, nil
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if atomic.LoadInt32(&attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", atomic.LoadInt32(&attempts))
+	}
+
+	events := recorder.Events()
+	var types []RunEventType
+	for _, e := range events {
+		types = append(types, e.Type)
+	}
+	want := []RunEventType{
+		RunEventStarted,
+		RunEventStepStarted,
+		RunEventStepAttemptStarted,
+		RunEventStepAttemptFinished,
+		RunEventStepFinished,
+		RunEventSucceeded,
+	}
+	if len(types) != len(want) {
+		t.Fatalf("event types = %v, want %v", types, want)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("event %d type = %q, want %q", i, types[i], want[i])
+		}
+	}
+	attemptStart := events[2]
+	if attemptStart.Attempt != 2 {
+		t.Fatalf("attempt started Attempt = %d, want 2", attemptStart.Attempt)
+	}
+	if attemptStart.Step != 1 || attemptStart.StepID != "flaky" {
+		t.Fatalf("attempt started step = %d/%q, want 1/flaky", attemptStart.Step, attemptStart.StepID)
+	}
+	attemptFinish := events[3]
+	if attemptFinish.Attempt != 2 {
+		t.Fatalf("attempt finished Attempt = %d, want 2", attemptFinish.Attempt)
+	}
+	if attemptFinish.Error != nil {
+		t.Fatalf("attempt finished Error = %v, want nil (success)", attemptFinish.Error)
+	}
+	if events[4].Error != nil {
+		t.Fatalf("step finished Error = %v, want nil", events[4].Error)
+	}
+	terminal, ok := recorder.TerminalEvent()
+	if !ok || terminal.Type != RunEventSucceeded {
+		t.Fatalf("terminal = %#v, want run_succeeded", terminal)
+	}
+}
+
+func TestLinearWorkflowRetryExhaustedFailsRun(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	var attempts int32
+	permanent := errors.New("permanent")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "retry-exhausted-wf"},
+		Listener:   recorder,
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:    "flaky",
+					Retry: &RetryPolicy{Attempts: 3},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					return nil, permanent
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatal("Run() error = nil, want step failure")
+	}
+	if !errors.Is(err, ErrWorkflowStepFailure) {
+		t.Fatalf("error = %v, want ErrWorkflowStepFailure", err)
+	}
+	if !errors.Is(err, permanent) {
+		t.Fatalf("error = %v, want wrap permanent", err)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	if atomic.LoadInt32(&attempts) != 3 {
+		t.Fatalf("attempts = %d, want 3", atomic.LoadInt32(&attempts))
+	}
+
+	events := recorder.Events()
+	// run_started, step_started, attempt_started(2), attempt_finished(2),
+	// attempt_started(3), attempt_finished(3), step_finished, run_failed.
+	var types []RunEventType
+	for _, e := range events {
+		types = append(types, e.Type)
+	}
+	want := []RunEventType{
+		RunEventStarted,
+		RunEventStepStarted,
+		RunEventStepAttemptStarted, RunEventStepAttemptFinished,
+		RunEventStepAttemptStarted, RunEventStepAttemptFinished,
+		RunEventStepFinished,
+		RunEventFailed,
+	}
+	if len(types) != len(want) {
+		t.Fatalf("event types = %v, want %v", types, want)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("event %d type = %q, want %q", i, types[i], want[i])
+		}
+	}
+	if events[2].Attempt != 2 || events[4].Attempt != 3 {
+		t.Fatalf("attempt numbers = %d, %d, want 2, 3", events[2].Attempt, events[4].Attempt)
+	}
+	if events[6].Error == nil {
+		t.Fatal("step finished Error = nil, want permanent")
+	}
+	terminal, ok := recorder.TerminalEvent()
+	if !ok || terminal.Type != RunEventFailed {
+		t.Fatalf("terminal = %#v, want run_failed", terminal)
+	}
+}
+
+func TestLinearWorkflowRetryNonRetryableStopsAfterOneAttempt(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	sentinel := errors.New("do-not-retry")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "non-retryable-wf"},
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID: "s1",
+					Retry: &RetryPolicy{
+						Attempts: 5,
+						Retryable: func(err error) bool {
+							return !errors.Is(err, sentinel)
+						},
+					},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					return nil, sentinel
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatal("Run() error = nil, want step failure")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("error = %v, want sentinel", err)
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 (non-retryable)", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestLinearWorkflowRetryValidationErrorsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	compiler := stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) {
+		return stubCompiledSchema{validationErr: &ValidationError{Issues: []ValidationIssue{{Path: "", Keyword: "type", Message: "must be object"}}}}, nil
+	}}
+	var attempts int32
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "validation-no-retry-wf"},
+		SchemaCompiler: compiler,
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:           "s1",
+					OutputSchema: json.RawMessage(`{"type":"object"}`),
+					Retry:        &RetryPolicy{Attempts: 4},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					return json.RawMessage(`"bad"`), nil
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatal("Run() error = nil, want invalid step output")
+	}
+	if !errors.Is(err, ErrWorkflowInvalidStepOutput) {
+		t.Fatalf("error = %v, want ErrWorkflowInvalidStepOutput", err)
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 (validation not retried)", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestLinearWorkflowRetryContextErrorNotRetried(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "ctx-error-no-retry-wf"},
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:    "s1",
+					Retry: &RetryPolicy{Attempts: 4},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					return nil, context.Canceled
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatal("Run() error = nil, want cancellation")
+	}
+	if !errors.Is(err, ErrWorkflowCancelled) {
+		t.Fatalf("error = %v, want ErrWorkflowCancelled", err)
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 (context error not retried)", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestLinearWorkflowRetryPanicNotRetried(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "panic-no-retry-wf"},
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:    "s1",
+					Retry: &RetryPolicy{Attempts: 4},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					panic("kaboom")
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	if err == nil {
+		t.Fatal("Run() error = nil, want step panic")
+	}
+	if !errors.Is(err, ErrWorkflowStepPanicked) {
+		t.Fatalf("error = %v, want ErrWorkflowStepPanicked", err)
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 (panic not retried)", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestLinearWorkflowRetryCancelledDuringBackoff(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	var attempts int32
+	transient := errors.New("transient")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "cancel-backoff-wf"},
+		Listener:   recorder,
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:    "s1",
+					Retry: &RetryPolicy{Attempts: 5, Delay: 200 * time.Millisecond},
+				},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					return nil, transient
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err = wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`{}`)})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Run() error = nil, want cancellation")
+	}
+	if !errors.Is(err, ErrWorkflowCancelled) {
+		t.Fatalf("error = %v, want ErrWorkflowCancelled", err)
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", atomic.LoadInt32(&attempts))
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("elapsed = %v, want < 150ms (cancel promptly)", elapsed)
+	}
+
+	terminal, ok := recorder.TerminalEvent()
+	if !ok || terminal.Type != RunEventCancelled {
+		t.Fatalf("terminal = %#v, want run_cancelled", terminal)
+	}
+}
+
+func TestLinearWorkflowRetryOverrideEnablesRetryForRun(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	transient := errors.New("transient")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "override-enable-wf"},
+		Steps: []Step{
+			{
+				// No Retry configured: would run once by default.
+				Definition: StepDefinition{ID: "s1"},
+				Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+					n := atomic.AddInt32(&attempts, 1)
+					if n < 2 {
+						return nil, transient
+					}
+					return input, nil
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := wf.Run(context.Background(), WorkflowRunInput{
+		Input:          json.RawMessage(`{}`),
+		RetryOverrides: map[StepID]RetryPolicy{"s1": {Attempts: 3}},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.Status != RunStatusSucceeded {
+		t.Fatalf("status = %q, want succeeded", result.Status)
+	}
+	if atomic.LoadInt32(&attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestLinearWorkflowRetryOverrideDisablesRetryForRun(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	transient := errors.New("transient")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "override-disable-wf"},
+		Steps: []Step{
+			{
+				// Retry configured for 3 attempts, but run override disables it.
+				Definition: StepDefinition{ID: "s1", Retry: &RetryPolicy{Attempts: 3}},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					atomic.AddInt32(&attempts, 1)
+					return nil, transient
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wf.Run(context.Background(), WorkflowRunInput{
+		Input:          json.RawMessage(`{}`),
+		RetryOverrides: map[StepID]RetryPolicy{"s1": {Attempts: 1}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want step failure")
+	}
+	if !errors.Is(err, ErrWorkflowStepFailure) {
+		t.Fatalf("error = %v, want ErrWorkflowStepFailure", err)
+	}
+	if atomic.LoadInt32(&attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1 (override disables retry)", atomic.LoadInt32(&attempts))
+	}
+}
+
+func TestLinearWorkflowRetryOverrideInvalidAttemptsFailsRun(t *testing.T) {
+	t.Parallel()
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "override-invalid-wf"},
+		Steps: []Step{
+			{
+				Definition: StepDefinition{ID: "s1"},
+				Handler:    StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil }),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = wf.Run(context.Background(), WorkflowRunInput{
+		Input:          json.RawMessage(`{}`),
+		RetryOverrides: map[StepID]RetryPolicy{"s1": {Attempts: 0}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want invalid override")
+	}
+	if !strings.Contains(err.Error(), "invalid retry override") {
+		t.Fatalf("error = %v, want invalid retry override", err)
+	}
+}
+
+func TestLinearWorkflowRetryOverrideOnlyAffectsTargetStep(t *testing.T) {
+	t.Parallel()
+
+	var attemptsA, attemptsB int32
+	transient := errors.New("transient")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "override-targeted-wf"},
+		Steps: []Step{
+			{
+				Definition: StepDefinition{ID: "a", Retry: &RetryPolicy{Attempts: 3}},
+				Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+					n := atomic.AddInt32(&attemptsA, 1)
+					if n < 2 {
+						return nil, transient
+					}
+					return input, nil
+				}),
+			},
+			{
+				Definition: StepDefinition{ID: "b", Retry: &RetryPolicy{Attempts: 3}},
+				Handler: StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					n := atomic.AddInt32(&attemptsB, 1)
+					if n < 2 {
+						return nil, transient
+					}
+					return json.RawMessage(`"done"`), nil
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Override only step "b": disable its retry so it fails on first attempt.
+	_, err = wf.Run(context.Background(), WorkflowRunInput{
+		Input:          json.RawMessage(`{}`),
+		RetryOverrides: map[StepID]RetryPolicy{"b": {Attempts: 1}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want step b failure")
+	}
+	if !errors.Is(err, transient) {
+		t.Fatalf("error = %v, want transient", err)
+	}
+	if atomic.LoadInt32(&attemptsA) != 2 {
+		t.Fatalf("step a attempts = %d, want 2 (retry still enabled)", atomic.LoadInt32(&attemptsA))
+	}
+	if atomic.LoadInt32(&attemptsB) != 1 {
+		t.Fatalf("step b attempts = %d, want 1 (override disabled retry)", atomic.LoadInt32(&attemptsB))
+	}
+}
+
+func TestLinearWorkflowRetryEventsOrderedAndCorrelated(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	clock := NewFixedClock(time.Unix(9500, 0))
+	ids := NewFixedIDSource([]RunID{"retry-events-run"}, nil)
+	var attempts int32
+	transient := errors.New("transient")
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "retry-events-wf"},
+		Listener:   recorder,
+		Clock:      clock,
+		IDSource:   ids,
+		Steps: []Step{
+			{
+				Definition: StepDefinition{ID: "flaky", Retry: &RetryPolicy{Attempts: 2}},
+				Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+					if atomic.AddInt32(&attempts, 1) == 1 {
+						return nil, transient
+					}
+					return input, nil
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`0`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := recorder.Events()
+	for i, e := range events {
+		if e.Sequence != i+1 {
+			t.Fatalf("event %d sequence = %d, want %d", i, e.Sequence, i+1)
+		}
+		if e.RunID != "retry-events-run" {
+			t.Fatalf("event %d run ID = %q, want retry-events-run", i, e.RunID)
+		}
+		if e.Timestamp != time.Unix(9500, 0) {
+			t.Fatalf("event %d timestamp = %v, want epoch 9500", i, e.Timestamp)
+		}
+	}
+}
+
+func TestLinearWorkflowRetryDelayEmittedOnAttemptStarted(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	var attempts int32
+	transient := errors.New("transient")
+	delay := 5 * time.Millisecond
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "delay-wf"},
+		Listener:   recorder,
+		Steps: []Step{
+			{
+				Definition: StepDefinition{ID: "s1", Retry: &RetryPolicy{Attempts: 2, Delay: delay}},
+				Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+					if atomic.AddInt32(&attempts, 1) == 1 {
+						return nil, transient
+					}
+					return input, nil
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := wf.Run(context.Background(), WorkflowRunInput{Input: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := recorder.Events()
+	var attemptStart RunEvent
+	for _, e := range events {
+		if e.Type == RunEventStepAttemptStarted {
+			attemptStart = e
+		}
+	}
+	if attemptStart.Type != RunEventStepAttemptStarted {
+		t.Fatalf("no step_attempt_started event emitted")
+	}
+	if attemptStart.Delay != delay {
+		t.Fatalf("attempt started Delay = %v, want %v", attemptStart.Delay, delay)
+	}
+}
+
+func TestLinearWorkflowDefaultRetryableRejectsContextErrors(t *testing.T) {
+	t.Parallel()
+
+	if DefaultRetryable(nil) {
+		t.Fatal("DefaultRetryable(nil) = true, want false")
+	}
+	if DefaultRetryable(context.Canceled) {
+		t.Fatal("DefaultRetryable(context.Canceled) = true, want false")
+	}
+	if DefaultRetryable(context.DeadlineExceeded) {
+		t.Fatal("DefaultRetryable(context.DeadlineExceeded) = true, want false")
+	}
+	if !DefaultRetryable(errors.New("handler failed")) {
+		t.Fatal("DefaultRetryable(ordinary error) = false, want true")
 	}
 }

@@ -72,6 +72,8 @@ type (
 	WorkflowError              = runtime.WorkflowError
 	WorkflowErrorKind          = runtime.WorkflowErrorKind
 	StepPanicError             = runtime.StepPanicError
+	RetryPolicy                = runtime.RetryPolicy
+	RetryablePredicate         = runtime.RetryablePredicate
 	PageRequest                = runtime.PageRequest
 	Page[T any]                = runtime.Page[T]
 	ThreadRecord               = runtime.ThreadRecord
@@ -150,18 +152,20 @@ const (
 	WorkflowErrorStepPanicked      = runtime.WorkflowErrorStepPanicked
 	WorkflowErrorCancelled         = runtime.WorkflowErrorCancelled
 
-	RunEventStarted       = runtime.RunEventStarted
-	RunEventModelStarted  = runtime.RunEventModelStarted
-	RunEventModelFinished = runtime.RunEventModelFinished
-	RunEventToolRequested = runtime.RunEventToolRequested
-	RunEventToolStarted   = runtime.RunEventToolStarted
-	RunEventToolFinished  = runtime.RunEventToolFinished
-	RunEventDelta         = runtime.RunEventDelta
-	RunEventStepStarted   = runtime.RunEventStepStarted
-	RunEventStepFinished  = runtime.RunEventStepFinished
-	RunEventSucceeded     = runtime.RunEventSucceeded
-	RunEventFailed        = runtime.RunEventFailed
-	RunEventCancelled     = runtime.RunEventCancelled
+	RunEventStarted             = runtime.RunEventStarted
+	RunEventModelStarted        = runtime.RunEventModelStarted
+	RunEventModelFinished       = runtime.RunEventModelFinished
+	RunEventToolRequested       = runtime.RunEventToolRequested
+	RunEventToolStarted         = runtime.RunEventToolStarted
+	RunEventToolFinished        = runtime.RunEventToolFinished
+	RunEventDelta               = runtime.RunEventDelta
+	RunEventStepStarted         = runtime.RunEventStepStarted
+	RunEventStepFinished        = runtime.RunEventStepFinished
+	RunEventStepAttemptStarted  = runtime.RunEventStepAttemptStarted
+	RunEventStepAttemptFinished = runtime.RunEventStepAttemptFinished
+	RunEventSucceeded           = runtime.RunEventSucceeded
+	RunEventFailed              = runtime.RunEventFailed
+	RunEventCancelled           = runtime.RunEventCancelled
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 
@@ -211,6 +215,11 @@ var (
 	ErrWorkflowStepPanicked      = runtime.ErrWorkflowStepPanicked
 	ErrWorkflowCancelled         = runtime.ErrWorkflowCancelled
 )
+
+// DefaultRetryable is the default retryable-error predicate for RetryPolicy.
+// It rejects context cancellation and deadline errors and accepts all other
+// handler errors.
+var DefaultRetryable = runtime.DefaultRetryable
 
 func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {
 	return runtime.NewToolRegistry(compiler)
