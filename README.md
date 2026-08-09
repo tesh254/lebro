@@ -376,6 +376,8 @@ agent, _ := lebro.NewAgent(lebro.AgentConfig{
 | `RunEventSucceeded` | Terminal: run completed successfully |
 | `RunEventFailed` | Terminal: run failed |
 | `RunEventCancelled` | Terminal: run was cancelled |
+| `RunEventSuspended` | Run suspended at a step boundary (non-terminal; resumes with `RunEventResumed`) |
+| `RunEventResumed` | Previously suspended run resumed from its durable snapshot |
 
 ## File-backed SQLite storage
 
@@ -582,6 +584,74 @@ Run the durable-workflow example (no network or API key required):
 
 ```sh
 go run ./examples/workflow-durable
+```
+
+### Suspend and resume
+
+A step handler can suspend the run with a typed resume contract so the workflow
+can wait for an external decision or input. The handler returns a
+`*SuspendError` wrapping a `SuspendSignal`; the executor detects it via
+`errors.Is(err, lebro.ErrWorkflowSuspend)`, validates the signal's contract
+against the step's `StepDefinition.SuspendSchema`, and persists a suspend
+snapshot plus a `RunStatusSuspended` run record. The run's `WorkflowRunResult`
+carries a non-nil `Suspend` with the validated contract and opaque payload.
+A step that suspends without a `SuspendSchema` is rejected as an invalid step
+output so a process restart never observes an unvalidated resume contract.
+
+The contract is the **expected resume value**: `SuspendSchema` validates its
+shape at suspend time, and `Resume` validates the resume input against the same
+schema and additionally requires it to equal the persisted contract value, so
+the suspending step's published expectation constrains resume.
+
+```go
+wf, _ := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+    Definition:     lebro.WorkflowDefinition{ID: "approval", Version: "v1"},
+    SchemaCompiler: lebrojsonschema.NewCompiler(),
+    Store:          store,
+    Steps: []lebro.Step{
+        {Definition: lebro.StepDefinition{
+            ID:            "await-approval",
+            SuspendSchema: json.RawMessage(`{"type":"object","required":["approved"],"properties":{"approved":{"const":true}}}`),
+        }, Handler: lebro.StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+            return nil, &lebro.SuspendError{Signal: lebro.SuspendSignal{
+                Contract: json.RawMessage(`{"approved":true}`),
+                Payload:  json.RawMessage(`{"pending":"human"}`),
+            }}
+        })},
+        // ...later steps run after Resume.
+    },
+})
+
+suspended, _ := wf.Run(ctx, lebro.WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+// suspended.Status == lebro.RunStatusSuspended
+// suspended.Suspend.Contract == {"approved":true}
+
+// Invalid resume input is rejected before any step runs; the snapshot is
+// left untouched.
+_, err := wf.Resume(ctx, lebro.WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":false}`)})
+// errors.Is(err, lebro.ErrInvalidResumeInput)
+
+// Valid resume continues from the durable snapshot without re-executing
+// completed steps.
+resumed, _ := wf.Resume(ctx, lebro.WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true}`)})
+// resumed.Status == lebro.RunStatusSucceeded
+```
+
+`Resume` requires a bound `Store` and a `RunStatusSuspended` run whose
+`WorkflowID` matches the workflow instance; resuming a run bound to a different
+workflow returns a step failure so unrelated handlers are never executed. The
+stored run record stays `Suspended` until the first resumed step persists, so
+a process crash before any step commits leaves the run resumable rather than
+orphaned in `Running`. Run history records
+`RunEventSuspended` ("run_suspended") at the suspend boundary and
+`RunEventResumed` ("run_resumed") at resume start; neither is terminal. The
+suspend snapshot envelope version is `2` and adds the optional `suspend`
+field; readers tolerate `0` and `1` as legacy.
+
+Run the suspend/resume example (no network or API key required):
+
+```sh
+go run ./examples/workflow-suspend-resume
 ```
 
 ## Agent and tool workflow steps

@@ -35,6 +35,8 @@ const (
 	ValidationTargetStructuredOutput ValidationTarget = "structured_output"
 	ValidationTargetStepInput        ValidationTarget = "step_input"
 	ValidationTargetStepOutput       ValidationTarget = "step_output"
+	ValidationTargetSuspendContract  ValidationTarget = "suspend_contract"
+	ValidationTargetResumeInput      ValidationTarget = "resume_input"
 )
 
 // ValidationIssue describes one JSON Schema violation. Path is an RFC 6901

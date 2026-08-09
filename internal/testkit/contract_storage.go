@@ -673,6 +673,57 @@ func storageContractWorkflowRunDurableFields(t *testing.T, newStore StoreFactory
 		t.Fatalf("failure = %#v, want %#v", gotFailed.Failure, failed.Failure)
 	}
 
+	// A suspended run round-trips with no FinishedAt so Resume can distinguish
+	// a resumable run from a completed one.
+	suspended := runtime.WorkflowRunRecord{
+		ID:            "run-suspended",
+		WorkflowID:    "workflow-durable",
+		Status:        runtime.RunStatusSuspended,
+		CurrentStep:   2,
+		CurrentStepID: "await-approval",
+		StepOutputs:   []json.RawMessage{json.RawMessage(`{"step":1}`)},
+		StartedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, suspended); err != nil {
+		t.Fatal(err)
+	}
+	gotSuspended, err := store.WorkflowRuns().GetWorkflowRun(ctx, suspended.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotSuspended.Status != runtime.RunStatusSuspended {
+		t.Fatalf("suspended status = %q, want suspended", gotSuspended.Status)
+	}
+	if gotSuspended.FinishedAt != nil {
+		t.Fatalf("suspended FinishedAt = %v, want nil", gotSuspended.FinishedAt)
+	}
+	if gotSuspended.CurrentStep != 2 || gotSuspended.CurrentStepID != "await-approval" {
+		t.Fatalf("suspended current step = %d/%q, want 2/await-approval", gotSuspended.CurrentStep, gotSuspended.CurrentStepID)
+	}
+
+	// A suspend snapshot round-trips with a suspend envelope so Resume can
+	// recover the resume contract and payload.
+	suspendState := json.RawMessage(`{"step":2,"step_id":"await-approval","outputs":[{"step":1}],"suspend":{"contract":{"approved":true},"payload":{"pending":"human"}}}`)
+	suspendSnapshot := runtime.WorkflowSnapshotRecord{
+		ID:            "snapshot-suspend-2",
+		RunID:         suspended.ID,
+		Sequence:      2,
+		SchemaVersion: 2,
+		State:         suspendState,
+		CreatedAt:     now,
+	}
+	if err := store.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, suspendSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	gotSnapshots, err := store.WorkflowSnapshots().ListWorkflowSnapshots(ctx, suspended.ID, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotSnapshots.Records) != 1 || gotSnapshots.Records[0].SchemaVersion != 2 || string(gotSnapshots.Records[0].State) != string(suspendState) {
+		t.Fatalf("suspend snapshot = %+v, want single record with schema v2", gotSnapshots.Records)
+	}
+
 	// An upsert with empty durable fields resets them rather than preserving
 	// stale values, mirroring the whole-record replace semantics of the
 	// other fields.

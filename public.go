@@ -72,6 +72,10 @@ type (
 	WorkflowError              = runtime.WorkflowError
 	WorkflowErrorKind          = runtime.WorkflowErrorKind
 	StepPanicError             = runtime.StepPanicError
+	SuspendSignal              = runtime.SuspendSignal
+	SuspendError               = runtime.SuspendError
+	SuspendResult              = runtime.SuspendResult
+	WorkflowResumeInput        = runtime.WorkflowResumeInput
 	RetryPolicy                = runtime.RetryPolicy
 	RetryablePredicate         = runtime.RetryablePredicate
 	PageRequest                = runtime.PageRequest
@@ -128,6 +132,8 @@ const (
 	ValidationTargetStructuredOutput = runtime.ValidationTargetStructuredOutput
 	ValidationTargetStepInput        = runtime.ValidationTargetStepInput
 	ValidationTargetStepOutput       = runtime.ValidationTargetStepOutput
+	ValidationTargetSuspendContract  = runtime.ValidationTargetSuspendContract
+	ValidationTargetResumeInput      = runtime.ValidationTargetResumeInput
 	JSONSchemaDraft202012            = runtime.JSONSchemaDraft202012
 
 	FinishReasonStop        = runtime.FinishReasonStop
@@ -166,6 +172,8 @@ const (
 	RunEventSucceeded           = runtime.RunEventSucceeded
 	RunEventFailed              = runtime.RunEventFailed
 	RunEventCancelled           = runtime.RunEventCancelled
+	RunEventSuspended           = runtime.RunEventSuspended
+	RunEventResumed             = runtime.RunEventResumed
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 
@@ -214,6 +222,11 @@ var (
 	ErrWorkflowStepFailure       = runtime.ErrWorkflowStepFailure
 	ErrWorkflowStepPanicked      = runtime.ErrWorkflowStepPanicked
 	ErrWorkflowCancelled         = runtime.ErrWorkflowCancelled
+
+	ErrWorkflowSuspend             = runtime.ErrWorkflowSuspend
+	ErrNotSuspended                = runtime.ErrNotSuspended
+	ErrInvalidResumeInput          = runtime.ErrInvalidResumeInput
+	ErrWorkflowResumeRequiresStore = runtime.ErrWorkflowResumeRequiresStore
 )
 
 // DefaultRetryable reports whether a handler error is eligible for retry

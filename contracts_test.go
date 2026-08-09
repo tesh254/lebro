@@ -3,6 +3,7 @@ package lebro
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -208,6 +209,8 @@ func TestMAD20LinearWorkflowPublicContract(t *testing.T) {
 	sentinels := []error{
 		ErrWorkflowInvalidStepInput, ErrWorkflowInvalidStepOutput,
 		ErrWorkflowStepFailure, ErrWorkflowStepPanicked, ErrWorkflowCancelled,
+		ErrWorkflowSuspend, ErrNotSuspended, ErrInvalidResumeInput,
+		ErrWorkflowResumeRequiresStore,
 	}
 	for _, sentinel := range sentinels {
 		if sentinel == nil {
@@ -216,8 +219,10 @@ func TestMAD20LinearWorkflowPublicContract(t *testing.T) {
 	}
 
 	targets := map[ValidationTarget]string{
-		ValidationTargetStepInput:  "step_input",
-		ValidationTargetStepOutput: "step_output",
+		ValidationTargetStepInput:       "step_input",
+		ValidationTargetStepOutput:      "step_output",
+		ValidationTargetSuspendContract: "suspend_contract",
+		ValidationTargetResumeInput:     "resume_input",
 	}
 	for target, want := range targets {
 		if string(target) != want {
@@ -310,6 +315,8 @@ func TestMAD18RunRecordPublicContract(t *testing.T) {
 		RunEventSucceeded:     "run_succeeded",
 		RunEventFailed:        "run_failed",
 		RunEventCancelled:     "run_cancelled",
+		RunEventSuspended:     "run_suspended",
+		RunEventResumed:       "run_resumed",
 	}
 	for eventType, want := range eventTypes {
 		if string(eventType) != want {
@@ -321,6 +328,12 @@ func TestMAD18RunRecordPublicContract(t *testing.T) {
 	}
 	if RunEventStarted.IsTerminal() {
 		t.Fatal("non-terminal event type reported IsTerminal() = true")
+	}
+	if !RunEventSuspended.IsSuspended() || !RunEventResumed.IsSuspended() {
+		t.Fatal("suspend/resume event types must report IsSuspended() = true")
+	}
+	if RunEventSuspended.IsTerminal() {
+		t.Fatal("run_suspended must not be terminal (a suspended run can resume)")
 	}
 
 	recorder := NewRunRecorder()
@@ -405,5 +418,34 @@ func TestMAD17AgentLoopPublicContract(t *testing.T) {
 		if sentinel == nil {
 			t.Fatalf("sentinel error is nil: %v", sentinel)
 		}
+	}
+}
+
+func TestMAD28SuspendResumePublicContract(t *testing.T) {
+	t.Parallel()
+
+	if string(RunStatusSuspended) != "suspended" {
+		t.Fatalf("RunStatusSuspended = %q, want suspended", RunStatusSuspended)
+	}
+
+	// SuspendError satisfies errors.Is against ErrWorkflowSuspend.
+	signal := SuspendSignal{StepID: "s1", Contract: json.RawMessage(`{}`)}
+	suspendErr := &SuspendError{Signal: signal}
+	if !errors.Is(suspendErr, ErrWorkflowSuspend) {
+		t.Fatal("errors.Is(*SuspendError, ErrWorkflowSuspend) = false")
+	}
+	// Round-trip through the signal accessor.
+	var extracted *SuspendError
+	if !errors.As(suspendErr, &extracted) {
+		t.Fatal("errors.As(*SuspendError) = false")
+	}
+	if extracted.Signal.StepID != "s1" {
+		t.Fatalf("extracted StepID = %q, want s1", extracted.Signal.StepID)
+	}
+
+	// The resume input type carries the documented fields.
+	resume := WorkflowResumeInput{RunID: "run-1", Input: json.RawMessage(`{}`), Metadata: map[string]string{"k": "v"}}
+	if resume.RunID != "run-1" {
+		t.Fatalf("RunID = %q", resume.RunID)
 	}
 }
