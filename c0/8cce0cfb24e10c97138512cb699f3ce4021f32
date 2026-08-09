@@ -1,0 +1,34 @@
+internal/runtime/workflow_suspend_test.go
+  s_0800ef2c447b12::t_eb05a64f061cef 493-711
+  s_0800ef2c447b12::t_ff3dbd0ddc9e3f 9
+internal/runtime/workflow.go
+  s_0800ef2c447b12::t_161492ea31ddd1 806-810,827-829
+  s_0800ef2c447b12::t_d4244404744a8c 782-786,800-805,811-826,830-840
+  s_0800ef2c447b12::t_2e2aa11592061c 869-885
+  s_0800ef2c447b12::t_474bcb1ac86ff4 736-738,745,749-764
+  s_0800ef2c447b12::t_002380dc0ebf81 743
+  s_0800ef2c447b12::t_e6f30271d4f998 8
+  s_0800ef2c447b12::t_93a3932a6a51b3 343
+README.md
+  s_0800ef2c447b12::t_44c9c349e92b05 640-645
+examples/workflow-suspend-resume/main.go
+  s_0800ef2c447b12::t_e2faa5f5fbaee0 91
+  s_0800ef2c447b12::t_0b65a3448a5efd 124,135
+  s_0800ef2c447b12::t_660c7af1870613 41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c08cce0cfb24e10c97138512cb699f3ce4021f32",
+  "prompts": {},
+  "sessions": {
+    "s_0800ef2c447b12": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_018704a58ffeU2qv5qSrJOEiHX",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
