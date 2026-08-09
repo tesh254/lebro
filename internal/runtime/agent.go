@@ -401,7 +401,6 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
 			}
-			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			result := RunResult{
 				ID:       runID,
 				Status:   RunStatusSucceeded,
@@ -409,8 +408,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				Metadata: metadata,
 			}
 			if persistErr := a.persistNewMessages(ctx, input.ThreadID, runID, transcript, loadedCount); persistErr != nil {
-				return result, persistErr
+				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
+				return a.failWithMessages(runID, metadata, step, transcript, persistAgentErr)
 			}
+			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			return result, nil
 		}
 
@@ -584,6 +586,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 
 	go a.runStreamLoop(streamRunParams{
 		ctx:             runCtx,
+		parentCtx:       ctx,
 		runID:           runID,
 		metadata:        metadata,
 		transcript:      transcript,
@@ -611,6 +614,7 @@ type streamOutcome struct {
 
 type streamRunParams struct {
 	ctx             context.Context
+	parentCtx       context.Context
 	runID           RunID
 	metadata        map[string]string
 	transcript      []Message
@@ -694,10 +698,16 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
 				return
 			}
-			p.emitter.terminal(p.runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			result := RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata}
-			persistErr := a.persistNewMessages(p.ctx, p.threadID, p.runID, transcript, p.loadedCount)
-			p.done <- streamOutcome{result: result, err: persistErr}
+			persistErr := a.persistNewMessages(p.parentCtx, p.threadID, p.runID, transcript, p.loadedCount)
+			if persistErr != nil {
+				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
+				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, persistAgentErr), err: persistAgentErr}
+				return
+			}
+			p.emitter.terminal(p.runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
+			p.done <- streamOutcome{result: result, err: nil}
 			return
 		}
 
@@ -1140,7 +1150,9 @@ func (a *Agent) loadPriorMessages(ctx context.Context, input *RunInput) (int, er
 // only caller-supplied and loop-produced messages are stored. When the store is
 // nil or threadID is empty, no persistence is configured and the method is a
 // no-op. The thread is created if it does not already exist so the first run
-// against a new thread ID succeeds without a separate CreateThread call.
+// against a new thread ID succeeds without a separate CreateThread call. The
+// transaction is retried on ErrConflict so concurrent successful runs against
+// the same thread do not lose a transcript.
 func (a *Agent) persistNewMessages(ctx context.Context, threadID ThreadID, runID RunID, transcript []Message, loadedCount int) error {
 	if a.store == nil || threadID == "" {
 		return nil
@@ -1163,18 +1175,30 @@ func (a *Agent) persistNewMessages(ctx context.Context, threadID ThreadID, runID
 			CreatedAt: now,
 		})
 	}
-	return a.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
-		if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
-			if err := repos.Threads().CreateThread(ctx, ThreadRecord{
-				ID:        threadID,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}); err != nil {
-				return fmt.Errorf("lebro: create thread for persist: %w", err)
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err := a.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+			if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
+				if err := repos.Threads().CreateThread(ctx, ThreadRecord{
+					ID:        threadID,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}); err != nil {
+					return fmt.Errorf("lebro: create thread for persist: %w", err)
+				}
+			} else if err != nil {
+				return fmt.Errorf("lebro: check thread for persist: %w", err)
 			}
-		} else if err != nil {
-			return fmt.Errorf("lebro: check thread for persist: %w", err)
+			return repos.Messages().AppendMessages(ctx, records)
+		})
+		if err == nil {
+			return nil
 		}
-		return repos.Messages().AppendMessages(ctx, records)
-	})
+		if !errors.Is(err, ErrConflict) {
+			return err
+		}
+		lastErr = err
+	}
+	return lastErr
 }

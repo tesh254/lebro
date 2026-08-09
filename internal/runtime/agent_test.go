@@ -1426,6 +1426,17 @@ func TestAgentFailedRunLeavesNoMessages(t *testing.T) {
 
 	store := NewMemoryStore()
 	ctx := context.Background()
+	now := timeUTC()
+	if err := store.Threads().CreateThread(ctx, ThreadRecord{ID: "thread-fail-1", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Messages().AppendMessages(ctx, []MessageRecord{
+		{ID: "prior-1", ThreadID: "thread-fail-1", Message: Message{Role: RoleUser, Content: "prior question"}, CreatedAt: now},
+		{ID: "prior-2", ThreadID: "thread-fail-1", Message: Message{Role: RoleAssistant, Content: "prior answer"}, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	model := newScriptedModel(scriptedResponse{err: errors.New("provider down")})
 	agent, err := NewAgent(AgentConfig{
 		Definition: AgentDefinition{ID: "fail-agent"},
@@ -1449,13 +1460,13 @@ func TestAgentFailedRunLeavesNoMessages(t *testing.T) {
 
 	page, err := store.Messages().ListMessages(ctx, "thread-fail-1", PageRequest{})
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return
-		}
 		t.Fatal(err)
 	}
-	if len(page.Records) != 0 {
-		t.Fatalf("stored messages after failed run = %d, want 0", len(page.Records))
+	if len(page.Records) != 2 {
+		t.Fatalf("stored messages after failed run = %d, want 2 (prior messages unchanged)", len(page.Records))
+	}
+	if page.Records[0].Message.Content != "prior question" || page.Records[1].Message.Content != "prior answer" {
+		t.Fatalf("prior messages changed after failed run: %#v", page.Records)
 	}
 }
 
