@@ -337,14 +337,16 @@ func TestLinearWorkflowTerminalPersistenceFailureFailsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// failOn=2: the first SaveWorkflowRun (run start) succeeds, the
-	// step-boundary update (none here — single step — so no snapshot) is
-	// skipped, and the terminal SaveWorkflowRun fails. With a single step
-	// the save sequence is: run start, terminal.
+	// A single-step workflow with a Store bound still calls persistStep
+	// after step 1, so the SaveWorkflowRun sequence is: run start,
+	// step-boundary update (inside persistStep's Transaction), terminal.
+	// failOn=3 fails the terminal write on the success path so the
+	// distinctive scenario — a completed run whose terminal write fails —
+	// is covered rather than the step-boundary failure path.
 	storageErr := errors.New("lebro: terminal write failed")
 	wrapped := &failingRepositoriesStore{
 		Store:        store,
-		runRepo:      &failingRunRepo{WorkflowRunRepository: store.WorkflowRuns(), failOn: 2, fail: storageErr},
+		runRepo:      &failingRunRepo{WorkflowRunRepository: store.WorkflowRuns(), failOn: 3, fail: storageErr},
 		snapshotRepo: store.WorkflowSnapshots(),
 	}
 
@@ -374,6 +376,25 @@ func TestLinearWorkflowTerminalPersistenceFailureFailsRun(t *testing.T) {
 	}
 	if !errors.Is(runErr, storageErr) {
 		t.Fatalf("error = %v, want it to wrap storage error %v", runErr, storageErr)
+	}
+
+	// The step boundary committed before the terminal write failed, so
+	// the snapshot exists and the run record still reflects the last
+	// successful Running state — proving the failure is the terminal write
+	// on the success path, not the step boundary.
+	snapshots, err := store.WorkflowSnapshots().ListWorkflowSnapshots(ctx, "terminal-fail-run-1", PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots.Records) != 1 {
+		t.Fatalf("snapshots = %d, want 1 (step boundary committed before terminal failure)", len(snapshots.Records))
+	}
+	run, err := store.WorkflowRuns().GetWorkflowRun(ctx, "terminal-fail-run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != RunStatusRunning || run.CurrentStep != 1 {
+		t.Fatalf("run after terminal failure = %#v, want Running at step 1 (terminal write did not commit)", run)
 	}
 }
 
