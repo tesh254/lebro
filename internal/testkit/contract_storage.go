@@ -32,6 +32,8 @@ func StorageContractSuite(t *testing.T, newStore StoreFactory) {
 	t.Run("pagination bounds", func(t *testing.T) { storageContractPaginationBounds(t, newStore) })
 	t.Run("defensive copies and transaction cancellation", func(t *testing.T) { storageContractDefensiveCopies(t, newStore) })
 	t.Run("outer store reads in transaction", func(t *testing.T) { storageContractOuterReads(t, newStore) })
+	t.Run("workflow run durable fields round-trip", func(t *testing.T) { storageContractWorkflowRunDurableFields(t, newStore) })
+	t.Run("workflow runs list and filter", func(t *testing.T) { storageContractWorkflowRunList(t, newStore) })
 	t.Run("thread namespace and owner round-trip", func(t *testing.T) { storageContractThreadNamespaceOwner(t, newStore) })
 }
 
@@ -304,6 +306,9 @@ func storageContractTransactionRepositories(t *testing.T, newStore StoreFactory)
 		if _, err := repositories.WorkflowRuns().GetWorkflowRun(ctx, "run-1"); err != nil {
 			return err
 		}
+		if _, err := repositories.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{}, runtime.PageRequest{}); err != nil {
+			return err
+		}
 		if err := repositories.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, runtime.WorkflowSnapshotRecord{ID: "snapshot-1", RunID: "run-1"}); err != nil {
 			return err
 		}
@@ -361,6 +366,10 @@ func storageContractCanceledContext(t *testing.T, newStore StoreFactory) {
 			return store.WorkflowRuns().SaveWorkflowRun(canceled, runtime.WorkflowRunRecord{ID: "run-2", WorkflowID: "workflow-1"})
 		}},
 		{"get run", func() error { _, err := store.WorkflowRuns().GetWorkflowRun(canceled, "run-1"); return err }},
+		{"list runs", func() error {
+			_, err := store.WorkflowRuns().ListWorkflowRuns(canceled, runtime.WorkflowRunFilter{}, runtime.PageRequest{})
+			return err
+		}},
 		{"save snapshot", func() error {
 			return store.WorkflowSnapshots().SaveWorkflowSnapshot(canceled, runtime.WorkflowSnapshotRecord{ID: "snapshot-1", RunID: "run-1"})
 		}},
@@ -427,11 +436,11 @@ func storageContractDefensiveCopies(t *testing.T, newStore StoreFactory) {
 	if err := store.Messages().AppendMessages(ctx, []runtime.MessageRecord{{ID: "message-1", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleUser}, Metadata: json.RawMessage(`{"version":1}`)}}); err != nil {
 		t.Fatal(err)
 	}
-	run := runtime.WorkflowRunRecord{ID: "run-1", WorkflowID: "workflow-1", Input: json.RawMessage(`{"version":1}`), Metadata: json.RawMessage(`{"version":1}`)}
+	run := runtime.WorkflowRunRecord{ID: "run-1", WorkflowID: "workflow-1", Input: json.RawMessage(`{"version":1}`), Metadata: json.RawMessage(`{"version":1}`), StepOutputs: []json.RawMessage{json.RawMessage(`{"version":1}`)}, Failure: &runtime.WorkflowFailureData{Kind: runtime.WorkflowErrorStepFailed, Message: "boom"}}
 	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, run); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, runtime.WorkflowSnapshotRecord{ID: "snapshot-1", RunID: run.ID, State: json.RawMessage(`{"version":1}`)}); err != nil {
+	if err := store.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, runtime.WorkflowSnapshotRecord{ID: "snapshot-1", RunID: run.ID, SchemaVersion: 1, State: json.RawMessage(`{"version":1}`)}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -441,12 +450,20 @@ func storageContractDefensiveCopies(t *testing.T, newStore StoreFactory) {
 	}
 	loadedRun.Input[0] = '['
 	loadedRun.Metadata[0] = '['
+	loadedRun.StepOutputs[0][0] = '['
+	loadedRun.Failure.Message = "mutated"
 	againRun, err := store.WorkflowRuns().GetWorkflowRun(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(againRun.Input) != `{"version":1}` || string(againRun.Metadata) != `{"version":1}` {
 		t.Fatalf("stored run mutated: %#v", againRun)
+	}
+	if string(againRun.StepOutputs[0]) != `{"version":1}` {
+		t.Fatalf("stored run step output mutated: %q", againRun.StepOutputs[0])
+	}
+	if againRun.Failure == nil || againRun.Failure.Message != "boom" {
+		t.Fatalf("stored run failure mutated: %#v", againRun.Failure)
 	}
 
 	snapshots, err := store.WorkflowSnapshots().ListWorkflowSnapshots(ctx, run.ID, runtime.PageRequest{})
@@ -574,5 +591,173 @@ func storageContractThreadNamespaceOwner(t *testing.T, newStore StoreFactory) {
 	}
 	if emptyGot.Namespace != "" || emptyGot.OwnerID != "" {
 		t.Fatalf("empty namespace/owner = %q/%q, want empty", emptyGot.Namespace, emptyGot.OwnerID)
+	}
+}
+
+func storageContractWorkflowRunDurableFields(t *testing.T, newStore StoreFactory) {
+	t.Helper()
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	finished := now.Add(5 * time.Minute)
+
+	run := runtime.WorkflowRunRecord{
+		ID:              "run-durable",
+		WorkflowID:      "workflow-durable",
+		ThreadID:        "thread-1",
+		Status:          runtime.RunStatusSucceeded,
+		Input:           json.RawMessage(`{"input":"value"}`),
+		Output:          json.RawMessage(`{"output":"done"}`),
+		StepOutputs:     []json.RawMessage{json.RawMessage(`{"step":1}`), json.RawMessage(`{"step":2}`)},
+		CurrentStep:     2,
+		CurrentStepID:   "step-2",
+		Failure:         nil,
+		WorkflowVersion: "v1",
+		Metadata:        json.RawMessage(`{"source":"test"}`),
+		StartedAt:       now,
+		FinishedAt:      &finished,
+		UpdatedAt:       finished,
+	}
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, run); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.WorkflowRuns().GetWorkflowRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkflowID != run.WorkflowID || got.Status != run.Status || got.WorkflowVersion != run.WorkflowVersion {
+		t.Fatalf("run durable header = %#v, want %#v", got, run)
+	}
+	if string(got.Input) != string(run.Input) || string(got.Output) != string(run.Output) || string(got.Metadata) != string(run.Metadata) {
+		t.Fatalf("run durable JSON = in %q out %q meta %q, want %q %q %q", got.Input, got.Output, got.Metadata, run.Input, run.Output, run.Metadata)
+	}
+	if len(got.StepOutputs) != len(run.StepOutputs) {
+		t.Fatalf("step outputs len = %d, want %d", len(got.StepOutputs), len(run.StepOutputs))
+	}
+	for i, output := range run.StepOutputs {
+		if string(got.StepOutputs[i]) != string(output) {
+			t.Fatalf("step output %d = %q, want %q", i, got.StepOutputs[i], output)
+		}
+	}
+	if got.CurrentStep != run.CurrentStep || got.CurrentStepID != run.CurrentStepID {
+		t.Fatalf("current step = %d/%q, want %d/%q", got.CurrentStep, got.CurrentStepID, run.CurrentStep, run.CurrentStepID)
+	}
+	if got.FinishedAt == nil || !got.FinishedAt.Equal(finished) {
+		t.Fatalf("finished at = %v, want %v", got.FinishedAt, finished)
+	}
+
+	// A failed run persists structured failure data.
+	failed := runtime.WorkflowRunRecord{
+		ID:            "run-failed",
+		WorkflowID:    "workflow-durable",
+		Status:        runtime.RunStatusFailed,
+		CurrentStep:   1,
+		CurrentStepID: "step-1",
+		Failure: &runtime.WorkflowFailureData{
+			Kind:    runtime.WorkflowErrorStepFailed,
+			Step:    1,
+			StepID:  "step-1",
+			Message: "handler blew up",
+		},
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, failed); err != nil {
+		t.Fatal(err)
+	}
+	gotFailed, err := store.WorkflowRuns().GetWorkflowRun(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotFailed.Failure == nil || gotFailed.Failure.Kind != failed.Failure.Kind || gotFailed.Failure.Message != failed.Failure.Message {
+		t.Fatalf("failure = %#v, want %#v", gotFailed.Failure, failed.Failure)
+	}
+
+	// An upsert with empty durable fields resets them rather than preserving
+	// stale values, mirroring the whole-record replace semantics of the
+	// other fields.
+	if err := store.WorkflowRuns().SaveWorkflowRun(ctx, runtime.WorkflowRunRecord{
+		ID: "run-durable", WorkflowID: "workflow-durable", Status: runtime.RunStatusCancelled, StartedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reset, err := store.WorkflowRuns().GetWorkflowRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.Status != runtime.RunStatusCancelled || reset.CurrentStep != 0 || reset.CurrentStepID != "" || len(reset.StepOutputs) != 0 || reset.Failure != nil || reset.WorkflowVersion != "" {
+		t.Fatalf("upsert did not reset durable fields: %#v", reset)
+	}
+}
+
+func storageContractWorkflowRunList(t *testing.T, newStore StoreFactory) {
+	t.Helper()
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+
+	runs := []runtime.WorkflowRunRecord{
+		{ID: "run-a", WorkflowID: "wf-1", Status: runtime.RunStatusSucceeded, StartedAt: now, UpdatedAt: now},
+		{ID: "run-b", WorkflowID: "wf-1", Status: runtime.RunStatusFailed, StartedAt: now.Add(time.Minute), UpdatedAt: now},
+		{ID: "run-c", WorkflowID: "wf-2", Status: runtime.RunStatusSucceeded, StartedAt: now.Add(2 * time.Minute), UpdatedAt: now},
+	}
+	for _, run := range runs {
+		if err := store.WorkflowRuns().SaveWorkflowRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all, err := store.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Records) != len(runs) {
+		t.Fatalf("ListWorkflowRuns() = %d records, want %d", len(all.Records), len(runs))
+	}
+
+	byWorkflow, err := store.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{WorkflowID: "wf-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byWorkflow.Records) != 2 {
+		t.Fatalf("ListWorkflowRuns(wf-1) = %d records, want 2", len(byWorkflow.Records))
+	}
+	for _, got := range byWorkflow.Records {
+		if got.WorkflowID != "wf-1" {
+			t.Fatalf("ListWorkflowRuns(wf-1) returned %q", got.WorkflowID)
+		}
+	}
+
+	byStatus, err := store.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{Status: runtime.RunStatusSucceeded}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byStatus.Records) != 2 {
+		t.Fatalf("ListWorkflowRuns(succeeded) = %d records, want 2", len(byStatus.Records))
+	}
+	for _, got := range byStatus.Records {
+		if got.Status != runtime.RunStatusSucceeded {
+			t.Fatalf("ListWorkflowRuns(succeeded) returned %q", got.Status)
+		}
+	}
+
+	combined, err := store.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{WorkflowID: "wf-1", Status: runtime.RunStatusFailed}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combined.Records) != 1 || combined.Records[0].ID != "run-b" {
+		t.Fatalf("ListWorkflowRuns(wf-1, failed) = %#v, want [run-b]", combined.Records)
+	}
+
+	// Pagination bounds apply like the other list operations.
+	if page, err := store.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{}, runtime.PageRequest{Cursor: "not-a-cursor"}); !errors.Is(err, runtime.ErrInvalidPage) {
+		t.Fatalf("ListWorkflowRuns bad cursor error = %v, want ErrInvalidPage, page = %#v", err, page)
+	}
+	paged, err := store.WorkflowRuns().ListWorkflowRuns(ctx, runtime.WorkflowRunFilter{}, runtime.PageRequest{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paged.Records) != 2 || paged.NextCursor == "" {
+		t.Fatalf("paged run list = %#v, want 2 records and a next cursor", paged)
 	}
 }

@@ -133,6 +133,11 @@ func (s *MemoryStore) GetWorkflowRun(ctx context.Context, id RunID) (WorkflowRun
 	defer s.mu.RUnlock()
 	return getWorkflowRun(ctx, s.state, id)
 }
+func (s *MemoryStore) ListWorkflowRuns(ctx context.Context, filter WorkflowRunFilter, page PageRequest) (Page[WorkflowRunRecord], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return listWorkflowRuns(ctx, s.state, filter, page)
+}
 func (s *MemoryStore) SaveWorkflowSnapshot(ctx context.Context, record WorkflowSnapshotRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,6 +198,9 @@ func (r *memoryRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 }
 func (r *memoryRepositories) GetWorkflowRun(ctx context.Context, id RunID) (WorkflowRunRecord, error) {
 	return getWorkflowRun(ctx, r.state, id)
+}
+func (r *memoryRepositories) ListWorkflowRuns(ctx context.Context, filter WorkflowRunFilter, page PageRequest) (Page[WorkflowRunRecord], error) {
+	return listWorkflowRuns(ctx, r.state, filter, page)
 }
 func (r *memoryRepositories) SaveWorkflowSnapshot(ctx context.Context, v WorkflowSnapshotRecord) error {
 	err := saveWorkflowSnapshot(ctx, &r.state, v)
@@ -315,6 +323,16 @@ func saveWorkflowRun(ctx context.Context, s *memoryState, v WorkflowRunRecord) e
 			return fmt.Errorf("lebro: workflow run %s: %w", name, err)
 		}
 	}
+	for i, output := range v.StepOutputs {
+		if err := validateJSON(output); err != nil {
+			return fmt.Errorf("lebro: workflow run step output %d: %w", i, err)
+		}
+	}
+	if v.Failure != nil {
+		if err := validateRecord(v.Failure); err != nil {
+			return fmt.Errorf("lebro: workflow run failure: %w", err)
+		}
+	}
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: workflow run: %w", err)
 	}
@@ -330,6 +348,28 @@ func getWorkflowRun(ctx context.Context, s memoryState, id RunID) (WorkflowRunRe
 		return WorkflowRunRecord{}, ErrNotFound
 	}
 	return cloneWorkflowRunRecord(v), nil
+}
+func listWorkflowRuns(ctx context.Context, s memoryState, filter WorkflowRunFilter, p PageRequest) (Page[WorkflowRunRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[WorkflowRunRecord]{}, err
+	}
+	ids := make([]RunID, 0, len(s.runs))
+	for id := range s.runs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	filtered := make([]WorkflowRunRecord, 0, len(ids))
+	for _, id := range ids {
+		run := s.runs[id]
+		if filter.WorkflowID != "" && run.WorkflowID != filter.WorkflowID {
+			continue
+		}
+		if filter.Status != "" && run.Status != filter.Status {
+			continue
+		}
+		filtered = append(filtered, run)
+	}
+	return paginate(filtered, p, cloneWorkflowRunRecord)
 }
 func saveWorkflowSnapshot(ctx context.Context, s *memoryState, v WorkflowSnapshotRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -445,6 +485,17 @@ func cloneWorkflowRunRecord(v WorkflowRunRecord) WorkflowRunRecord {
 	v.Input = cloneJSON(v.Input)
 	v.Output = cloneJSON(v.Output)
 	v.Metadata = cloneJSON(v.Metadata)
+	if len(v.StepOutputs) > 0 {
+		outputs := make([]json.RawMessage, len(v.StepOutputs))
+		for i, output := range v.StepOutputs {
+			outputs[i] = cloneJSON(output)
+		}
+		v.StepOutputs = outputs
+	}
+	if v.Failure != nil {
+		failure := *v.Failure
+		v.Failure = &failure
+	}
 	if v.FinishedAt != nil {
 		finished := *v.FinishedAt
 		v.FinishedAt = &finished

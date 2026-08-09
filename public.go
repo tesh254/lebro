@@ -78,6 +78,8 @@ type (
 	MessageRecord              = runtime.MessageRecord
 	WorkflowRunRecord          = runtime.WorkflowRunRecord
 	WorkflowSnapshotRecord     = runtime.WorkflowSnapshotRecord
+	WorkflowFailureData        = runtime.WorkflowFailureData
+	WorkflowRunFilter          = runtime.WorkflowRunFilter
 	ThreadRepository           = runtime.ThreadRepository
 	MessageRepository          = runtime.MessageRepository
 	WorkflowRunRepository      = runtime.WorkflowRunRepository

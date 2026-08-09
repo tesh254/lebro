@@ -5,14 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // WorkflowDefinition describes a named workflow before execution semantics are
-// added by the workflow implementation tasks.
+// added by the workflow implementation tasks. Version is an opaque
+// caller-supplied definition/version reference persisted with each run so
+// readers can evolve their workflow schemas and still identify how a stored
+// run was produced.
 type WorkflowDefinition struct {
 	ID          WorkflowID
 	Name        string
 	Description string
+	Version     string
 }
 
 // Workflow is the common contract implemented by message-centric executable
@@ -213,6 +218,11 @@ func (r WorkflowRunResult) DecodeOutput(v any) error {
 // LinearWorkflowConfig describes a linear workflow composed of ordered, typed
 // steps. Definition is required; Steps must contain at least one entry.
 // SchemaCompiler is required when any step declares an input or output schema.
+// Store optionally binds the workflow to a durable Store; when set, the
+// executor persists the run record and a snapshot at each successful step
+// boundary inside a single transaction. A persistence failure fails the run
+// with a WorkflowErrorStepFailed wrapping the storage error, so a process
+// restart never observes a partially persisted step.
 type LinearWorkflowConfig struct {
 	Definition     WorkflowDefinition
 	Steps          []Step
@@ -220,6 +230,7 @@ type LinearWorkflowConfig struct {
 	Listener       RunListener
 	Clock          Clock
 	IDSource       IDSource
+	Store          Store
 }
 
 // LinearWorkflow executes typed steps in declared order, validating each
@@ -232,6 +243,7 @@ type LinearWorkflow struct {
 	listener   RunListener
 	clock      Clock
 	idSource   IDSource
+	store      Store
 }
 
 // NewLinearWorkflow validates the configuration, compiles step schemas once,
@@ -287,6 +299,7 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		ID:          config.Definition.ID,
 		Name:        config.Definition.Name,
 		Description: config.Definition.Description,
+		Version:     config.Definition.Version,
 	}
 
 	return &LinearWorkflow{
@@ -295,6 +308,7 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		listener:   config.Listener,
 		clock:      clock,
 		idSource:   idSource,
+		store:      config.Store,
 	}, nil
 }
 
@@ -306,6 +320,22 @@ func (w *LinearWorkflow) Definition() WorkflowDefinition {
 	return w.definition
 }
 
+// workflowSnapshotSchemaVersion is the envelope version the linear workflow
+// executor writes on every snapshot. Readers tolerate 0 (legacy/unspecified);
+// the initial release line never writes any other value.
+const workflowSnapshotSchemaVersion = 1
+
+// workflowSnapshotEnvelope is the JSON state persisted at each successful step
+// boundary. It carries the current step's output and the ordered completed
+// outputs so a future resumable executor can rebuild state without replaying
+// the run record.
+type workflowSnapshotEnvelope struct {
+	Step    int               `json:"step"`
+	StepID  StepID            `json:"step_id,omitempty"`
+	Output  json.RawMessage   `json:"output,omitempty"`
+	Outputs []json.RawMessage `json:"outputs,omitempty"`
+}
+
 // Run executes the configured steps in declared order. Each step receives the
 // validated output of the previous step (or WorkflowRunInput.Input for the
 // first step), its input and output are validated against compiled schemas
@@ -313,6 +343,12 @@ func (w *LinearWorkflow) Definition() WorkflowDefinition {
 // Listener is configured, ordered run events are emitted for every lifecycle
 // point; when the listener is nil, recording is disabled and workflow behavior
 // is unchanged.
+//
+// When the workflow is bound to a Store, the run record is persisted as
+// Running before the first step, and a snapshot plus an updated run record are
+// written transactionally after each successful step. A persistence failure
+// fails the run with a WorkflowErrorStepFailed wrapping the storage error, so
+// a process restart never observes a partially persisted step.
 func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (WorkflowRunResult, error) {
 	if w == nil {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: errors.New("lebro: workflow is nil")}
@@ -322,12 +358,21 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 		runID := w.idSource.NewRunID()
 		metadata := cloneMetadata(input.Metadata)
 		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+		w.persistTerminal(ctx, runID, input, metadata, 0, "", nil, RunStatusCancelled, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err})
 		return w.cancelled(runID, metadata, 0, "", err)
 	}
 
 	runID := w.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
 	current := cloneRawMessage(input.Input)
+	completedOutputs := make([]json.RawMessage, 0, len(w.steps))
+
+	if perr := w.persistRunStart(ctx, runID, input, metadata); perr != nil {
+		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: persist workflow run start: %w", perr)}
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, stepErr)
+		w.persistTerminal(ctx, runID, input, metadata, 0, "", nil, RunStatusFailed, stepErr)
+		return w.fail(runID, metadata, stepErr)
+	}
 
 	emitter.emit(runID, 0, "", RunEventStarted)
 
@@ -337,6 +382,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 
 		if err := ctx.Err(); err != nil {
 			emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, err)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusCancelled, &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: err})
 			return w.cancelled(runID, metadata, position, stepID, err)
 		}
 
@@ -346,6 +392,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 			stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: err}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, stepErr)
 		}
 
@@ -357,6 +404,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 			stepErr := &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: cause}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, cause)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusCancelled, stepErr)
 			return w.cancelled(runID, metadata, position, stepID, cause)
 		}
 
@@ -364,6 +412,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 			stepErr := &WorkflowError{Kind: WorkflowErrorStepPanicked, Step: position, StepID: stepID, Err: &StepPanicError{Value: panicValue}}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, stepErr)
 		}
 
@@ -372,11 +421,13 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 				stepErr := &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: handlerErr}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, handlerErr)
+				w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusCancelled, stepErr)
 				return w.cancelled(runID, metadata, position, stepID, handlerErr)
 			}
 			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: handlerErr}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, stepErr)
 		}
 
@@ -384,20 +435,182 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 			stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepOutput, Step: position, StepID: stepID, Err: err}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
+			return w.fail(runID, metadata, stepErr)
+		}
+
+		if perr := w.persistStep(ctx, runID, position, stepID, output, completedOutputs); perr != nil {
+			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow step %q: %w", stepID, perr)}
+			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+			w.persistTerminal(ctx, runID, input, metadata, position-1, lastStepID(w.steps, i-1), completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, stepErr)
 		}
 
 		emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
 		current = cloneRawMessage(output)
+		completedOutputs = append(completedOutputs, cloneRawMessage(output))
 	}
 
+	finalOutput := cloneRawMessage(current)
 	emitter.terminal(runID, len(w.steps), "", RunEventSucceeded, RunStatusSucceeded, nil)
+	w.persistTerminal(ctx, runID, input, metadata, len(w.steps), lastStepID(w.steps, len(w.steps)-1), completedOutputs, RunStatusSucceeded, nil)
 	return WorkflowRunResult{
 		ID:       runID,
 		Status:   RunStatusSucceeded,
-		Output:   cloneRawMessage(current),
+		Output:   finalOutput,
 		Metadata: metadata,
 	}, nil
+}
+
+// lastStepID returns the step ID at index i, or "" when i is out of range. It
+// is used to populate WorkflowRunRecord.CurrentStepID on terminal persistence
+// where the current step is the last step that completed.
+func lastStepID(steps []compiledStep, i int) StepID {
+	if i < 0 || i >= len(steps) {
+		return ""
+	}
+	return steps[i].definition.ID
+}
+
+// persistRunStart writes the initial Running run record. A failure here is
+// returned to the caller so the run can fail before emitting RunEventStarted.
+// When no Store is bound it is a no-op and never touches the Clock, so a
+// workflow with a nil listener and nil Store never invokes the Clock.
+func (w *LinearWorkflow) persistRunStart(ctx context.Context, runID RunID, input WorkflowRunInput, metadata map[string]string) error {
+	if w.store == nil || isNilInterface(w.store) {
+		return nil
+	}
+	now := w.clock.Now()
+	record := w.baseRunRecord(runID, input, metadata, now)
+	record.Status = RunStatusRunning
+	record.Input = cloneRawMessage(input.Input)
+	record.CurrentStep = 0
+	return w.store.WorkflowRuns().SaveWorkflowRun(ctx, record)
+}
+
+// persistStep writes a snapshot at the completed step boundary and updates
+// the run record inside a single Store.Transaction so the boundary is
+// atomic. When no Store is bound it is a no-op.
+func (w *LinearWorkflow) persistStep(ctx context.Context, runID RunID, position int, stepID StepID, output json.RawMessage, completed []json.RawMessage) error {
+	if w.store == nil || isNilInterface(w.store) {
+		return nil
+	}
+	envelope := workflowSnapshotEnvelope{
+		Step:    position,
+		StepID:  stepID,
+		Output:  cloneRawMessage(output),
+		Outputs: append(cloneRawOutputs(completed), cloneRawMessage(output)),
+	}
+	state, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("lebro: encode workflow snapshot: %w", err)
+	}
+	now := w.clock.Now()
+	snapshot := WorkflowSnapshotRecord{
+		ID:            fmt.Sprintf("%s-snapshot-%d", runID, position),
+		RunID:         runID,
+		Sequence:      int64(position),
+		SchemaVersion: workflowSnapshotSchemaVersion,
+		State:         state,
+		CreatedAt:     now,
+	}
+	updated := w.baseRunRecord(runID, WorkflowRunInput{}, nil, now)
+	updated.Status = RunStatusRunning
+	updated.CurrentStep = position
+	updated.CurrentStepID = stepID
+	updated.StepOutputs = cloneRawOutputs(completed)
+	return w.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		if err := repos.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, snapshot); err != nil {
+			return err
+		}
+		return repos.WorkflowRuns().SaveWorkflowRun(ctx, updated)
+	})
+}
+
+// persistTerminal writes the terminal run record. It is best-effort: a
+// terminal persistence failure is not surfaced over the workflow's own
+// result because the run already reached a terminal state in memory and the
+// caller has already been notified. When no Store is bound it is a no-op.
+func (w *LinearWorkflow) persistTerminal(ctx context.Context, runID RunID, input WorkflowRunInput, metadata map[string]string, currentStep int, currentStepID StepID, completed []json.RawMessage, status RunStatus, failure *WorkflowError) {
+	if w.store == nil || isNilInterface(w.store) {
+		return
+	}
+	now := w.clock.Now()
+	record := w.baseRunRecord(runID, input, metadata, now)
+	record.Status = status
+	record.CurrentStep = currentStep
+	record.CurrentStepID = currentStepID
+	record.StepOutputs = cloneRawOutputs(completed)
+	record.FinishedAt = &now
+	record.UpdatedAt = now
+	if failure != nil {
+		record.Failure = &WorkflowFailureData{
+			Kind:    failure.Kind,
+			Step:    failure.Step,
+			StepID:  failure.StepID,
+			Message: failureMessage(failure),
+		}
+	}
+	if status == RunStatusSucceeded {
+		if len(completed) > 0 {
+			record.Output = cloneRawMessage(completed[len(completed)-1])
+		}
+	}
+	_ = w.store.WorkflowRuns().SaveWorkflowRun(context.Background(), record)
+}
+
+// baseRunRecord builds a WorkflowRunRecord with the stable fields shared by
+// every persistence point. Input is only set on the initial record; later
+// persistence points pass an empty input to avoid overwriting the stored
+// input on upsert.
+func (w *LinearWorkflow) baseRunRecord(runID RunID, input WorkflowRunInput, metadata map[string]string, now time.Time) WorkflowRunRecord {
+	record := WorkflowRunRecord{
+		ID:              runID,
+		WorkflowID:      w.definition.ID,
+		WorkflowVersion: w.definition.Version,
+		StartedAt:       now,
+		UpdatedAt:       now,
+	}
+	if input.ThreadID != "" {
+		record.ThreadID = input.ThreadID
+	}
+	if len(input.Input) > 0 {
+		record.Input = cloneRawMessage(input.Input)
+	}
+	if encoded, ok := encodeMetadata(metadata); ok {
+		record.Metadata = encoded
+	}
+	return record
+}
+
+func failureMessage(failure *WorkflowError) string {
+	if failure == nil || failure.Err == nil {
+		return ""
+	}
+	return failure.Err.Error()
+}
+
+func cloneRawOutputs(outputs []json.RawMessage) []json.RawMessage {
+	if len(outputs) == 0 {
+		return nil
+	}
+	cloned := make([]json.RawMessage, len(outputs))
+	for i, output := range outputs {
+		cloned[i] = cloneRawMessage(output)
+	}
+	return cloned
+}
+
+func encodeMetadata(metadata map[string]string) (json.RawMessage, bool) {
+	if len(metadata) == 0 {
+		return nil, false
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
 }
 
 func (w *LinearWorkflow) fail(runID RunID, metadata map[string]string, stepErr *WorkflowError) (WorkflowRunResult, error) {

@@ -54,30 +54,63 @@ type MessageRecord struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+// WorkflowFailureData records the normalized cause of a failed or cancelled
+// workflow run. It mirrors WorkflowError but is stored as portable JSON so
+// adapters do not need to understand Go error wrappers. Kind is a
+// WorkflowErrorKind; Step is 1-indexed (0 means the failure happened before
+// the first step); Message is the human-readable cause.
+type WorkflowFailureData struct {
+	Kind    WorkflowErrorKind `json:"kind,omitempty"`
+	Step    int               `json:"step,omitempty"`
+	StepID  StepID            `json:"step_id,omitempty"`
+	Message string            `json:"message,omitempty"`
+}
+
 // WorkflowRunRecord captures the durable state of a workflow execution.
-// Input, Output, and Metadata are raw JSON so applications can evolve their
-// payload schemas without a storage-adapter change.
+// Input, Output, StepOutputs, Failure, and Metadata are raw JSON so
+// applications can evolve their payload schemas without a storage-adapter
+// change. CurrentStep and CurrentStepID identify the last step the run
+// reached (0 and "" before the first step). WorkflowVersion is an opaque
+// caller-supplied definition/version reference for forward-compatible
+// migrations; the executor never interprets it.
 type WorkflowRunRecord struct {
-	ID         RunID           `json:"id"`
-	WorkflowID WorkflowID      `json:"workflow_id"`
-	ThreadID   ThreadID        `json:"thread_id,omitempty"`
-	Status     RunStatus       `json:"status"`
-	Input      json.RawMessage `json:"input,omitempty"`
-	Output     json.RawMessage `json:"output,omitempty"`
-	Metadata   json.RawMessage `json:"metadata,omitempty"`
-	StartedAt  time.Time       `json:"started_at"`
-	FinishedAt *time.Time      `json:"finished_at,omitempty"`
-	UpdatedAt  time.Time       `json:"updated_at"`
+	ID              RunID                `json:"id"`
+	WorkflowID      WorkflowID           `json:"workflow_id"`
+	ThreadID        ThreadID             `json:"thread_id,omitempty"`
+	Status          RunStatus            `json:"status"`
+	Input           json.RawMessage      `json:"input,omitempty"`
+	Output          json.RawMessage      `json:"output,omitempty"`
+	StepOutputs     []json.RawMessage    `json:"step_outputs,omitempty"`
+	CurrentStep     int                  `json:"current_step,omitempty"`
+	CurrentStepID   StepID               `json:"current_step_id,omitempty"`
+	Failure         *WorkflowFailureData `json:"failure,omitempty"`
+	WorkflowVersion string               `json:"workflow_version,omitempty"`
+	Metadata        json.RawMessage      `json:"metadata,omitempty"`
+	StartedAt       time.Time            `json:"started_at"`
+	FinishedAt      *time.Time           `json:"finished_at,omitempty"`
+	UpdatedAt       time.Time            `json:"updated_at"`
 }
 
 // WorkflowSnapshotRecord stores a resumable workflow state at a sequence
 // number. State must be valid JSON to make snapshots portable across adapters.
+// SchemaVersion is the snapshot envelope version; the initial release line
+// writes 1 and readers tolerate 0 (legacy/unspecified). Adapters never
+// interpret State.
 type WorkflowSnapshotRecord struct {
-	ID        string          `json:"id"`
-	RunID     RunID           `json:"run_id"`
-	Sequence  int64           `json:"sequence"`
-	State     json.RawMessage `json:"state"`
-	CreatedAt time.Time       `json:"created_at"`
+	ID            string          `json:"id"`
+	RunID         RunID           `json:"run_id"`
+	Sequence      int64           `json:"sequence"`
+	SchemaVersion int             `json:"schema_version,omitempty"`
+	State         json.RawMessage `json:"state"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
+// WorkflowRunFilter narrows a ListWorkflowRuns query. A zero value returns
+// every run. WorkflowID and Status match exactly when non-zero; an empty
+// Status matches any status.
+type WorkflowRunFilter struct {
+	WorkflowID WorkflowID
+	Status     RunStatus
 }
 
 // ThreadRepository owns thread records and their lifecycle.
@@ -97,6 +130,7 @@ type MessageRepository interface {
 type WorkflowRunRepository interface {
 	SaveWorkflowRun(context.Context, WorkflowRunRecord) error
 	GetWorkflowRun(context.Context, RunID) (WorkflowRunRecord, error)
+	ListWorkflowRuns(context.Context, WorkflowRunFilter, PageRequest) (Page[WorkflowRunRecord], error)
 }
 
 // WorkflowSnapshotRepository owns ordered resumable workflow snapshots.
