@@ -1421,7 +1421,7 @@ func TestAgentLoadsPriorMessagesOnSecondRun(t *testing.T) {
 	}
 }
 
-func TestAgentFailedRunLeavesNoMessages(t *testing.T) {
+func TestAgentFailedRunLeavesPriorMessagesUnchanged(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryStore()

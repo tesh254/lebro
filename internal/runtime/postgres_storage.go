@@ -594,7 +594,7 @@ func postgresError(err error) error {
 	switch pgErr.Code {
 	case "23503":
 		return ErrNotFound
-	case "40001", "55P03":
+	case "23505", "40001", "55P03":
 		return ErrConflict
 	default:
 		return fmt.Errorf("%w (postgres %s)", err, pgErr.Code)
