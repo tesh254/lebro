@@ -1,0 +1,21 @@
+internal/runtime/agent_test.go
+  s_dc2e7b7a967697::t_2a014d42c6e9ca 1424
+internal/runtime/postgres_storage.go
+  s_dc2e7b7a967697::t_990b85423e9bbe 597
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b73bf38d428710da32ad7cf573e0d0af07868241",
+  "prompts": {},
+  "sessions": {
+    "s_dc2e7b7a967697": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01c4a2856ffeb6mi5ELExBqCXJ",
+        "model": "accounts/fireworks/models/glm-5p2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
