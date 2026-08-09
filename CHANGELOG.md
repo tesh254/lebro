@@ -63,6 +63,22 @@ All notable changes to this project are documented in this file.
   `RunRecorder` event model, ordered and correlated to one run ID. `WorkflowRunInput`
   and `WorkflowRunResult` carry raw JSON input and output; `DecodeOutput`
   unmarshals the final step result into a caller-supplied value.
+- Configurable retry policies for workflow steps. `StepDefinition.Retry`
+  optionally binds a `RetryPolicy` (`Attempts`, `Delay`, `Retryable`) to a
+  step so transient handler failures are retried instead of failing the whole
+  run. `Attempts` is the maximum total attempts (1 = no retry); `Delay` is a
+  fixed wait applied before each retry; `Retryable` is a predicate that
+  selects which handler errors are retried (`DefaultRetryable` rejects
+  context cancellation and deadline errors and accepts all other handler
+  errors). Validation errors (invalid step input/output), panics, and context
+  cancellation are never retried. Each retry attempt past the first emits
+  `step_attempt_started` and `step_attempt_finished` events carrying the
+  1-indexed `Attempt` number and the waited `Delay`, between the existing
+  `step_started` and `step_finished` events. `WorkflowRunInput.RetryOverrides`
+  optionally overrides the per-step policy for a single run, keyed by
+  `StepID`: an override with `Attempts == 1` disables retry for that run,
+  while an override with `Attempts > 1` enables or changes retry. Invalid
+  override values (e.g. `Attempts < 1`) fail the run as a step failure.
 - Agent and registered-tool workflow step adapters. `NewAgentStep` turns a
   workflow value into an agent user message and returns structured output or
   final assistant text as JSON; it forwards workflow context, thread ID, and
