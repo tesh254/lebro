@@ -1,0 +1,80 @@
+internal/runtime/workflow.go
+  s_6e841029c7ea8e::t_5d4e7600d518db 221-225,233
+  s_6e841029c7ea8e::t_0a6e6c05fb2bff 246
+  s_6e841029c7ea8e::t_6008e363f2912e 323-338,346-351,361,368-369,371-375,385,395,407,415,424,430,438-446,452,455,457,461,466-477,481-483,485-502,504-613
+  s_6e841029c7ea8e::t_efc621903a5cc4 311
+  s_6e841029c7ea8e::t_1cd47113450283 8
+  s_6e841029c7ea8e::t_f09f96a7627661 370
+  s_6e841029c7ea8e::t_42fd49d251c9ed 503
+  s_6e841029c7ea8e::t_061322c850a881 302
+  s_6e841029c7ea8e::t_85a78bd136baeb 478-480,484
+internal/runtime/workflow_persistence_test.go
+  s_6e841029c7ea8e::t_2b3b8dcd745cd1 1-53,55-249,251-288,290-314
+  s_6e841029c7ea8e::t_2400d133c4a1a9 250
+  s_6e841029c7ea8e::t_916a436fdaa92d 289
+  s_6e841029c7ea8e::t_84dde9da898ecb 54
+examples/workflow-durable/main_test.go
+  s_6e841029c7ea8e::t_43630f1b0a3caf 1-26
+internal/runtime/memory_storage.go
+  s_6e841029c7ea8e::t_bf55e2f91e148c 326-335,352-372
+  s_6e841029c7ea8e::t_a93db7bbc5007a 136-140
+  s_dc612f3e6620d6::t_795ecc941d3f7e 373
+  s_6e841029c7ea8e::t_b13f4507f4fce2 202-204
+  s_6e841029c7ea8e::t_a8205c640f5360 488-498
+internal/runtime/storage.go
+  s_6e841029c7ea8e::t_6ca832dcdee308 57-68,70-75,86,96-98,100-113
+  s_6e841029c7ea8e::t_d2d9b7761f0aa1 133
+  s_6e841029c7ea8e::t_ce9028bf8797f1 77-85,87-91
+internal/runtime/sqlite_storage.go
+  s_6e841029c7ea8e::t_5f8acd1a008004 859-912
+  s_6e841029c7ea8e::t_3d22cbdfa1b7af 477-486,490-499,501-516,526,537-545,549-568
+  s_6e841029c7ea8e::t_3f5b6da38e087a 604-605,622
+  s_6e841029c7ea8e::t_e6cddac3356bac 135-140
+  s_6e841029c7ea8e::t_ce9028bf8797f1 546-548
+  s_6e841029c7ea8e::t_9fa79023579c34 745,748,755-756,777-793
+  s_6e841029c7ea8e::t_955e212e5c1cce 801
+internal/testkit/contract_storage.go
+  s_6e841029c7ea8e::t_ce9028bf8797f1 651-654
+  s_6e841029c7ea8e::t_3540c24f735c24 369-372
+  s_6e841029c7ea8e::t_9665b612e5869a 439,443,453-454,462-466
+  s_6e841029c7ea8e::t_f1b672e99b09d7 309-311
+  s_6e841029c7ea8e::t_0e61435364b0ea 35-36
+  s_6e841029c7ea8e::t_eee4a06f6d87e3 596-650,655-763
+public.go
+  s_6e841029c7ea8e::t_3bf1c5b6a67d04 81-82
+README.md
+  s_6e841029c7ea8e::t_fa9a7d680ce133 530-586
+examples/workflow-durable/main.go
+  s_6e841029c7ea8e::t_d3f0e333145f7a 1-139
+internal/runtime/postgres_storage.go
+  s_6e841029c7ea8e::t_ee625ee449fe8f 757
+  s_6e841029c7ea8e::t_4689fc5aa6fc38 798-851
+  s_6e841029c7ea8e::t_0d7498b3d82fac 468-477,489-498,500-515,525,536-568
+  s_6e841029c7ea8e::t_09ea950800f0f4 119-124
+  s_6e841029c7ea8e::t_8fcd7ee608aaf8 10
+  s_6e841029c7ea8e::t_02ecb2893ea98f 711,713,722-723,733-749
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8e37b1b192c0f6e4d185ea3d4cc1c94507ca2c1c",
+  "prompts": {},
+  "sessions": {
+    "s_6e841029c7ea8e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_019148db3ffe1bChC10G8ytare",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    },
+    "s_dc612f3e6620d6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fd700-5240-7870-b9c2-d31069737978",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
