@@ -1,0 +1,25 @@
+internal/runtime/agent.go
+  s_dc2e7b7a967697::t_d06b008b8b058f 589
+  s_dc2e7b7a967697::t_dbfda18ca03aec 702-710
+  s_dc2e7b7a967697::t_03c28b9698c0f5 617
+  s_dc2e7b7a967697::t_20c971661cbd97 1153-1155,1178-1191,1193-1196,1198-1203
+  s_dc2e7b7a967697::t_2033041d41b417 411-413,415
+internal/runtime/agent_test.go
+  s_dc2e7b7a967697::t_edd035f84a0f40 1429-1439,1465-1469
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1b3792586bf785fe4900747be9a5bd814708d1d7",
+  "prompts": {},
+  "sessions": {
+    "s_dc2e7b7a967697": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01c4a2856ffeb6mi5ELExBqCXJ",
+        "model": "accounts/fireworks/models/glm-5p2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
