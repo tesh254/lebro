@@ -598,6 +598,11 @@ carries a non-nil `Suspend` with the validated contract and opaque payload.
 A step that suspends without a `SuspendSchema` is rejected as an invalid step
 output so a process restart never observes an unvalidated resume contract.
 
+The contract is the **expected resume value**: `SuspendSchema` validates its
+shape at suspend time, and `Resume` validates the resume input against the same
+schema and additionally requires it to equal the persisted contract value, so
+the suspending step's published expectation constrains resume.
+
 ```go
 wf, _ := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
     Definition:     lebro.WorkflowDefinition{ID: "approval", Version: "v1"},
@@ -632,9 +637,12 @@ resumed, _ := wf.Resume(ctx, lebro.WorkflowResumeInput{RunID: suspended.ID, Inpu
 // resumed.Status == lebro.RunStatusSucceeded
 ```
 
-`Resume` requires a bound `Store` and a `RunStatusSuspended` run; resuming a
-run in any other status returns `ErrNotSuspended`, and resuming without a
-store returns `ErrWorkflowResumeRequiresStore`. Run history records
+`Resume` requires a bound `Store` and a `RunStatusSuspended` run whose
+`WorkflowID` matches the workflow instance; resuming a run bound to a different
+workflow returns a step failure so unrelated handlers are never executed. The
+stored run record stays `Suspended` until the first resumed step persists, so
+a process crash before any step commits leaves the run resumable rather than
+orphaned in `Running`. Run history records
 `RunEventSuspended` ("run_suspended") at the suspend boundary and
 `RunEventResumed` ("run_resumed") at resume start; neither is terminal. The
 suspend snapshot envelope version is `2` and adds the optional `suspend`

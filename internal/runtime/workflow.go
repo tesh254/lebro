@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 )
@@ -339,7 +340,7 @@ var ErrWorkflowSuspend = errors.New("lebro: workflow suspend")
 // signal.
 func suspendSignalFromError(err error) (SuspendSignal, bool) {
 	var suspendErr *SuspendError
-	if errors.As(err, &suspendErr) {
+	if errors.As(err, &suspendErr) && suspendErr != nil {
 		return suspendErr.Signal, true
 	}
 	return SuspendSignal{}, false
@@ -732,52 +733,35 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 	if err != nil {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Step: 0, Err: fmt.Errorf("lebro: load suspended run %q: %w", input.RunID, err)}
 	}
+	if run.WorkflowID != w.definition.ID {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: run %q belongs to workflow %q, not %q", input.RunID, run.WorkflowID, w.definition.ID)}
+	}
 	if run.Status != RunStatusSuspended {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: run %q %w: %s", input.RunID, ErrNotSuspended, run.Status)}
 	}
 
-	snapshots, err := w.store.WorkflowSnapshots().ListWorkflowSnapshots(ctx, input.RunID, PageRequest{Limit: 1000})
+	_, envelope, err := w.loadSuspendSnapshot(ctx, input.RunID)
 	if err != nil {
-		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: list snapshots for run %q: %w", input.RunID, err)}
-	}
-	if len(snapshots.Records) == 0 {
-		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: no snapshot for suspended run %q", input.RunID)}
-	}
-	// Select the suspend snapshot with the highest sequence. Only suspend
-	// boundaries populate the envelope's Suspend field, so we decode each
-	// candidate and pick the matching one with the largest Sequence.
-	var (
-		snapshot     WorkflowSnapshotRecord
-		envelope     workflowSnapshotEnvelope
-		foundSuspend bool
-	)
-	for _, cand := range snapshots.Records {
-		var env workflowSnapshotEnvelope
-		if err := json.Unmarshal(cand.State, &env); err != nil {
-			continue
-		}
-		if env.Suspend == nil {
-			continue
-		}
-		if !foundSuspend || cand.Sequence > snapshot.Sequence {
-			snapshot = cand
-			envelope = env
-			foundSuspend = true
-		}
-	}
-	if !foundSuspend {
-		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: no suspend snapshot for run %q", input.RunID)}
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: err}
 	}
 
 	resumeInput := cloneRawMessage(input.Input)
-	if len(envelope.Suspend.Contract) > 0 {
-		compiled := w.suspendSchemaForStep(envelope.StepID)
-		if compiled == nil {
-			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: cannot resolve SuspendSchema for step %q to validate resume input", envelope.StepID)}
-		}
-		if verr := validateStepValue(compiled, ValidationTargetResumeInput, resumeInput); verr != nil {
-			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: %w: %s", ErrInvalidResumeInput, verr)}
-		}
+	// Validate the resume input structurally against the suspending step's
+	// SuspendSchema (the same schema that validated the persisted contract at
+	// the suspend boundary), then require it to match the persisted contract
+	// value so the suspending step's published expectation constrains resume.
+	// A step without a SuspendSchema cannot have suspended (the executor
+	// rejects that at suspend time), so a missing compiled schema here is a
+	// corruption error rather than a skip.
+	compiled := w.suspendSchemaForStep(envelope.StepID)
+	if compiled == nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: cannot resolve SuspendSchema for step %q to validate resume input", envelope.StepID)}
+	}
+	if verr := validateStepValue(compiled, ValidationTargetResumeInput, resumeInput); verr != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: %w: %s", ErrInvalidResumeInput, verr)}
+	}
+	if len(envelope.Suspend.Contract) > 0 && !rawJSONEqual(resumeInput, envelope.Suspend.Contract) {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: %w: resume input does not match the persisted contract", ErrInvalidResumeInput)}
 	}
 
 	mergedMetadata := decodeMetadata(run.Metadata)
@@ -795,9 +779,11 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 		startedAt: run.StartedAt,
 	}
 
-	if perr := w.persistResumeStart(ctx, anchor); perr != nil {
-		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: persist workflow resume start: %w", perr)}
-	}
+	// The stored run record stays Suspended until the first resumed step
+	// persists. A process crash before any step persists therefore leaves
+	// the run resumable rather than orphaned in Running. Each persistStep in
+	// executeSteps flips the record to Running with the current step, and
+	// persistTerminal sets the final status.
 
 	emitter := newRunEmitter(ctx, w.listener, w.clock, w.idSource)
 	resumePosition := envelope.Step + 1
@@ -809,6 +795,49 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 
 	completedOutputs := cloneRawOutputs(envelope.Outputs)
 	return w.executeSteps(ctx, anchor, emitter, run.ID, mergedMetadata, resumeInput, completedOutputs, envelope.Step, nil, run.ThreadID)
+}
+
+// loadSuspendSnapshot lists snapshots for runID across all pages and returns
+// the suspend snapshot with the highest sequence. Only suspend boundaries
+// populate the envelope's Suspend field, so non-suspend step snapshots are
+// skipped. Pagination follows NextCursor so a run that accumulated more
+// snapshots than a single page can still resume.
+func (w *LinearWorkflow) loadSuspendSnapshot(ctx context.Context, runID RunID) (WorkflowSnapshotRecord, workflowSnapshotEnvelope, error) {
+	var (
+		best    WorkflowSnapshotRecord
+		bestEnv workflowSnapshotEnvelope
+		cursor  string
+	)
+	for {
+		page, err := w.store.WorkflowSnapshots().ListWorkflowSnapshots(ctx, runID, PageRequest{Cursor: cursor, Limit: 1000})
+		if err != nil {
+			return WorkflowSnapshotRecord{}, workflowSnapshotEnvelope{}, fmt.Errorf("lebro: list snapshots for run %q: %w", runID, err)
+		}
+		if len(page.Records) == 0 && cursor == "" {
+			return WorkflowSnapshotRecord{}, workflowSnapshotEnvelope{}, fmt.Errorf("lebro: no snapshot for suspended run %q", runID)
+		}
+		for _, cand := range page.Records {
+			var env workflowSnapshotEnvelope
+			if err := json.Unmarshal(cand.State, &env); err != nil {
+				continue
+			}
+			if env.Suspend == nil {
+				continue
+			}
+			if best.ID == "" || cand.Sequence > best.Sequence {
+				best = cand
+				bestEnv = env
+			}
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		cursor = page.NextCursor
+	}
+	if best.ID == "" {
+		return WorkflowSnapshotRecord{}, workflowSnapshotEnvelope{}, fmt.Errorf("lebro: no suspend snapshot for run %q", runID)
+	}
+	return best, bestEnv, nil
 }
 
 // suspendSchemaForStep returns the compiled SuspendSchema for the declared
@@ -824,22 +853,6 @@ func (w *LinearWorkflow) suspendSchemaForStep(stepID StepID) CompiledSchema {
 	return nil
 }
 
-// persistResumeStart flips the run record back to Running so a process stop
-// during resume leaves an inspectable in-progress record. The original
-// StartedAt and Input are preserved from the stored run record via the anchor.
-func (w *LinearWorkflow) persistResumeStart(ctx context.Context, anchor runAnchor) error {
-	if w.store == nil || isNilInterface(w.store) {
-		return nil
-	}
-	now := w.clock.Now()
-	record := w.baseRunRecord(anchor)
-	record.Status = RunStatusRunning
-	record.CurrentStep = 0
-	record.CurrentStepID = ""
-	record.UpdatedAt = now
-	return w.store.WorkflowRuns().SaveWorkflowRun(ctx, record)
-}
-
 // decodeMetadata unmarshals a stored run's metadata JSON into a string map.
 // A nil or empty payload returns nil.
 func decodeMetadata(raw json.RawMessage) map[string]string {
@@ -851,6 +864,23 @@ func decodeMetadata(raw json.RawMessage) map[string]string {
 		return nil
 	}
 	return m
+}
+
+// rawJSONEqual reports whether two JSON values are equal after canonical
+// decoding. It is used by Resume to compare the resume input against the
+// persisted suspend contract value. A nil or empty payload returns nil.
+func rawJSONEqual(a, b json.RawMessage) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return len(a) == len(b)
+	}
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 // lastStepID returns the step ID at index i, or "" when i is out of range. It
@@ -1407,9 +1437,12 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 					}
 					return nil, &retryOutcome{kind: retryInvalidOutput, cause: err}
 				}
-				if signal.StepID == "" {
-					signal.StepID = stepID
-				}
+				// Normalize the suspend signal's step identity to the
+				// executing step so the persisted snapshot and public result
+				// match the suspend boundary regardless of what the handler
+				// populated. A handler that sets a mismatched StepID cannot
+				// leak into durable state.
+				signal.StepID = stepID
 				if attempt != 1 {
 					emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, nil)
 				}

@@ -38,11 +38,12 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = store.Close() }()
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
 
-	build := func() (*lebro.LinearWorkflow, error) {
+	build := func(store lebro.Store) (*lebro.LinearWorkflow, error) {
 		return lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
 			Definition:     lebro.WorkflowDefinition{ID: "approval-double", Name: "Approval Double", Version: "v1"},
 			SchemaCompiler: lebrojsonschema.NewCompiler(),
@@ -87,7 +88,7 @@ func run(output io.Writer) error {
 		})
 	}
 
-	wf, err := build()
+	wf, err := build(store)
 	if err != nil {
 		return err
 	}
@@ -119,9 +120,8 @@ func run(output io.Writer) error {
 	if err := reopened.Migrate(ctx); err != nil {
 		return err
 	}
-	store = reopened
 
-	wf2, err := build()
+	wf2, err := build(reopened)
 	if err != nil {
 		return err
 	}
@@ -132,7 +132,7 @@ func run(output io.Writer) error {
 	writef(output, "resumed status: %s\n", resumed.Status)
 	writef(output, "resumed output: %s\n", resumed.Output)
 
-	stored, err := store.WorkflowRuns().GetWorkflowRun(ctx, result.ID)
+	stored, err := reopened.WorkflowRuns().GetWorkflowRun(ctx, result.ID)
 	if err != nil {
 		return err
 	}

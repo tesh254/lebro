@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -487,5 +488,224 @@ func TestSuspendPersistsAcrossReopenAndResumes(t *testing.T) {
 	}
 	if !bytes.Equal(finalRun.Output, json.RawMessage(`{"step":"after"}`)) {
 		t.Fatalf("final stored output = %s, want {\"step\":\"after\"}", finalRun.Output)
+	}
+}
+
+func TestResumeRejectsRunBelongingToDifferentWorkflow(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ids := NewFixedIDSource([]RunID{"xflow-run-1"}, nil)
+	suspendHandler := StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &SuspendError{Signal: SuspendSignal{Contract: json.RawMessage(`{"approved":true}`)}}
+	})
+	wfA, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "workflow-A", Version: "v1"},
+		SchemaCompiler: contractCompiler(),
+		IDSource:       ids,
+		Store:          store,
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1", SuspendSchema: json.RawMessage(`{"const":{"approved":true}}`)}, Handler: suspendHandler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := wfA.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A different workflow instance with the same step ID but a different
+	// WorkflowDefinition.ID must not resume the foreign run.
+	wfB, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "workflow-B", Version: "v1"},
+		SchemaCompiler: contractCompiler(),
+		IDSource:       ids,
+		Store:          store,
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1"}, Handler: StepHandlerFunc(func(_ context.Context, in json.RawMessage) (json.RawMessage, error) { return in, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = wfB.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true}`)})
+	if err == nil {
+		t.Fatal("Resume across workflows returned nil error, want failure")
+	}
+	if !strings.Contains(err.Error(), "belongs to workflow") {
+		t.Fatalf("err = %v, want workflow-mismatch failure", err)
+	}
+
+	// The suspended run is untouched and resumable by its owning workflow.
+	resumed, err := wfA.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true}`)})
+	if err != nil {
+		t.Fatalf("owner Resume returned error: %v", err)
+	}
+	if resumed.Status != RunStatusSucceeded {
+		t.Fatalf("owner resumed Status = %q, want succeeded", resumed.Status)
+	}
+}
+
+func TestResumeRejectsInputThatMatchesSchemaButNotContractValue(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ids := NewFixedIDSource([]RunID{"contract-val-run-1"}, nil)
+	// SuspendSchema is permissive (any object), but the contract pins a
+	// specific expected value. Resume must reject schema-valid input that
+	// differs from the contract.
+	suspendHandler := StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &SuspendError{Signal: SuspendSignal{
+			StepID:   "await",
+			Contract: json.RawMessage(`{"approved":true,"token":"abc"}`),
+		}}
+	})
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "contract-val-wf", Version: "v1"},
+		SchemaCompiler: contractCompiler(),
+		IDSource:       ids,
+		Store:          store,
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "await", SuspendSchema: json.RawMessage(`{"type":"object"}`)}, Handler: suspendHandler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Schema-valid but wrong value: rejected.
+	_, err = wf.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true,"token":"xyz"}`)})
+	if !errors.Is(err, ErrInvalidResumeInput) {
+		t.Fatalf("err = %v, want ErrInvalidResumeInput", err)
+	}
+	// Exact contract match: accepted.
+	resumed, err := wf.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true,"token":"abc"}`)})
+	if err != nil {
+		t.Fatalf("Resume returned error: %v", err)
+	}
+	if resumed.Status != RunStatusSucceeded {
+		t.Fatalf("resumed Status = %q, want succeeded", resumed.Status)
+	}
+}
+
+func TestSuspendSignalStepIDIsNormalizedToExecutingStep(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	suspendHandler := StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &SuspendError{Signal: SuspendSignal{
+			StepID:   "wrong-step-id",
+			Contract: json.RawMessage(`{"approved":true}`),
+		}}
+	})
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "normalize-wf", Version: "v1"},
+		SchemaCompiler: contractCompiler(),
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "await", SuspendSchema: json.RawMessage(`{"const":{"approved":true}}`)}, Handler: suspendHandler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Suspend.StepID != "await" {
+		t.Fatalf("Suspend.StepID = %q, want \"await\" (normalized)", result.Suspend.StepID)
+	}
+}
+
+func TestTypedNilSuspendErrorDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	// A handler returning a typed-nil *SuspendError must not panic the
+	// executor; it surfaces as a step failure rather than a suspend.
+	var nilSuspend *SuspendError
+	suspendHandler := StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, nilSuspend
+	})
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "typed-nil-wf", Version: "v1"},
+		SchemaCompiler: contractCompiler(),
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1", SuspendSchema: json.RawMessage(`{}`)}, Handler: suspendHandler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+	if err == nil {
+		t.Fatal("Run returned nil error for typed-nil *SuspendError, want failure")
+	}
+}
+
+func TestResumeStaysSuspendedUntilFirstStepPersists(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ids := NewFixedIDSource([]RunID{"crash-resume-run-1"}, nil)
+	suspendHandler := StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &SuspendError{Signal: SuspendSignal{Contract: json.RawMessage(`{"approved":true}`)}}
+	})
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "crash-resume-wf", Version: "v1"},
+		SchemaCompiler: contractCompiler(),
+		IDSource:       ids,
+		Store:          store,
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "before"}, Handler: StepHandlerFunc(func(_ context.Context, in json.RawMessage) (json.RawMessage, error) { return in, nil })},
+			{Definition: StepDefinition{ID: "await", SuspendSchema: json.RawMessage(`{"const":{"approved":true}}`)}, Handler: suspendHandler},
+			{Definition: StepDefinition{ID: "after"}, Handler: StepHandlerFunc(func(_ context.Context, in json.RawMessage) (json.RawMessage, error) { return in, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a crash mid-resume by cancelling the context before any step
+	// runs: the run record must remain Suspended so Resume can retry later.
+	crashCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _ = wf.Resume(crashCtx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true}`)})
+	stored, err := store.WorkflowRuns().GetWorkflowRun(ctx, suspended.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != RunStatusSuspended {
+		t.Fatalf("after cancelled resume, stored status = %q, want suspended (crash must not orphan the run)", stored.Status)
+	}
+
+	// A real resume still succeeds.
+	resumed, err := wf.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true}`)})
+	if err != nil {
+		t.Fatalf("Retry Resume returned error: %v", err)
+	}
+	if resumed.Status != RunStatusSucceeded {
+		t.Fatalf("retry resumed Status = %q, want succeeded", resumed.Status)
 	}
 }
