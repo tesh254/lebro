@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -444,8 +445,10 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	anchor := w.newAnchor(runID, input, metadata)
 
 	if perr := validateRetryOverrides(input.RetryOverrides); perr != nil {
-		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Err: perr}
-		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, stepErr)
+		overrideErr := perr.(*invalidRetryOverrideError)
+		position := w.stepPosition(overrideErr.stepID)
+		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: overrideErr.stepID, Err: perr}
+		emitter.terminal(runID, position, overrideErr.stepID, RunEventFailed, RunStatusFailed, stepErr)
 		w.persistTerminalBestEffort(anchor, 0, "", nil, RunStatusFailed, stepErr)
 		return w.fail(runID, metadata, stepErr)
 	}
@@ -857,13 +860,63 @@ func validateRetryPolicy(p *RetryPolicy) error {
 // Unknown step IDs are tolerated: an override for a step that is not in the
 // workflow is simply never selected by resolveRetryPolicy, so it cannot
 // affect behavior and is ignored.
+//
+// When more than one override is invalid, the error reports the
+// lexicographically smallest StepID so the failure is deterministic across
+// runs and debuggable. The returned error is an *invalidRetryOverrideError so
+// the caller can recover the StepID and resolve its 1-indexed position in the
+// workflow.
 func validateRetryOverrides(overrides map[StepID]RetryPolicy) error {
-	for stepID, policy := range overrides {
+	if len(overrides) == 0 {
+		return nil
+	}
+	keys := make([]StepID, 0, len(overrides))
+	for stepID := range overrides {
+		keys = append(keys, stepID)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	for _, stepID := range keys {
+		policy := overrides[stepID]
 		if err := validateRetryPolicy(&policy); err != nil {
-			return fmt.Errorf("lebro: invalid retry override for step %q: %w", stepID, err)
+			return &invalidRetryOverrideError{stepID: stepID, cause: err}
 		}
 	}
 	return nil
+}
+
+// invalidRetryOverrideError carries the StepID of the first invalid override
+// (in sorted order) so the workflow executor can preserve step identity on
+// the resulting WorkflowError and persisted WorkflowFailureData.
+type invalidRetryOverrideError struct {
+	stepID StepID
+	cause  error
+}
+
+func (e *invalidRetryOverrideError) Error() string {
+	if e == nil {
+		return "lebro: invalid retry override"
+	}
+	return fmt.Sprintf("lebro: invalid retry override for step %q: %s", e.stepID, e.cause)
+}
+
+func (e *invalidRetryOverrideError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// stepPosition returns the 1-indexed position of stepID in the workflow, or
+// 0 when the step is not declared. Used to attach step identity to failures
+// raised before the step loop runs (e.g. an invalid retry override for a
+// declared step).
+func (w *LinearWorkflow) stepPosition(stepID StepID) int {
+	for i, step := range w.steps {
+		if step.definition.ID == stepID {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // retryOutcomeKind classifies the terminal outcome of runStepWithRetry so the

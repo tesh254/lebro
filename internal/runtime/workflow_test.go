@@ -1612,12 +1612,28 @@ func TestLinearWorkflowRetryOverrideInvalidFailsBeforeAnyStepRuns(t *testing.T) 
 	if !strings.Contains(err.Error(), "invalid retry override for step \"s2\"") {
 		t.Fatalf("error = %v, want invalid retry override for step s2", err)
 	}
+	// The WorkflowError preserves the targeted step's identity and 1-indexed
+	// position so persisted WorkflowFailureData and callers can attribute the
+	// failure to the declared overridden step rather than a pre-step error.
+	var wfErr *WorkflowError
+	if !errors.As(err, &wfErr) {
+		t.Fatalf("error = %T, want *WorkflowError", err)
+	}
+	if wfErr.Kind != WorkflowErrorStepFailed {
+		t.Fatalf("kind = %q, want step_failed", wfErr.Kind)
+	}
+	if wfErr.StepID != "s2" {
+		t.Fatalf("StepID = %q, want s2", wfErr.StepID)
+	}
+	if wfErr.Step != 2 {
+		t.Fatalf("Step = %d, want 2 (s2 position)", wfErr.Step)
+	}
 	if step1Ran {
 		t.Fatal("step 1 ran before invalid override for step 2 was rejected")
 	}
 
 	// No run_started event: validation fails before the run starts. The
-	// terminal event is run_failed.
+	// terminal event is run_failed and carries the override's step identity.
 	events := recorder.Events()
 	for _, e := range events {
 		if e.Type == RunEventStarted {
@@ -1627,6 +1643,85 @@ func TestLinearWorkflowRetryOverrideInvalidFailsBeforeAnyStepRuns(t *testing.T) 
 	terminal, ok := recorder.TerminalEvent()
 	if !ok || terminal.Type != RunEventFailed {
 		t.Fatalf("terminal = %#v, want run_failed", terminal)
+	}
+	if terminal.StepID != "s2" || terminal.Step != 2 {
+		t.Fatalf("terminal step = %d/%q, want 2/s2", terminal.Step, terminal.StepID)
+	}
+}
+
+func TestLinearWorkflowRetryOverrideInvalidDeterministicAcrossMultiple(t *testing.T) {
+	t.Parallel()
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "multi-invalid-wf"},
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+			{Definition: StepDefinition{ID: "s2"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+			{Definition: StepDefinition{ID: "s3"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// All three overrides are invalid; the reported StepID must be the
+	// lexicographically smallest across runs regardless of map iteration order.
+	const iterations = 20
+	wantStepID := StepID("s1")
+	for i := 0; i < iterations; i++ {
+		_, runErr := wf.Run(context.Background(), WorkflowRunInput{
+			Input: json.RawMessage(`{}`),
+			RetryOverrides: map[StepID]RetryPolicy{
+				"s3": {Attempts: -1},
+				"s1": {Attempts: 0},
+				"s2": {Delay: -time.Millisecond},
+			},
+		})
+		if runErr == nil {
+			t.Fatalf("iteration %d: error = nil, want invalid override", i)
+		}
+		var wfErr *WorkflowError
+		if !errors.As(runErr, &wfErr) {
+			t.Fatalf("iteration %d: error = %T, want *WorkflowError", i, runErr)
+		}
+		if wfErr.StepID != wantStepID {
+			t.Fatalf("iteration %d: StepID = %q, want %q (deterministic sorted order)", i, wfErr.StepID, wantStepID)
+		}
+	}
+}
+
+func TestLinearWorkflowRetryOverrideInvalidUnknownStepStillReportsIdentity(t *testing.T) {
+	t.Parallel()
+
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "unknown-step-wf"},
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "s1"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Override for a step not in the workflow: validation still rejects the
+	// invalid policy, StepID is preserved, and position resolves to 0 since
+	// the step is not declared.
+	_, err = wf.Run(context.Background(), WorkflowRunInput{
+		Input:          json.RawMessage(`{}`),
+		RetryOverrides: map[StepID]RetryPolicy{"ghost": {Attempts: 0}},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want invalid override")
+	}
+	var wfErr *WorkflowError
+	if !errors.As(err, &wfErr) {
+		t.Fatalf("error = %T, want *WorkflowError", err)
+	}
+	if wfErr.StepID != "ghost" {
+		t.Fatalf("StepID = %q, want ghost", wfErr.StepID)
+	}
+	if wfErr.Step != 0 {
+		t.Fatalf("Step = %d, want 0 (unknown step has no position)", wfErr.Step)
 	}
 }
 
