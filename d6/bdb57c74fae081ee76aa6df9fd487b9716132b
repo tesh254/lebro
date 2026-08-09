@@ -1,0 +1,41 @@
+internal/runtime/workflow_persistence_test.go
+  s_6e841029c7ea8e::t_53f2e7fe0a3d40 61-63,68-70
+  s_6e841029c7ea8e::t_df4b632e4b1f1f 166-176
+  s_6e841029c7ea8e::t_12e58ff16ba0ca 215-217
+  s_6e841029c7ea8e::t_e4bdcf318b9397 50-53,64-67,71-83
+  s_6e841029c7ea8e::t_89edce4908e053 305-307,312-313
+  s_6e841029c7ea8e::t_795d5261781522 251-304,308-311,314-379
+  s_6e841029c7ea8e::t_98486aef44a061 12-14,17-19,24,30-49,56-57
+internal/testkit/contract_storage.go
+  ai_agent 672
+internal/runtime/memory_storage.go
+  s_6e841029c7ea8e::t_b89e07ade45fef 360-366
+examples/workflow-durable/main.go
+  s_6e841029c7ea8e::t_499e9fa170b224 26-31
+internal/runtime/storage.go
+  s_6e841029c7ea8e::t_588ad9f25c32ca 70-74
+internal/runtime/postgres_storage.go
+  s_6e841029c7ea8e::t_3f3fcea5517560 853
+internal/runtime/workflow.go
+  s_6e841029c7ea8e::t_624df17e5bcc0d 400,410,422,430,439,445,453,461
+  s_6e841029c7ea8e::t_520392d5be6724 361-364,373,383,385,457,471-475,503-518,523,527,529,531,537-542,546,551,559-560,566,570-571,580-587,589,592,607-612,614-617,619,623-628,630,633,635-636,638-639,641
+  s_6e841029c7ea8e::t_0e12d1c5eb05ec 339-348
+  s_6e841029c7ea8e::t_c2eea42a380bc1 375,388
+  s_6e841029c7ea8e::t_af1683af0d8e17 495-502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d6bdb57c74fae081ee76aa6df9fd487b9716132b",
+  "prompts": {},
+  "sessions": {
+    "s_6e841029c7ea8e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_019148db3ffe1bChC10G8ytare",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
