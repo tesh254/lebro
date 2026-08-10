@@ -1,0 +1,19 @@
+internal/runtime/agent.go
+  s_ce6421ae599642::t_96458fd45244ff 700-707,711-712,714-730,734-756,760-762
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "86dfda4d223e075c7dbd5223c3fd97d8579f7fa4",
+  "prompts": {},
+  "sessions": {
+    "s_ce6421ae599642": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01263d3f8ffeHQZj9pHjBu9qRQ",
+        "model": "accounts/fireworks/models/qwen3p7-plus"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
