@@ -110,10 +110,11 @@ func (f *FallbackPolicy) GenerateWithAttempts(ctx context.Context, req ModelRequ
 			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
 			return RouteResult{Attempts: attempts}, genErr
 		}
-		attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
 		if !f.IsRetryable(modelErr) {
+			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: modelErr})
 			return RouteResult{Attempts: attempts}, genErr
 		}
+		attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
 		lastErr = genErr
 	}
 

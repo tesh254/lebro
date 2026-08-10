@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
-	"time"
 )
 
 // RoutingPolicy decides which provider handles a given request. When multiple
@@ -340,7 +338,3 @@ func responseToStreamReader(resp ModelResponse) StreamReader {
 		CloseFn: func() error { return nil },
 	}
 }
-
-// Ensure unused imports don't cause issues.
-var _ = strings.Builder{}
-var _ = time.Now
