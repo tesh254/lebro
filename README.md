@@ -515,6 +515,12 @@ declared ID. `errors.Is` works against the `lebro.ErrWorkflow*` sentinels:
 | `WorkflowErrorStepFailed` | Handler returned an error |
 | `WorkflowErrorStepPanicked` | Handler panicked during invocation |
 | `WorkflowErrorCancelled` | Run context cancelled before completion |
+| `WorkflowErrorNoBranchMatched` | Branching step found no matching predicate and no default |
+| `WorkflowErrorBranchConditionFailed` | A branch predicate returned an error during evaluation |
+| `WorkflowErrorInvalidBranchInput` | Branching step input failed its InputSchema |
+| `WorkflowErrorFanOutBranchFailed` | A fan-out child branch returned a terminal failure |
+| `WorkflowErrorFanOutInputMapperFailed` | A fan-out branch InputMapper returned an error |
+| `WorkflowErrorInvalidFanOutInput` | Fan-out step input failed its InputSchema |
 
 When a `RunListener` is configured, the executor emits ordered lifecycle events
 through the same run-event model as the agent loop: `run_started`, per-step
@@ -652,6 +658,64 @@ Run the suspend/resume example (no network or API key required):
 
 ```sh
 go run ./examples/workflow-suspend-resume
+```
+
+### Bounded parallel fan-out and join
+
+A `StepDefinition` may declare a `FanOut` to run independent branches
+concurrently within a configured `MaxParallel` bound and join their results in
+declaration order. Each `FanOutBranch` has a `Name`, an optional
+`InputMapper` (to derive a branch-specific input from the fan-out input), and
+an ordered list of `Steps` that run sequentially within the branch. The joined
+output is a JSON array of `{"name":"...","output":...}` objects in declaration
+order, regardless of completion timing — so downstream steps receive a
+deterministic result.
+
+`FailurePolicy` controls sibling cancellation on failure: `FanOutFailFast`
+(default) cancels remaining and in-flight siblings after the first child
+failure; `FanOutCollectAll` lets every branch finish and returns the
+lowest declared-index failure. External context cancellation cancels all
+branches and returns a cancelled error.
+
+A fan-out step must not declare a `Handler`, `OutputSchema`, `SuspendSchema`,
+`Retry`, or conditional `Branches`. Branches must have unique non-empty names
+and at least one step. `WorkflowRunResult.FanOut` exposes each child branch's
+terminal state and the join outcome; the persisted snapshot carries the same
+records so the join is durable and inspectable.
+
+```go
+wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+    Definition: lebro.WorkflowDefinition{ID: "parallel-enrich"},
+    Steps: []lebro.Step{
+        {
+            Definition: lebro.StepDefinition{
+                ID: "fanout",
+                FanOut: &lebro.FanOut{
+                    MaxParallel: 2,
+                    Branches: []lebro.FanOutBranch{
+                        {Name: "enrichment", Steps: []lebro.Step{
+                            {Definition: lebro.StepDefinition{ID: "enrich"}, Handler: enrichHandler},
+                        }},
+                        {Name: "risk-check", Steps: []lebro.Step{
+                            {Definition: lebro.StepDefinition{ID: "risk"}, Handler: riskHandler},
+                        }},
+                    },
+                },
+            },
+        },
+        {Definition: lebro.StepDefinition{ID: "summarize"}, Handler: summarizeHandler},
+    },
+})
+
+result, err := wf.Run(ctx, lebro.WorkflowRunInput{Input: json.RawMessage(`{"id":"user-123"}`)})
+// result.Output is the summarize step's output.
+// result.FanOut[0].Branches exposes each branch's status and output.
+```
+
+Run the fan-out-join example (no network or API key required):
+
+```sh
+go run ./examples/workflow-fanout-join
 ```
 
 ## Agent and tool workflow steps

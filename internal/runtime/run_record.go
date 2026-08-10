@@ -247,6 +247,7 @@ type runEmitter struct {
 	parentStep StepID
 	parentPos  int
 	seq        int
+	mu         sync.Mutex
 }
 
 func newRunEmitter(ctx context.Context, listener RunListener, clock Clock, _ IDSource) *runEmitter {
@@ -255,10 +256,14 @@ func newRunEmitter(ctx context.Context, listener RunListener, clock Clock, _ IDS
 }
 
 func (e *runEmitter) dispatch(event RunEvent) {
+	e.mu.Lock()
+	e.seq++
+	event.Sequence = e.seq
 	event.ParentRunID = e.parentRun
 	event.ParentStepID = e.parentStep
 	event.ParentStep = e.parentPos
 	e.listener.OnRunEvent(event)
+	e.mu.Unlock()
 }
 
 // enabled reports whether the emitter will dispatch events. When false, all
@@ -280,9 +285,7 @@ func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEve
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      eventType,
 		RunID:     runID,
 		StepID:    stepID,
@@ -296,9 +299,7 @@ func (e *runEmitter) emitModelStarted(runID RunID, step int, stepID StepID) time
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventModelStarted,
 		RunID:     runID,
 		StepID:    stepID,
@@ -318,9 +319,7 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 		toolCallID = delta.ToolCall.ID
 		toolID = delta.ToolCall.ToolID
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:              e.seq,
 		Type:                  RunEventDelta,
 		RunID:                 runID,
 		StepID:                stepID,
@@ -341,9 +340,7 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:     e.seq,
 		Type:         RunEventModelFinished,
 		RunID:        runID,
 		StepID:       stepID,
@@ -360,9 +357,7 @@ func (e *runEmitter) emitToolRequested(runID RunID, step int, stepID StepID, too
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:   e.seq,
 		Type:       RunEventToolRequested,
 		RunID:      runID,
 		StepID:     stepID,
@@ -378,9 +373,7 @@ func (e *runEmitter) emitToolStarted(runID RunID, step int, stepID StepID, toolC
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:   e.seq,
 		Type:       RunEventToolStarted,
 		RunID:      runID,
 		StepID:     stepID,
@@ -397,9 +390,7 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:   e.seq,
 		Type:       RunEventToolFinished,
 		RunID:      runID,
 		StepID:     stepID,
@@ -418,9 +409,7 @@ func (e *runEmitter) emitStepStarted(runID RunID, step int, stepID StepID) time.
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepStarted,
 		RunID:     runID,
 		StepID:    stepID,
@@ -435,9 +424,7 @@ func (e *runEmitter) emitStepFinished(runID RunID, step int, stepID StepID, star
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepFinished,
 		RunID:     runID,
 		StepID:    stepID,
@@ -456,9 +443,7 @@ func (e *runEmitter) emitStepAttemptStarted(runID RunID, step int, stepID StepID
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepAttemptStarted,
 		RunID:     runID,
 		StepID:    stepID,
@@ -479,9 +464,7 @@ func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepI
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepAttemptFinished,
 		RunID:     runID,
 		StepID:    stepID,
@@ -498,9 +481,7 @@ func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType Ru
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      eventType,
 		RunID:     runID,
 		StepID:    stepID,
@@ -518,9 +499,7 @@ func (e *runEmitter) emitSuspended(runID RunID, step int, stepID StepID) {
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventSuspended,
 		RunID:     runID,
 		StepID:    stepID,
@@ -539,9 +518,7 @@ func (e *runEmitter) emitResumed(runID RunID, step int, stepID StepID) {
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventResumed,
 		RunID:     runID,
 		StepID:    stepID,
@@ -560,9 +537,7 @@ func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, br
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventBranchSelected,
 		RunID:     runID,
 		StepID:    stepID,
@@ -583,6 +558,44 @@ func NewFixedClock(t time.Time) Clock {
 }
 
 func (c fixedClock) Now() time.Time { return c.t }
+
+// emitFanOutBranchStepStarted records a step_started event for a child step
+// within a fan-out branch. The Branch field carries the fan-out branch name so
+// consumers can correlate concurrent child events to their branch.
+func (e *runEmitter) emitFanOutBranchStepStarted(runID RunID, step int, stepID StepID, branch string) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.dispatch(RunEvent{
+		Type:      RunEventStepStarted,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Branch:    branch,
+		Timestamp: ts,
+	})
+	return ts
+}
+
+// emitFanOutBranchStepFinished records a step_finished event for a child step
+// within a fan-out branch. The Branch field carries the fan-out branch name.
+func (e *runEmitter) emitFanOutBranchStepFinished(runID RunID, step int, stepID StepID, branch string, start time.Time, err error) {
+	if !e.enabled() {
+		return
+	}
+	now := e.clock.Now()
+	e.dispatch(RunEvent{
+		Type:      RunEventStepFinished,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Branch:    branch,
+		Timestamp: now,
+		Duration:  now.Sub(start),
+		Error:     err,
+	})
+}
 
 // fixedIDSource returns predetermined IDs in order. It is intended for
 // deterministic tests.

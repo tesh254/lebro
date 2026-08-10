@@ -88,6 +88,7 @@ type WorkflowRunRecord struct {
 	CurrentStepID   StepID               `json:"current_step_id,omitempty"`
 	Path            []StepID             `json:"path,omitempty"`
 	Failure         *WorkflowFailureData `json:"failure,omitempty"`
+	FanOut          []FanOutJoinResult   `json:"fan_out,omitempty"`
 	WorkflowVersion string               `json:"workflow_version,omitempty"`
 	Metadata        json.RawMessage      `json:"metadata,omitempty"`
 	StartedAt       time.Time            `json:"started_at"`

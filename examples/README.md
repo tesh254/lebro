@@ -79,3 +79,10 @@ go run ./examples/streaming
 
 As features are added, create sibling directories such as `model-*`,
 `tools-*`, or `workflow-*` rather than extending an unrelated example.
+
+Run the bounded parallel fan-out and join example (two concurrent branches
+with deterministic joined output; no network or API key required):
+
+```sh
+go run ./examples/workflow-fanout-join
+```

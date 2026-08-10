@@ -65,6 +65,12 @@ type (
 	StepHandlerFunc            = runtime.StepHandlerFunc
 	Branch                     = runtime.Branch
 	BranchPredicate            = runtime.BranchPredicate
+	FanOut                     = runtime.FanOut
+	FanOutBranch               = runtime.FanOutBranch
+	FanOutFailurePolicy        = runtime.FanOutFailurePolicy
+	FanOutInputMapper          = runtime.FanOutInputMapper
+	FanOutBranchResult         = runtime.FanOutBranchResult
+	FanOutJoinResult           = runtime.FanOutJoinResult
 	AgentStep                  = runtime.AgentStep
 	ToolStep                   = runtime.ToolStep
 	LinearWorkflowConfig       = runtime.LinearWorkflowConfig
@@ -154,14 +160,17 @@ const (
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 
-	WorkflowErrorInvalidStepInput      = runtime.WorkflowErrorInvalidStepInput
-	WorkflowErrorInvalidStepOutput     = runtime.WorkflowErrorInvalidStepOutput
-	WorkflowErrorStepFailed            = runtime.WorkflowErrorStepFailed
-	WorkflowErrorStepPanicked          = runtime.WorkflowErrorStepPanicked
-	WorkflowErrorCancelled             = runtime.WorkflowErrorCancelled
-	WorkflowErrorNoBranchMatched       = runtime.WorkflowErrorNoBranchMatched
-	WorkflowErrorBranchConditionFailed = runtime.WorkflowErrorBranchConditionFailed
-	WorkflowErrorInvalidBranchInput    = runtime.WorkflowErrorInvalidBranchInput
+	WorkflowErrorInvalidStepInput        = runtime.WorkflowErrorInvalidStepInput
+	WorkflowErrorInvalidStepOutput       = runtime.WorkflowErrorInvalidStepOutput
+	WorkflowErrorStepFailed              = runtime.WorkflowErrorStepFailed
+	WorkflowErrorStepPanicked            = runtime.WorkflowErrorStepPanicked
+	WorkflowErrorCancelled               = runtime.WorkflowErrorCancelled
+	WorkflowErrorNoBranchMatched         = runtime.WorkflowErrorNoBranchMatched
+	WorkflowErrorBranchConditionFailed   = runtime.WorkflowErrorBranchConditionFailed
+	WorkflowErrorInvalidBranchInput      = runtime.WorkflowErrorInvalidBranchInput
+	WorkflowErrorFanOutBranchFailed      = runtime.WorkflowErrorFanOutBranchFailed
+	WorkflowErrorFanOutInputMapperFailed = runtime.WorkflowErrorFanOutInputMapperFailed
+	WorkflowErrorInvalidFanOutInput      = runtime.WorkflowErrorInvalidFanOutInput
 
 	RunEventStarted             = runtime.RunEventStarted
 	RunEventModelStarted        = runtime.RunEventModelStarted
@@ -180,6 +189,9 @@ const (
 	RunEventSuspended           = runtime.RunEventSuspended
 	RunEventResumed             = runtime.RunEventResumed
 	RunEventBranchSelected      = runtime.RunEventBranchSelected
+
+	FanOutFailFast   = runtime.FanOutFailFast
+	FanOutCollectAll = runtime.FanOutCollectAll
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 
@@ -234,9 +246,12 @@ var (
 	ErrInvalidResumeInput          = runtime.ErrInvalidResumeInput
 	ErrWorkflowResumeRequiresStore = runtime.ErrWorkflowResumeRequiresStore
 
-	ErrWorkflowNoBranchMatched       = runtime.ErrWorkflowNoBranchMatched
-	ErrWorkflowBranchConditionFailed = runtime.ErrWorkflowBranchConditionFailed
-	ErrWorkflowInvalidBranchInput    = runtime.ErrWorkflowInvalidBranchInput
+	ErrWorkflowNoBranchMatched         = runtime.ErrWorkflowNoBranchMatched
+	ErrWorkflowBranchConditionFailed   = runtime.ErrWorkflowBranchConditionFailed
+	ErrWorkflowInvalidBranchInput      = runtime.ErrWorkflowInvalidBranchInput
+	ErrWorkflowFanOutBranchFailed      = runtime.ErrWorkflowFanOutBranchFailed
+	ErrWorkflowFanOutInputMapperFailed = runtime.ErrWorkflowFanOutInputMapperFailed
+	ErrWorkflowInvalidFanOutInput      = runtime.ErrWorkflowInvalidFanOutInput
 )
 
 // DefaultRetryable reports whether a handler error is eligible for retry
