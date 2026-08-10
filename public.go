@@ -63,6 +63,8 @@ type (
 	Step                       = runtime.Step
 	StepHandler                = runtime.StepHandler
 	StepHandlerFunc            = runtime.StepHandlerFunc
+	Branch                     = runtime.Branch
+	BranchPredicate            = runtime.BranchPredicate
 	AgentStep                  = runtime.AgentStep
 	ToolStep                   = runtime.ToolStep
 	LinearWorkflowConfig       = runtime.LinearWorkflowConfig
@@ -152,11 +154,14 @@ const (
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 
-	WorkflowErrorInvalidStepInput  = runtime.WorkflowErrorInvalidStepInput
-	WorkflowErrorInvalidStepOutput = runtime.WorkflowErrorInvalidStepOutput
-	WorkflowErrorStepFailed        = runtime.WorkflowErrorStepFailed
-	WorkflowErrorStepPanicked      = runtime.WorkflowErrorStepPanicked
-	WorkflowErrorCancelled         = runtime.WorkflowErrorCancelled
+	WorkflowErrorInvalidStepInput      = runtime.WorkflowErrorInvalidStepInput
+	WorkflowErrorInvalidStepOutput     = runtime.WorkflowErrorInvalidStepOutput
+	WorkflowErrorStepFailed            = runtime.WorkflowErrorStepFailed
+	WorkflowErrorStepPanicked          = runtime.WorkflowErrorStepPanicked
+	WorkflowErrorCancelled             = runtime.WorkflowErrorCancelled
+	WorkflowErrorNoBranchMatched       = runtime.WorkflowErrorNoBranchMatched
+	WorkflowErrorBranchConditionFailed = runtime.WorkflowErrorBranchConditionFailed
+	WorkflowErrorInvalidBranchInput    = runtime.WorkflowErrorInvalidBranchInput
 
 	RunEventStarted             = runtime.RunEventStarted
 	RunEventModelStarted        = runtime.RunEventModelStarted
@@ -174,6 +179,7 @@ const (
 	RunEventCancelled           = runtime.RunEventCancelled
 	RunEventSuspended           = runtime.RunEventSuspended
 	RunEventResumed             = runtime.RunEventResumed
+	RunEventBranchSelected      = runtime.RunEventBranchSelected
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 
@@ -227,6 +233,10 @@ var (
 	ErrNotSuspended                = runtime.ErrNotSuspended
 	ErrInvalidResumeInput          = runtime.ErrInvalidResumeInput
 	ErrWorkflowResumeRequiresStore = runtime.ErrWorkflowResumeRequiresStore
+
+	ErrWorkflowNoBranchMatched       = runtime.ErrWorkflowNoBranchMatched
+	ErrWorkflowBranchConditionFailed = runtime.ErrWorkflowBranchConditionFailed
+	ErrWorkflowInvalidBranchInput    = runtime.ErrWorkflowInvalidBranchInput
 )
 
 // DefaultRetryable reports whether a handler error is eligible for retry

@@ -62,6 +62,12 @@ const (
 	// its durable snapshot. It is followed by per-step step_started/finished
 	// events for the remaining steps.
 	RunEventResumed RunEventType = "run_resumed"
+	// RunEventBranchSelected is emitted when a branching step evaluates its
+	// predicates and selects a branch. It carries the selected branch name
+	// in the DeltaText field and the branching step's StepID. It is
+	// non-terminal and sits between step_started and step_finished for the
+	// branching step.
+	RunEventBranchSelected RunEventType = "branch_selected"
 )
 
 // IsTerminal reports whether the event type is a terminal run event.
@@ -119,6 +125,7 @@ type RunEvent struct {
 	ToolState             ToolExecutionState
 	DeltaText             string
 	DeltaStructuredOutput ModelStructuredOutput
+	Branch                string
 	Status                RunStatus
 	Error                 error
 }
@@ -541,6 +548,27 @@ func (e *runEmitter) emitResumed(runID RunID, step int, stepID StepID) {
 		Step:      step,
 		Timestamp: e.clock.Now(),
 		Status:    RunStatusRunning,
+	})
+}
+
+// emitBranchSelected records a branch_selected event at a branching step.
+// step is the 1-indexed position of the branching step, stepID is its
+// declared identifier, and branch is the selected branch name. The event is
+// non-terminal and sits between step_started and step_finished for the
+// branching step.
+func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, branch string) {
+	if !e.enabled() {
+		return
+	}
+	e.seq++
+	e.dispatch(RunEvent{
+		Sequence:  e.seq,
+		Type:      RunEventBranchSelected,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Branch:    branch,
+		Timestamp: e.clock.Now(),
 	})
 }
 

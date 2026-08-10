@@ -73,7 +73,9 @@ type WorkflowFailureData struct {
 // across adapters. CurrentStep and CurrentStepID identify the last step the
 // run reached (0 and "" before the first step). WorkflowVersion is an opaque
 // caller-supplied definition/version reference for forward-compatible
-// migrations; the executor never interprets it.
+// migrations; the executor never interprets it. Path is the ordered list of
+// StepIDs of the first steps of the branches selected at each branching step;
+// it is empty when no branching step was reached.
 type WorkflowRunRecord struct {
 	ID              RunID                `json:"id"`
 	WorkflowID      WorkflowID           `json:"workflow_id"`
@@ -84,6 +86,7 @@ type WorkflowRunRecord struct {
 	StepOutputs     []json.RawMessage    `json:"step_outputs,omitempty"`
 	CurrentStep     int                  `json:"current_step,omitempty"`
 	CurrentStepID   StepID               `json:"current_step_id,omitempty"`
+	Path            []StepID             `json:"path,omitempty"`
 	Failure         *WorkflowFailureData `json:"failure,omitempty"`
 	WorkflowVersion string               `json:"workflow_version,omitempty"`
 	Metadata        json.RawMessage      `json:"metadata,omitempty"`
