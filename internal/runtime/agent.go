@@ -153,8 +153,12 @@ type AgentConfig struct {
 	// Definition identifies the agent and supplies instructions, model name,
 	// and the tool IDs the agent is permitted to invoke.
 	Definition AgentDefinition
-	// Model is the provider-neutral language-model adapter. Required.
+	// Model is the provider-neutral language-model adapter. Required when
+	// Router is nil.
 	Model Model
+	// Router optionally routes model calls through a provider registry with
+	// routing policies and fallback chains. When set, Model is ignored.
+	Router *ModelRouter
 	// Tools resolves schema-backed tool handlers by stable ID. May be nil when
 	// Definition.Tools is empty.
 	Tools *ToolRegistry
@@ -197,6 +201,7 @@ type AgentConfig struct {
 type Agent struct {
 	definition     AgentDefinition
 	model          Model
+	router         *ModelRouter
 	tools          *ToolRegistry
 	outputSchema   *ModelOutputSchema
 	compiledOutput CompiledSchema
@@ -219,8 +224,8 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	if config.Definition.ID == "" {
 		return nil, errors.New("lebro: agent definition ID is required")
 	}
-	if config.Model == nil || isNilInterface(config.Model) {
-		return nil, errors.New("lebro: agent model is required")
+	if config.Router == nil && (config.Model == nil || isNilInterface(config.Model)) {
+		return nil, errors.New("lebro: agent model or router is required")
 	}
 	if len(config.Definition.Tools) > 0 && (config.Tools == nil) {
 		return nil, errors.New("lebro: agent tool registry is required when the definition references tools")
@@ -274,6 +279,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	return &Agent{
 		definition:     definition,
 		model:          config.Model,
+		router:         config.Router,
 		tools:          config.Tools,
 		outputSchema:   outputSchema,
 		compiledOutput: compiledOutput,
@@ -323,6 +329,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 
 	runID := a.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
+	var allAttempts []ModelAttempt
 
 	emitter.emit(runID, 0, "", RunEventStarted)
 
@@ -353,7 +360,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	for step := 1; step <= a.maxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
 			emitter.terminal(runID, step, "", RunEventCancelled, RunStatusCancelled, err)
-			return a.cancelled(runID, transcript, metadata, step, err)
+			return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
 		}
 
 		stepID := a.idSource.NewStepID()
@@ -365,17 +372,20 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			Tools:        cloneToolDefinitions(toolDefinitions),
 			OutputSchema: cloneModelOutputSchema(outputSchema),
 		}
-		response, err := a.model.Generate(runCtx, request)
+		response, attempts, err := a.generateModel(runCtx, runID, step, stepID, emitter, request)
+		allAttempts = append(allAttempts, attempts...)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
 				cause := preferContextError(err, cancelledErr)
 				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
-				return a.cancelled(runID, transcript, metadata, step, cause)
+				return a.cancelledWithAttempts(runID, transcript, metadata, step, cause, allAttempts)
 			}
 			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
-			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
+			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err}
+			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
+			return result, agentErr
 		}
 		if err := response.Validate(); err != nil {
 			if compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
@@ -383,12 +393,15 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
 				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
-				return a.failWithMessages(runID, metadata, step, transcript, structuredErr)
+				result := a.failWithAttemptsResult(runID, metadata, step, transcript, structuredErr, allAttempts)
+				return result, structuredErr
 			}
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
-			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure})
+			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure}
+			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
+			return result, agentErr
 		}
 
 		emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, nil)
@@ -399,18 +412,21 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			if err := a.validateStructuredOutput(compiledOutput, response); err != nil {
 				agentErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: err}
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
-				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
+				result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
+				return result, agentErr
 			}
 			result := RunResult{
-				ID:       runID,
-				Status:   RunStatusSucceeded,
-				Messages: transcript,
-				Metadata: metadata,
+				ID:            runID,
+				Status:        RunStatusSucceeded,
+				Messages:      transcript,
+				Metadata:      metadata,
+				ModelAttempts: allAttempts,
 			}
 			if persistErr := a.persistNewMessages(ctx, input.ThreadID, runID, transcript, loadedCount); persistErr != nil {
 				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
-				return a.failWithMessages(runID, metadata, step, transcript, persistAgentErr)
+				result := a.failWithAttemptsResult(runID, metadata, step, transcript, persistAgentErr, allAttempts)
+				return result, persistAgentErr
 			}
 			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			return result, nil
@@ -420,7 +436,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		for _, call := range toolCalls {
 			if err := runCtx.Err(); err != nil {
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
-				return a.cancelled(runID, transcript, metadata, step, err)
+				return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
 			}
 			emitter.emitToolRequested(runID, step, stepID, call.ID, call.ToolID)
 
@@ -432,19 +448,21 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, result.Err)
-				return a.cancelled(runID, transcript, metadata, step, result.Err)
+				return a.cancelledWithAttempts(runID, transcript, metadata, step, result.Err, allAttempts)
 			}
 			if result.State != ToolExecutionSucceeded {
 				agentErr := toolExecutionAgentError(step, result)
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
-				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
+				failResult := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
+				return failResult, agentErr
 			}
 		}
 	}
 
 	exhausted := &AgentError{Kind: AgentErrorStepLimitExhausted, Step: a.maxSteps, Err: ErrAgentStepLimitExhausted}
 	emitter.terminal(runID, a.maxSteps, "", RunEventFailed, RunStatusFailed, exhausted)
-	return a.failWithMessages(runID, metadata, a.maxSteps, transcript, exhausted)
+	result := a.failWithAttemptsResult(runID, metadata, a.maxSteps, transcript, exhausted, allAttempts)
+	return result, exhausted
 }
 
 // StreamRun is the handle returned by Agent.RunStream. The caller drains
@@ -569,7 +587,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		return nil, err
 	}
 
-	streamingModel := AsStreamingModel(a.model)
+	streamingModel := a.streamingModelForRun()
 
 	deltas := make(chan StreamDelta, 1)
 	done := make(chan streamOutcome, 1)
@@ -636,11 +654,12 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 	defer close(p.finished)
 
 	transcript := p.transcript
+	var allAttempts []ModelAttempt
 
 	for step := 1; step <= a.maxSteps; step++ {
 		if err := p.ctx.Err(); err != nil {
 			p.emitter.terminal(p.runID, step, "", RunEventCancelled, RunStatusCancelled, err)
-			p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, err), err: a.cancelledError(step, err)}
+			p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
 			return
 		}
 
@@ -654,20 +673,21 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			OutputSchema: cloneModelOutputSchema(p.outputSchema),
 		}
 
-		response, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, modelStart, p.emitter, p.deltas, request, p.streamingModel)
+		response, attempts, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, modelStart, p.emitter, p.deltas, request, p.streamingModel)
+		allAttempts = append(allAttempts, attempts...)
 		if streamErr != nil {
 			cause := streamErr
 			if cancelledErr := p.ctx.Err(); errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) || cancelledErr != nil {
 				cause = preferContextError(streamErr, cancelledErr)
 				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
-				p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, cause), err: a.cancelledError(step, cause)}
+				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, cause, allAttempts), err: a.cancelledError(step, cause)}
 				return
 			}
 			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, cause)
 			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: cause}
-			p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
 		}
 
@@ -677,14 +697,14 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
 				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
-				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, structuredErr), err: structuredErr}
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, structuredErr, allAttempts), err: structuredErr}
 				return
 			}
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
 			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure}
-			p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
 		}
 
@@ -695,15 +715,15 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			if err := a.validateStructuredOutput(p.compiledOutput, response); err != nil {
 				agentErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: err}
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
-				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 				return
 			}
-			result := RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata}
+			result := RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata, ModelAttempts: allAttempts}
 			persistErr := a.persistNewMessages(p.parentCtx, p.threadID, p.runID, transcript, p.loadedCount)
 			if persistErr != nil {
 				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
-				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, persistAgentErr), err: persistAgentErr}
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, persistAgentErr, allAttempts), err: persistAgentErr}
 				return
 			}
 			p.emitter.terminal(p.runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
@@ -715,7 +735,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		for _, call := range toolCalls {
 			if err := p.ctx.Err(); err != nil {
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
-				p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, err), err: a.cancelledError(step, err)}
+				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
 				return
 			}
 			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
@@ -725,13 +745,13 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, result.Err)
-				p.done <- streamOutcome{result: a.cancelledResult(p.runID, transcript, p.metadata, step, result.Err), err: a.cancelledError(step, result.Err)}
+				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, result.Err, allAttempts), err: a.cancelledError(step, result.Err)}
 				return
 			}
 			if result.State != ToolExecutionSucceeded {
 				agentErr := toolExecutionAgentError(step, result)
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
-				p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, step, transcript, agentErr), err: agentErr}
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 				return
 			}
 		}
@@ -739,7 +759,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 
 	exhausted := &AgentError{Kind: AgentErrorStepLimitExhausted, Step: a.maxSteps, Err: ErrAgentStepLimitExhausted}
 	p.emitter.terminal(p.runID, a.maxSteps, "", RunEventFailed, RunStatusFailed, exhausted)
-	p.done <- streamOutcome{result: a.failWithMessagesResult(p.runID, p.metadata, a.maxSteps, transcript, exhausted), err: exhausted}
+	p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, a.maxSteps, transcript, exhausted, allAttempts), err: exhausted}
 }
 
 // consumeStream drains one model call's deltas into the caller's channel and
@@ -747,11 +767,21 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 // implement StreamingModel, it falls back to Generate and emits a single
 // delta carrying the full response so streaming callers observe equivalent
 // output shape.
-func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, modelStart time.Time, emitter *runEmitter, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, error) {
+func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, modelStart time.Time, emitter *runEmitter, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, []ModelAttempt, error) {
 	if streamingModel == nil {
-		response, err := a.model.Generate(ctx, request)
+		var response ModelResponse
+		var err error
+		var attempts []ModelAttempt
+		if a.router != nil {
+			result, genErr := a.router.GenerateWithAttempts(ctx, request)
+			response = result.Response
+			err = genErr
+			attempts = result.Attempts
+		} else {
+			response, err = a.model.Generate(ctx, request)
+		}
 		if err != nil {
-			return ModelResponse{}, err
+			return ModelResponse{}, attempts, err
 		}
 		// Emit deltas representing the complete response so streaming
 		// consumers observe every tool call and the terminal payload.
@@ -760,11 +790,11 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			call := calls[i]
 			delta := StreamDelta{ToolCall: &call}
 			if err := delta.Validate(); err != nil {
-				return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+				return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			}
 			emitter.emitDelta(runID, step, stepID, delta)
 			if !sendDelta(ctx, deltas, delta) {
-				return ModelResponse{}, context.Canceled
+				return ModelResponse{}, attempts, context.Canceled
 			}
 		}
 		terminal := StreamDelta{
@@ -779,18 +809,34 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			terminal.FinishReason = FinishReasonUnspecified
 		}
 		if err := terminal.Validate(); err != nil {
-			return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		emitter.emitDelta(runID, step, stepID, terminal)
 		if !sendDelta(ctx, deltas, terminal) {
-			return ModelResponse{}, context.Canceled
+			return ModelResponse{}, attempts, context.Canceled
 		}
-		return response, nil
+		return response, attempts, nil
 	}
 
-	reader, err := streamingModel.Stream(ctx, request)
+	var reader StreamReader
+	var attempts []ModelAttempt
+	var err error
+	if a.router != nil {
+		result, streamErr := a.router.streamWithAttempts(ctx, request, &agentModelAttemptObserver{
+			emitter: emitter,
+			runID:   runID,
+			step:    step,
+			stepID:  stepID,
+			starts:  make(map[ProviderID]time.Time),
+		})
+		reader = result.Reader
+		attempts = result.Attempts
+		err = streamErr
+	} else {
+		reader, err = streamingModel.Stream(ctx, request)
+	}
 	if err != nil {
-		return ModelResponse{}, err
+		return ModelResponse{}, attempts, err
 	}
 	defer func() { _ = reader.Close() }()
 
@@ -802,24 +848,24 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return ModelResponse{}, err
+			return ModelResponse{}, attempts, err
 		}
 		delta, derr := reader.Next()
 		if errors.Is(derr, io.EOF) {
 			if err := ctx.Err(); err != nil {
-				return ModelResponse{}, err
+				return ModelResponse{}, attempts, err
 			}
 			break
 		}
 		if derr != nil {
-			return ModelResponse{}, derr
+			return ModelResponse{}, attempts, derr
 		}
 		if err := delta.Validate(); err != nil {
-			return ModelResponse{}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		emitter.emitDelta(runID, step, stepID, delta)
 		if !sendDelta(ctx, deltas, delta) {
-			return ModelResponse{}, context.Canceled
+			return ModelResponse{}, attempts, context.Canceled
 		}
 		if delta.Text != "" {
 			contentBuilder.WriteString(delta.Text)
@@ -837,7 +883,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			usage = delta.Usage
 		}
 		if delta.Err != nil {
-			return ModelResponse{}, delta.Err
+			return ModelResponse{}, attempts, delta.Err
 		}
 	}
 
@@ -853,7 +899,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	if len(toolCalls) > 0 {
 		encoded, err := NewModelToolCalls(toolCalls...)
 		if err != nil {
-			return ModelResponse{}, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
+			return ModelResponse{}, attempts, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
 		}
 		message.ToolCalls = encoded
 	}
@@ -863,24 +909,16 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		Usage:        usage,
 		FinishReason: finishReason,
 	}
-	return response, nil
+	return response, attempts, nil
 }
 
-func (a *Agent) cancelledResult(runID RunID, messages []Message, metadata map[string]string, step int, err error) RunResult {
+func (a *Agent) cancelledWithAttemptsResult(runID RunID, messages []Message, metadata map[string]string, step int, err error, attempts []ModelAttempt) RunResult {
 	return RunResult{
-		ID:       runID,
-		Status:   RunStatusCancelled,
-		Messages: cloneMessages(messages),
-		Metadata: metadata,
-	}
-}
-
-func (a *Agent) failWithMessagesResult(runID RunID, metadata map[string]string, step int, messages []Message, agentErr *AgentError) RunResult {
-	return RunResult{
-		ID:       runID,
-		Status:   RunStatusFailed,
-		Messages: cloneMessages(messages),
-		Metadata: metadata,
+		ID:            runID,
+		Status:        RunStatusCancelled,
+		Messages:      cloneMessages(messages),
+		Metadata:      metadata,
+		ModelAttempts: attempts,
 	}
 }
 
@@ -1009,12 +1047,59 @@ func (a *Agent) applyDeadline(ctx context.Context) (context.Context, context.Can
 	return context.WithTimeout(ctx, a.deadline)
 }
 
-func (a *Agent) cancelled(runID RunID, messages []Message, metadata map[string]string, step int, err error) (RunResult, error) {
+// generateModel calls the model either directly or through the router, emitting
+// model_attempt events when routing is in use. It returns the response,
+// accumulated model attempts, and any error.
+func (a *Agent) generateModel(ctx context.Context, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
+	if a.router == nil {
+		resp, err := a.model.Generate(ctx, request)
+		return resp, nil, err
+	}
+
+	result, err := a.router.generateWithAttempts(ctx, request, &agentModelAttemptObserver{
+		emitter: emitter,
+		runID:   runID,
+		step:    step,
+		stepID:  stepID,
+		starts:  make(map[ProviderID]time.Time),
+	})
+
+	return result.Response, result.Attempts, err
+}
+
+type agentModelAttemptObserver struct {
+	emitter *runEmitter
+	runID   RunID
+	step    int
+	stepID  StepID
+	starts  map[ProviderID]time.Time
+}
+
+func (o *agentModelAttemptObserver) modelAttemptStarted(provider ProviderID, model string) {
+	o.starts[provider] = o.emitter.emitModelAttemptStarted(o.runID, o.step, o.stepID, provider, model)
+}
+
+func (o *agentModelAttemptObserver) modelAttemptFinished(attempt ModelAttempt) {
+	o.emitter.emitModelAttemptFinished(o.runID, o.step, o.stepID, attempt.Provider, attempt.Model, attempt.Status, o.starts[attempt.Provider], attempt.Error)
+}
+
+// streamingModelForRun returns the streaming model for the current run. When
+// using a router, it returns the router itself (which implements StreamingModel).
+// When using a direct model, it returns the streaming adapter if available.
+func (a *Agent) streamingModelForRun() StreamingModel {
+	if a.router != nil {
+		return a.router
+	}
+	return AsStreamingModel(a.model)
+}
+
+func (a *Agent) cancelledWithAttempts(runID RunID, messages []Message, metadata map[string]string, step int, err error, attempts []ModelAttempt) (RunResult, error) {
 	result := RunResult{
-		ID:       runID,
-		Status:   RunStatusCancelled,
-		Messages: cloneMessages(messages),
-		Metadata: metadata,
+		ID:            runID,
+		Status:        RunStatusCancelled,
+		Messages:      cloneMessages(messages),
+		Metadata:      metadata,
+		ModelAttempts: attempts,
 	}
 	return result, a.cancelledError(step, err)
 }
@@ -1032,13 +1117,14 @@ func (a *Agent) fail(runID RunID, input RunInput, step int, err error) (RunResul
 	}, err
 }
 
-func (a *Agent) failWithMessages(runID RunID, metadata map[string]string, step int, messages []Message, agentErr *AgentError) (RunResult, error) {
+func (a *Agent) failWithAttemptsResult(runID RunID, metadata map[string]string, step int, messages []Message, agentErr *AgentError, attempts []ModelAttempt) RunResult {
 	return RunResult{
-		ID:       runID,
-		Status:   RunStatusFailed,
-		Messages: cloneMessages(messages),
-		Metadata: metadata,
-	}, agentErr
+		ID:            runID,
+		Status:        RunStatusFailed,
+		Messages:      cloneMessages(messages),
+		Metadata:      metadata,
+		ModelAttempts: attempts,
+	}
 }
 
 func toolResultMessage(callID string, result ToolExecutionResult) Message {

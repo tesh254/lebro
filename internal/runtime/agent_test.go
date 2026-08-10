@@ -27,12 +27,12 @@ func TestNewAgentValidatesConfiguration(t *testing.T) {
 		{
 			name: "missing model",
 			cfg:  AgentConfig{Definition: AgentDefinition{ID: "agent"}},
-			want: "agent model is required",
+			want: "agent model or router is required",
 		},
 		{
 			name: "nil model",
 			cfg:  AgentConfig{Definition: AgentDefinition{ID: "agent"}, Model: (*echoModel)(nil)},
-			want: "agent model is required",
+			want: "agent model or router is required",
 		},
 		{
 			name: "tools referenced without registry",

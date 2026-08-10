@@ -68,6 +68,13 @@ const (
 	// non-terminal and sits between step_started and step_finished for the
 	// branching step.
 	RunEventBranchSelected RunEventType = "branch_selected"
+	// RunEventModelAttemptStarted is emitted before each provider attempt
+	// when using a ModelRouter. It carries the Provider ID and model name.
+	RunEventModelAttemptStarted RunEventType = "model_attempt_started"
+	// RunEventModelAttemptFinished is emitted after each provider attempt
+	// when using a ModelRouter. It carries the Provider ID, model name,
+	// attempt status, and any error.
+	RunEventModelAttemptFinished RunEventType = "model_attempt_finished"
 )
 
 // IsTerminal reports whether the event type is a terminal run event.
@@ -126,6 +133,9 @@ type RunEvent struct {
 	DeltaText             string
 	DeltaStructuredOutput ModelStructuredOutput
 	Branch                string
+	Provider              ProviderID
+	ProviderModel         string
+	AttemptStatus         ModelAttemptStatus
 	Status                RunStatus
 	Error                 error
 }
@@ -544,6 +554,46 @@ func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, br
 		Step:      step,
 		Branch:    branch,
 		Timestamp: e.clock.Now(),
+	})
+}
+
+// emitModelAttemptStarted records a model_attempt_started event before each
+// provider attempt when using a ModelRouter.
+func (e *runEmitter) emitModelAttemptStarted(runID RunID, step int, stepID StepID, provider ProviderID, model string) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.dispatch(RunEvent{
+		Type:          RunEventModelAttemptStarted,
+		RunID:         runID,
+		StepID:        stepID,
+		Step:          step,
+		Provider:      provider,
+		ProviderModel: model,
+		Timestamp:     ts,
+	})
+	return ts
+}
+
+// emitModelAttemptFinished records a model_attempt_finished event after each
+// provider attempt when using a ModelRouter.
+func (e *runEmitter) emitModelAttemptFinished(runID RunID, step int, stepID StepID, provider ProviderID, model string, status ModelAttemptStatus, start time.Time, err error) {
+	if !e.enabled() {
+		return
+	}
+	now := e.clock.Now()
+	e.dispatch(RunEvent{
+		Type:          RunEventModelAttemptFinished,
+		RunID:         runID,
+		StepID:        stepID,
+		Step:          step,
+		Provider:      provider,
+		ProviderModel: model,
+		AttemptStatus: status,
+		Timestamp:     now,
+		Duration:      now.Sub(start),
+		Error:         err,
 	})
 }
 

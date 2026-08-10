@@ -25,6 +25,16 @@ type (
 	RunInput                   = runtime.RunInput
 	RunStatus                  = runtime.RunStatus
 	RunResult                  = runtime.RunResult
+	ModelAttempt               = runtime.ModelAttempt
+	ModelAttemptStatus         = runtime.ModelAttemptStatus
+	ProviderID                 = runtime.ProviderID
+	ProviderCapabilities       = runtime.ProviderCapabilities
+	ProviderEntry              = runtime.ProviderEntry
+	ProviderRegistry           = runtime.ProviderRegistry
+	RoutingPolicy              = runtime.RoutingPolicy
+	ModelRouter                = runtime.ModelRouter
+	ModelRouterConfig          = runtime.ModelRouterConfig
+	FallbackPolicy             = runtime.FallbackPolicy
 	ToolDefinition             = runtime.ToolDefinition
 	Tool                       = runtime.Tool
 	ToolExecutionRequest       = runtime.ToolExecutionRequest
@@ -172,26 +182,32 @@ const (
 	WorkflowErrorFanOutInputMapperFailed = runtime.WorkflowErrorFanOutInputMapperFailed
 	WorkflowErrorInvalidFanOutInput      = runtime.WorkflowErrorInvalidFanOutInput
 
-	RunEventStarted             = runtime.RunEventStarted
-	RunEventModelStarted        = runtime.RunEventModelStarted
-	RunEventModelFinished       = runtime.RunEventModelFinished
-	RunEventToolRequested       = runtime.RunEventToolRequested
-	RunEventToolStarted         = runtime.RunEventToolStarted
-	RunEventToolFinished        = runtime.RunEventToolFinished
-	RunEventDelta               = runtime.RunEventDelta
-	RunEventStepStarted         = runtime.RunEventStepStarted
-	RunEventStepFinished        = runtime.RunEventStepFinished
-	RunEventStepAttemptStarted  = runtime.RunEventStepAttemptStarted
-	RunEventStepAttemptFinished = runtime.RunEventStepAttemptFinished
-	RunEventSucceeded           = runtime.RunEventSucceeded
-	RunEventFailed              = runtime.RunEventFailed
-	RunEventCancelled           = runtime.RunEventCancelled
-	RunEventSuspended           = runtime.RunEventSuspended
-	RunEventResumed             = runtime.RunEventResumed
-	RunEventBranchSelected      = runtime.RunEventBranchSelected
+	RunEventStarted              = runtime.RunEventStarted
+	RunEventModelStarted         = runtime.RunEventModelStarted
+	RunEventModelFinished        = runtime.RunEventModelFinished
+	RunEventToolRequested        = runtime.RunEventToolRequested
+	RunEventToolStarted          = runtime.RunEventToolStarted
+	RunEventToolFinished         = runtime.RunEventToolFinished
+	RunEventDelta                = runtime.RunEventDelta
+	RunEventStepStarted          = runtime.RunEventStepStarted
+	RunEventStepFinished         = runtime.RunEventStepFinished
+	RunEventStepAttemptStarted   = runtime.RunEventStepAttemptStarted
+	RunEventStepAttemptFinished  = runtime.RunEventStepAttemptFinished
+	RunEventSucceeded            = runtime.RunEventSucceeded
+	RunEventFailed               = runtime.RunEventFailed
+	RunEventCancelled            = runtime.RunEventCancelled
+	RunEventSuspended            = runtime.RunEventSuspended
+	RunEventResumed              = runtime.RunEventResumed
+	RunEventBranchSelected       = runtime.RunEventBranchSelected
+	RunEventModelAttemptStarted  = runtime.RunEventModelAttemptStarted
+	RunEventModelAttemptFinished = runtime.RunEventModelAttemptFinished
 
 	FanOutFailFast   = runtime.FanOutFailFast
 	FanOutCollectAll = runtime.FanOutCollectAll
+
+	ModelAttemptSuccess  = runtime.ModelAttemptSuccess
+	ModelAttemptFallback = runtime.ModelAttemptFallback
+	ModelAttemptFailed   = runtime.ModelAttemptFailed
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 
@@ -208,10 +224,12 @@ const (
 )
 
 var (
-	ErrToolNotFound = runtime.ErrToolNotFound
-	ErrNotFound     = runtime.ErrNotFound
-	ErrConflict     = runtime.ErrConflict
-	ErrInvalidPage  = runtime.ErrInvalidPage
+	ErrToolNotFound          = runtime.ErrToolNotFound
+	ErrNotFound              = runtime.ErrNotFound
+	ErrConflict              = runtime.ErrConflict
+	ErrInvalidPage           = runtime.ErrInvalidPage
+	ErrProviderNotFound      = runtime.ErrProviderNotFound
+	ErrProviderAlreadyExists = runtime.ErrProviderAlreadyExists
 
 	ErrMessageStructuredOutputInvalidJSON = runtime.ErrMessageStructuredOutputInvalidJSON
 
@@ -301,6 +319,18 @@ func NewPostgresStore(dsn string, opts PostgresStoreOptions) (*PostgresStore, er
 
 func NewAgent(config AgentConfig) (*Agent, error) {
 	return runtime.NewAgent(config)
+}
+
+func NewProviderRegistry() *ProviderRegistry {
+	return runtime.NewProviderRegistry()
+}
+
+func NewModelRouter(config ModelRouterConfig) (*ModelRouter, error) {
+	return runtime.NewModelRouter(config)
+}
+
+func DefaultModelRetryable(err *ModelError) bool {
+	return runtime.DefaultModelRetryable(err)
 }
 
 func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
