@@ -1309,7 +1309,7 @@ func TestFanOutRetryOverrideInChildStep(t *testing.T) {
 	}
 }
 
-func TestFanOutStepPositionResolvesChildStepForRetryOverride(t *testing.T) {
+func TestFanOutChildStepNotResolvedAsTopLevel(t *testing.T) {
 	t.Parallel()
 
 	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
@@ -1334,6 +1334,33 @@ func TestFanOutStepPositionResolvesChildStepForRetryOverride(t *testing.T) {
 	pos := wf.stepPosition("fa")
 	if pos != 0 {
 		t.Fatalf("stepPosition(fa) = %d, want 0 (not a top-level step)", pos)
+	}
+}
+
+func TestFanOutRejectsBothBranchesAndFanOut(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition: WorkflowDefinition{ID: "fanout-conflict"},
+		Steps: []Step{
+			{
+				Definition: StepDefinition{
+					ID:       "conflict",
+					Branches: []Branch{{Name: "b", Condition: func(_ context.Context, _ json.RawMessage) (bool, error) { return true, nil }, Steps: []Step{{Definition: StepDefinition{ID: "bs"}, Handler: echoHandler()}}}},
+					FanOut: &FanOut{
+						Branches: []FanOutBranch{
+							{Name: "a", Steps: []Step{{Definition: StepDefinition{ID: "fa"}, Handler: echoHandler()}}},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected validation error when both Branches and FanOut are declared")
+	}
+	if !strings.Contains(err.Error(), "cannot declare both Branches and FanOut") {
+		t.Fatalf("expected error about Branches and FanOut conflict, got: %v", err)
 	}
 }
 

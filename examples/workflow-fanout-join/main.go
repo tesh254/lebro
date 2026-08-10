@@ -40,7 +40,7 @@ func run(output io.Writer) error {
 										}
 										_ = json.Unmarshal(input, &v)
 										return json.Marshal(map[string]any{
-											"id":      v.ID,
+											"id":       v.ID,
 											"enriched": true,
 										})
 									}),

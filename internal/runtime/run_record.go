@@ -262,8 +262,8 @@ func (e *runEmitter) dispatch(event RunEvent) {
 	event.ParentRunID = e.parentRun
 	event.ParentStepID = e.parentStep
 	event.ParentStep = e.parentPos
-	e.mu.Unlock()
 	e.listener.OnRunEvent(event)
+	e.mu.Unlock()
 }
 
 // enabled reports whether the emitter will dispatch events. When false, all
@@ -286,7 +286,6 @@ func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEve
 		return
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      eventType,
 		RunID:     runID,
 		StepID:    stepID,
@@ -301,7 +300,6 @@ func (e *runEmitter) emitModelStarted(runID RunID, step int, stepID StepID) time
 		return ts
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventModelStarted,
 		RunID:     runID,
 		StepID:    stepID,
@@ -322,7 +320,6 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 		toolID = delta.ToolCall.ToolID
 	}
 	e.dispatch(RunEvent{
-		Sequence:              e.seq,
 		Type:                  RunEventDelta,
 		RunID:                 runID,
 		StepID:                stepID,
@@ -344,7 +341,6 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 	}
 	now := e.clock.Now()
 	e.dispatch(RunEvent{
-		Sequence:     e.seq,
 		Type:         RunEventModelFinished,
 		RunID:        runID,
 		StepID:       stepID,
@@ -362,7 +358,6 @@ func (e *runEmitter) emitToolRequested(runID RunID, step int, stepID StepID, too
 		return
 	}
 	e.dispatch(RunEvent{
-		Sequence:   e.seq,
 		Type:       RunEventToolRequested,
 		RunID:      runID,
 		StepID:     stepID,
@@ -379,7 +374,6 @@ func (e *runEmitter) emitToolStarted(runID RunID, step int, stepID StepID, toolC
 		return ts
 	}
 	e.dispatch(RunEvent{
-		Sequence:   e.seq,
 		Type:       RunEventToolStarted,
 		RunID:      runID,
 		StepID:     stepID,
@@ -397,7 +391,6 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 	}
 	now := e.clock.Now()
 	e.dispatch(RunEvent{
-		Sequence:   e.seq,
 		Type:       RunEventToolFinished,
 		RunID:      runID,
 		StepID:     stepID,
@@ -417,7 +410,6 @@ func (e *runEmitter) emitStepStarted(runID RunID, step int, stepID StepID) time.
 		return ts
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepStarted,
 		RunID:     runID,
 		StepID:    stepID,
@@ -433,7 +425,6 @@ func (e *runEmitter) emitStepFinished(runID RunID, step int, stepID StepID, star
 	}
 	now := e.clock.Now()
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepFinished,
 		RunID:     runID,
 		StepID:    stepID,
@@ -453,7 +444,6 @@ func (e *runEmitter) emitStepAttemptStarted(runID RunID, step int, stepID StepID
 		return ts
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepAttemptStarted,
 		RunID:     runID,
 		StepID:    stepID,
@@ -475,7 +465,6 @@ func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepI
 	}
 	now := e.clock.Now()
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventStepAttemptFinished,
 		RunID:     runID,
 		StepID:    stepID,
@@ -493,7 +482,6 @@ func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType Ru
 		return
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      eventType,
 		RunID:     runID,
 		StepID:    stepID,
@@ -512,7 +500,6 @@ func (e *runEmitter) emitSuspended(runID RunID, step int, stepID StepID) {
 		return
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventSuspended,
 		RunID:     runID,
 		StepID:    stepID,
@@ -532,7 +519,6 @@ func (e *runEmitter) emitResumed(runID RunID, step int, stepID StepID) {
 		return
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventResumed,
 		RunID:     runID,
 		StepID:    stepID,
@@ -552,7 +538,6 @@ func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, br
 		return
 	}
 	e.dispatch(RunEvent{
-		Sequence:  e.seq,
 		Type:      RunEventBranchSelected,
 		RunID:     runID,
 		StepID:    stepID,

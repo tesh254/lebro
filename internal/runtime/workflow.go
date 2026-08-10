@@ -703,7 +703,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 		metadata := cloneMetadata(input.Metadata)
 		anchor := w.newAnchor(runID, input, metadata)
 		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
-		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, RunStatusCancelled, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err})
+		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, nil, RunStatusCancelled, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err})
 		return w.cancelled(runID, metadata, nil, nil, 0, "", err)
 	}
 
@@ -718,14 +718,14 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 		position := w.stepPosition(overrideErr.stepID)
 		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: overrideErr.stepID, Err: perr}
 		emitter.terminal(runID, position, overrideErr.stepID, RunEventFailed, RunStatusFailed, stepErr)
-		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, RunStatusFailed, stepErr)
+		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, nil, RunStatusFailed, stepErr)
 		return w.fail(runID, metadata, nil, nil, stepErr)
 	}
 
 	if perr := w.persistRunStart(ctx, anchor); perr != nil {
 		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: persist workflow run start: %w", perr)}
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, stepErr)
-		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, RunStatusFailed, stepErr)
+		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, nil, RunStatusFailed, stepErr)
 		return w.fail(runID, metadata, nil, nil, stepErr)
 	}
 
@@ -780,7 +780,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 
 		if err := ctx.Err(); err != nil {
 			emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, err)
-			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusCancelled, &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: err})
+			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusCancelled, &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: err})
 			return w.cancelled(runID, metadata, path, fanOutResults, position, stepID, err)
 		}
 
@@ -791,7 +791,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidBranchInput, Step: position, StepID: stepID, Err: err}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, path, fanOutResults, stepErr)
 			}
 
@@ -804,7 +804,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 				stepErr := &WorkflowError{Kind: kind, Step: position, StepID: stepID, Err: matchErr}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, path, fanOutResults, stepErr)
 			}
 
@@ -823,7 +823,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidFanOutInput, Step: position, StepID: stepID, Err: err}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, path, fanOutResults, stepErr)
 			}
 
@@ -833,11 +833,11 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 				emitter.emitStepFinished(runID, position, stepID, stepStart, fanErr)
 				if fanErr.Kind == WorkflowErrorCancelled {
 					emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, fanErr)
-					w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusCancelled, fanErr)
+					w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusCancelled, fanErr)
 					return w.cancelled(runID, metadata, path, fanOutResults, position, stepID, fanErr.Err)
 				}
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, fanErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, fanErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, fanErr)
 				return w.fail(runID, metadata, path, fanOutResults, fanErr)
 			}
 
@@ -846,7 +846,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 				stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow fan-out step %q: %w", stepID, perr)}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, path, fanOutResults, stepErr)
 			}
 
@@ -866,7 +866,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: err}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, path, fanOutResults, stepErr)
 		}
 
@@ -880,21 +880,21 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 				stepErr := &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: cause}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, cause)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusCancelled, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusCancelled, stepErr)
 				return w.cancelled(runID, metadata, path, fanOutResults, position, stepID, cause)
 			}
 			if runErr.kind == retryPanicked {
 				stepErr := &WorkflowError{Kind: WorkflowErrorStepPanicked, Step: position, StepID: stepID, Err: runErr.cause}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, path, fanOutResults, stepErr)
 			}
 			if runErr.kind == retryInvalidOutput {
 				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepOutput, Step: position, StepID: stepID, Err: runErr.cause}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 				return w.fail(runID, metadata, path, fanOutResults, stepErr)
 			}
 			if runErr.kind == retrySuspended {
@@ -904,7 +904,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 					stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow suspend at step %q: %w", stepID, perr)}
 					emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 					emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-					w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+					w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 					return w.fail(runID, metadata, path, fanOutResults, stepErr)
 				}
 				emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
@@ -926,7 +926,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: runErr.cause}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, path, fanOutResults, stepErr)
 		}
 
@@ -934,7 +934,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow step %q: %w", stepID, perr)}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
-			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusFailed, stepErr)
+			w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
 			return w.fail(runID, metadata, path, fanOutResults, stepErr)
 		}
 
@@ -947,7 +947,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 	}
 
 	finalOutput := cloneRawMessage(current)
-	if perr := w.persistTerminal(anchor, path, lastPosition, lastStepID, completedOutputs, RunStatusSucceeded, nil); perr != nil {
+	if perr := w.persistTerminal(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusSucceeded, nil); perr != nil {
 		stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: persist workflow terminal state: %w", perr)}
 		emitter.terminal(runID, lastPosition, lastStepID, RunEventFailed, RunStatusFailed, stepErr)
 		return w.fail(runID, metadata, path, fanOutResults, stepErr)
@@ -1241,8 +1241,8 @@ func rawJSONEqual(a, b json.RawMessage) bool {
 // cancellation paths. The run already reached a terminal error in memory, so
 // a terminal persistence failure is best-effort and the original error is
 // preserved for the caller.
-func (w *LinearWorkflow) persistTerminalBestEffort(anchor runAnchor, path []StepID, currentStep int, currentStepID StepID, completed []json.RawMessage, status RunStatus, failure *WorkflowError) {
-	_ = w.persistTerminal(anchor, path, currentStep, currentStepID, completed, status, failure)
+func (w *LinearWorkflow) persistTerminalBestEffort(anchor runAnchor, path []StepID, currentStep int, currentStepID StepID, fanOutResults []FanOutJoinResult, completed []json.RawMessage, status RunStatus, failure *WorkflowError) {
+	_ = w.persistTerminal(anchor, path, currentStep, currentStepID, fanOutResults, completed, status, failure)
 }
 
 // persistSuspend writes a suspend snapshot and updates the run record to
@@ -1429,7 +1429,7 @@ func (w *LinearWorkflow) persistStep(ctx context.Context, anchor runAnchor, path
 // already reached a terminal error in memory, so a terminal persistence
 // failure is best-effort and the original error is preserved. When no Store
 // is bound it is a no-op.
-func (w *LinearWorkflow) persistTerminal(anchor runAnchor, path []StepID, currentStep int, currentStepID StepID, completed []json.RawMessage, status RunStatus, failure *WorkflowError) error {
+func (w *LinearWorkflow) persistTerminal(anchor runAnchor, path []StepID, currentStep int, currentStepID StepID, fanOutResults []FanOutJoinResult, completed []json.RawMessage, status RunStatus, failure *WorkflowError) error {
 	if w.store == nil || isNilInterface(w.store) {
 		return nil
 	}
@@ -1452,6 +1452,9 @@ func (w *LinearWorkflow) persistTerminal(anchor runAnchor, path []StepID, curren
 	}
 	if status == RunStatusSucceeded && len(completed) > 0 {
 		record.Output = cloneRawMessage(completed[len(completed)-1])
+	}
+	if len(fanOutResults) > 0 {
+		record.FanOut = cloneFanOutJoinResults(fanOutResults)
 	}
 	if err := w.store.WorkflowRuns().SaveWorkflowRun(context.Background(), record); err != nil {
 		if status == RunStatusSucceeded {
@@ -1743,6 +1746,9 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 			return fmt.Errorf("lebro: workflow step ID %q is already registered", step.Definition.ID)
 		}
 		seen[step.Definition.ID] = struct{}{}
+		if len(step.Definition.Branches) > 0 && step.Definition.FanOut != nil {
+			return fmt.Errorf("lebro: workflow step %q cannot declare both Branches and FanOut", step.Definition.ID)
+		}
 		if len(step.Definition.Branches) > 0 {
 			if step.Handler != nil && !isNilInterface(step.Handler) {
 				return fmt.Errorf("lebro: workflow branching step %q must not declare a Handler", step.Definition.ID)
@@ -2283,6 +2289,20 @@ func buildFanOutJoinedOutput(results []FanOutBranchResult) []map[string]any {
 // treated as an invalid output since concurrent suspend contracts are not
 // supported within fan-out.
 func (w *LinearWorkflow) executeFanOutBranch(ctx context.Context, emitter *runEmitter, runID RunID, position int, fanOutStepID StepID, branch compiledFanOutBranch, input json.RawMessage, retryOverrides map[StepID]RetryPolicy, threadID ThreadID, metadata map[string]string) fanOutBranchOutcome {
+	// Check context before invoking input mapper to avoid unnecessary work
+	// after fail-fast or external cancellation.
+	if err := ctx.Err(); err != nil {
+		return fanOutBranchOutcome{
+			status: RunStatusCancelled,
+			failure: &WorkflowError{
+				Kind:   WorkflowErrorCancelled,
+				Step:   position,
+				StepID: fanOutStepID,
+				Err:    err,
+			},
+		}
+	}
+
 	branchInput := cloneRawMessage(input)
 	if branch.inputMapper != nil {
 		mapped, err := branch.inputMapper(ctx, cloneRawMessage(input))
