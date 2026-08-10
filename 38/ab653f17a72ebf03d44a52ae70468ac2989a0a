@@ -1,0 +1,31 @@
+internal/runtime/model_router_test.go
+  s_ce6421ae599642::t_cb1ef1eefbfd7d 207
+  s_ce6421ae599642::t_e5c36f9790e645 195-206,208-245
+internal/runtime/model_router.go
+  s_ce6421ae599642::t_5b4d3bad572da5 84-89,104,165
+  s_ce6421ae599642::t_0d4f1ec5308403 79-83,105-107,120,123-125,130-132,138-140,144-147,166-168,183,186-188,193-195,201-203,207-210,214,217-219,225-227,233-235,239-242
+internal/runtime/fallback.go
+  s_ce6421ae599642::t_5b4d3bad572da5 70,151
+  s_ce6421ae599642::t_0d4f1ec5308403 71-73,107,110-112,117-119,123-125,128-130,152-154,190,193-195,200-202,206-208,211-213,219,222-224,230-232,236-238,241-243
+internal/runtime/agent_stream_test.go
+  s_ce6421ae599642::t_440b02a24dcec4 285-288
+  s_ce6421ae599642::t_e5c36f9790e645 34-50,241-284,289-304
+internal/runtime/agent.go
+  s_ce6421ae599642::t_5b4d3bad572da5 821-837,839,851,856,861,864,868,886,902,912,1059-1065,1070-1083
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "38ab653f17a72ebf03d44a52ae70468ac2989a0a",
+  "prompts": {},
+  "sessions": {
+    "s_ce6421ae599642": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01263d3f8ffeHQZj9pHjBu9qRQ",
+        "model": "accounts/fireworks/models/qwen3p7-plus"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
