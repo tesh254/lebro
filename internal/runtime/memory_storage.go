@@ -498,6 +498,11 @@ func cloneWorkflowRunRecord(v WorkflowRunRecord) WorkflowRunRecord {
 		}
 		v.StepOutputs = outputs
 	}
+	if len(v.Path) > 0 {
+		path := make([]StepID, len(v.Path))
+		copy(path, v.Path)
+		v.Path = path
+	}
 	if v.Failure != nil {
 		failure := *v.Failure
 		v.Failure = &failure

@@ -122,6 +122,7 @@ var postgresSchemaMigrations = []string{
 	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS failure TEXT`,
 	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS workflow_version TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE workflow_snapshots ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS path TEXT`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -494,8 +495,12 @@ func (r *postgresRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRu
 	if err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+	path, err := postgresStepIDArray(v.Path)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO UPDATE SET
 			workflow_id      = EXCLUDED.workflow_id,
 			thread_id        = EXCLUDED.thread_id,
@@ -510,9 +515,10 @@ func (r *postgresRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRu
 			current_step_id  = EXCLUDED.current_step_id,
 			step_outputs     = EXCLUDED.step_outputs,
 			failure          = EXCLUDED.failure,
-			workflow_version = EXCLUDED.workflow_version`,
+			workflow_version = EXCLUDED.workflow_version,
+			path             = EXCLUDED.path`,
 		v.ID, v.WorkflowID, threadID, v.Status, postgresJSON(v.Input), postgresJSON(v.Output), postgresJSON(v.Metadata), v.StartedAt.UTC(), finishedAt, v.UpdatedAt.UTC(),
-		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion); err != nil {
+		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion, path); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, postgresError(err))
 	}
 	return nil
@@ -522,7 +528,7 @@ func (r *postgresRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Wo
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs WHERE id = $1`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path FROM workflow_runs WHERE id = $1`, id)
 	record, err := scanWorkflowRunPG(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -541,7 +547,7 @@ func (r *postgresRepositories) ListWorkflowRuns(ctx context.Context, filter Work
 	if err != nil {
 		return Page[WorkflowRunRecord]{}, err
 	}
-	query := `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs`
+	query := `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path FROM workflow_runs`
 	args := []any{}
 	param := 1
 	where := []string{}
@@ -708,9 +714,9 @@ func scanMessagePagePG(rows *sql.Rows, offset, limit int) (Page[MessageRecord], 
 func scanWorkflowRunPG(row messagePageScanner) (WorkflowRunRecord, error) {
 	var record WorkflowRunRecord
 	var threadID sql.NullString
-	var input, output, metadata, stepOutputs, failure sql.NullString
+	var input, output, metadata, stepOutputs, failure, path sql.NullString
 	var finishedAt sql.NullTime
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &record.StartedAt, &finishedAt, &record.UpdatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &record.StartedAt, &finishedAt, &record.UpdatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
@@ -721,6 +727,7 @@ func scanWorkflowRunPG(row messagePageScanner) (WorkflowRunRecord, error) {
 	record.Metadata = postgresRawJSON([]byte(metadata.String))
 	record.StepOutputs = postgresRawJSONArray(stepOutputs)
 	record.Failure = postgresParseFailure(failure)
+	record.Path = postgresRawStepIDArray(path)
 	if finishedAt.Valid {
 		finished := finishedAt.Time.UTC()
 		record.FinishedAt = &finished
@@ -847,6 +854,34 @@ func postgresParseFailure(v sql.NullString) *WorkflowFailureData {
 		return nil
 	}
 	return &failure
+}
+
+// postgresStepIDArray marshals a slice of StepIDs into a JSON array string for
+// the path column. A nil slice becomes NULL so readers can distinguish "no
+// path" from "empty path".
+func postgresStepIDArray(ids []StepID) (any, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode path: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// postgresRawStepIDArray decodes a nullable JSON-array column of StepIDs back
+// into a slice. NULL, empty, and invalid JSON all yield nil so a corrupted
+// row remains inspectable instead of failing the read.
+func postgresRawStepIDArray(v sql.NullString) []StepID {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var ids []StepID
+	if err := json.Unmarshal([]byte(v.String), &ids); err != nil {
+		return nil
+	}
+	return ids
 }
 
 // stringsBuilder is a thin wrapper around a string buffer for building

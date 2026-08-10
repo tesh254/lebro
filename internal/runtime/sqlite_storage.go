@@ -138,6 +138,7 @@ var sqliteSchemaMigrations = []string{
 	`ALTER TABLE workflow_runs ADD COLUMN failure TEXT`,
 	`ALTER TABLE workflow_runs ADD COLUMN workflow_version TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE workflow_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE workflow_runs ADD COLUMN path TEXT`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -495,8 +496,12 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 	if err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	path, err := sqliteStepIDArray(v.Path)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workflow_id     = excluded.workflow_id,
 			thread_id       = excluded.thread_id,
@@ -511,9 +516,10 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 			current_step_id = excluded.current_step_id,
 			step_outputs    = excluded.step_outputs,
 			failure         = excluded.failure,
-			workflow_version= excluded.workflow_version`,
+			workflow_version= excluded.workflow_version,
+			path            = excluded.path`,
 		v.ID, v.WorkflowID, sqliteNullableString(string(v.ThreadID)), v.Status, sqliteJSON(v.Input), sqliteJSON(v.Output), sqliteJSON(v.Metadata), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), sqliteTime(v.UpdatedAt),
-		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion); err != nil {
+		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion, path); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -523,7 +529,7 @@ func (r *sqliteRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Work
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path FROM workflow_runs WHERE id = ?`, id)
 	record, err := scanWorkflowRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -543,7 +549,7 @@ func (r *sqliteRepositories) ListWorkflowRuns(ctx context.Context, filter Workfl
 		return Page[WorkflowRunRecord]{}, err
 	}
 	var (
-		query = `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version FROM workflow_runs`
+		query = `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path FROM workflow_runs`
 		args  []any
 		where []string
 	)
@@ -742,10 +748,10 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	var record WorkflowRunRecord
 	var threadID sql.NullString
 	var input, output, metadata sql.NullString
-	var stepOutputs, failure sql.NullString
+	var stepOutputs, failure, path sql.NullString
 	var finishedAt sql.NullString
 	var startedAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
@@ -754,6 +760,7 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	record.Input, record.Output, record.Metadata = sqliteRawJSON(input), sqliteRawJSON(output), sqliteRawJSON(metadata)
 	record.StepOutputs = sqliteRawJSONArray(stepOutputs)
 	record.Failure = sqliteParseFailure(failure)
+	record.Path = sqliteRawStepIDArray(path)
 	started, err := sqliteParseTime(startedAt)
 	if err != nil {
 		return WorkflowRunRecord{}, err
@@ -909,4 +916,32 @@ func sqliteParseFailure(v sql.NullString) *WorkflowFailureData {
 		return nil
 	}
 	return &failure
+}
+
+// sqliteStepIDArray marshals a slice of StepIDs into a JSON array string for
+// the path column. A nil slice becomes NULL so readers can distinguish "no
+// path" from "empty path".
+func sqliteStepIDArray(ids []StepID) (any, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode path: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// sqliteRawStepIDArray decodes a nullable JSON-array column of StepIDs back
+// into a slice. NULL, empty, and invalid JSON all yield nil so a corrupted
+// row remains inspectable instead of failing the read.
+func sqliteRawStepIDArray(v sql.NullString) []StepID {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var ids []StepID
+	if err := json.Unmarshal([]byte(v.String), &ids); err != nil {
+		return nil
+	}
+	return ids
 }

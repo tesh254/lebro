@@ -6,6 +6,29 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Conditional branching for linear workflows. A `StepDefinition` may declare
+  `Branches` (each with a `Name`, pure-Go `BranchPredicate`, and ordered
+  `Steps`) plus an optional `Default` branch name. When the executor reaches a
+  branching step it validates the input against the step's `InputSchema`,
+  evaluates each predicate in declared order, selects the first match (or the
+  default when no predicate matches), emits a `RunEventBranchSelected`
+  ("branch_selected") event carrying the branch name, and runs that branch's
+  steps. The selected branch's entry `StepID` is appended to the run `Path`
+  (`WorkflowRunResult.Path` and `WorkflowRunRecord.Path`) so the route is
+  inspectable and resumable. Branching steps must not declare a `Handler`,
+  `OutputSchema`, `SuspendSchema`, or `Retry`; branches must have unique
+  non-empty names, at least one step, and non-nil conditions. `Default` must
+  name a declared branch. All step IDs (top-level and nested) must be unique
+  across the workflow. New error kinds: `WorkflowErrorNoBranchMatched`,
+  `WorkflowErrorBranchConditionFailed`, `WorkflowErrorInvalidBranchInput`
+  (with matching `ErrWorkflowNoBranchMatched`,
+  `ErrWorkflowBranchConditionFailed`, `ErrWorkflowInvalidBranchInput`
+  sentinels). The executor uses a frame-stack model so branch steps, nested
+  branches, suspend/resume within a branch, and durable persistence all
+  coexist. The snapshot envelope version is bumped to `3` and adds the
+  optional `path` field; readers tolerate `0`, `1`, and `2` as legacy. SQLite
+  and PostgreSQL storage adapters add a `path` column to `workflow_runs`.
+
 - Suspend and resume from durable snapshots. A linear workflow step handler
   can suspend the run by returning a `*SuspendError` wrapping a
   `SuspendSignal` (matched via `errors.Is(err, ErrWorkflowSuspend)`). The
