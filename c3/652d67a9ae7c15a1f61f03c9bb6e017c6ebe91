@@ -1,0 +1,56 @@
+internal/runtime/model_router_test.go
+  s_ce6421ae599642::t_7ffbe0581f3703 1-423
+examples/model-routing/main.go
+  s_ce6421ae599642::t_d59f06a6061c02 1-125
+public.go
+  s_ce6421ae599642::t_b921ff410251d0 201-203,208-210
+  s_ce6421ae599642::t_bb0a93943952c9 185-200,227-231
+  s_ce6421ae599642::t_34017aced0843a 232
+  s_ce6421ae599642::t_d47e9acf4fc672 28-37
+  s_ce6421ae599642::t_468ddd9d4d8c80 324-335
+internal/runtime/model_router.go
+  s_ce6421ae599642::t_7088b50ec00375 1-152
+internal/runtime/agent_test.go
+  s_ce6421ae599642::t_2e487f8d271576 30,35
+internal/runtime/fallback.go
+  s_ce6421ae599642::t_4309e23d234ce7 1-95
+internal/runtime/types.go
+  s_ce6421ae599642::t_daa65fbf3d3624 110-114,117-133
+internal/runtime/provider_registry.go
+  s_ce6421ae599642::t_9428135bf25754 1-14,16-136
+  s_ce6421ae599642::t_bb0a93943952c9 15
+internal/runtime/agent.go
+  s_ce6421ae599642::t_2a64e91c366a88 204
+  s_ce6421ae599642::t_80ec0035c50bdc 1026-1073,1110-1130
+  s_ce6421ae599642::t_b845dcb1209c46 374,386
+  s_ce6421ae599642::t_41062cc01eabc8 156-157,159-161
+  s_ce6421ae599642::t_0afeb7c3509b73 412-413,416-420,426-427
+  s_ce6421ae599642::t_cc4fe3f87bf72e 411,425
+  s_ce6421ae599642::t_47a84814648f62 384-385,387
+  s_ce6421ae599642::t_a24e47a3899b9c 1074-1109
+  s_ce6421ae599642::t_f8009db4411e4d 227-228,282
+internal/runtime/run_record.go
+  s_ce6421ae599642::t_09adae87c4c8de 71-77
+  s_ce6421ae599642::t_051f4a66dbb9a2 560-599
+  s_ce6421ae599642::t_6cef04928fae59 136-138
+internal/runtime/provider_registry_test.go
+  s_ce6421ae599642::t_1fc22d9578545b 1-4,6-41,43-52,54-161,163-184
+  s_ce6421ae599642::t_cac6dd06847dc2 42,53,162
+  s_ce6421ae599642::t_05a0f9080ce7c2 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c3652d67a9ae7c15a1f61f03c9bb6e017c6ebe91",
+  "prompts": {},
+  "sessions": {
+    "s_ce6421ae599642": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01263d3f8ffeHQZj9pHjBu9qRQ",
+        "model": "accounts/fireworks/models/qwen3p7-plus"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
