@@ -1100,16 +1100,6 @@ func rawJSONEqual(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(av, bv)
 }
 
-// lastStepID returns the step ID at index i, or "" when i is out of range. It
-// is retained for backward compatibility; the frame-stack executor tracks the
-// last executed step's ID directly.
-func lastStepID(steps []compiledStep, i int) StepID {
-	if i < 0 || i >= len(steps) {
-		return ""
-	}
-	return steps[i].definition.ID
-}
-
 // persistTerminalBestEffort writes the terminal run record on failure and
 // cancellation paths. The run already reached a terminal error in memory, so
 // a terminal persistence failure is best-effort and the original error is
@@ -1567,9 +1557,7 @@ func cloneStepDefinition(def StepDefinition) StepDefinition {
 	def.Retry = cloneRetryPolicy(def.Retry)
 	if len(def.Branches) > 0 {
 		branches := make([]Branch, len(def.Branches))
-		for i, br := range def.Branches {
-			branches[i] = br
-		}
+		copy(branches, def.Branches)
 		def.Branches = branches
 	}
 	return def
