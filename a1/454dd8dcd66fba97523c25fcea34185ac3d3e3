@@ -1,0 +1,19 @@
+internal/runtime/workflow.go
+  s_afe3bdf4358dd3::t_672d1fe6900a55 1560
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a1454dd8dcd66fba97523c25fcea34185ac3d3e3",
+  "prompts": {},
+  "sessions": {
+    "s_afe3bdf4358dd3": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0175c713affexYOfkVDJAClCdN",
+        "model": "z-ai/glm-5.2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
