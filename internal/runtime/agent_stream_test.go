@@ -31,6 +31,23 @@ type streamScriptedModel struct {
 	next    int
 }
 
+type streamFailModel struct {
+	err         error
+	streamCalls int
+}
+
+var _ Model = (*streamFailModel)(nil)
+var _ StreamingModel = (*streamFailModel)(nil)
+
+func (m *streamFailModel) Generate(context.Context, ModelRequest) (ModelResponse, error) {
+	return ModelResponse{}, m.err
+}
+
+func (m *streamFailModel) Stream(context.Context, ModelRequest) (StreamReader, error) {
+	m.streamCalls++
+	return nil, m.err
+}
+
 var _ Model = (*streamScriptedModel)(nil)
 var _ StreamingModel = (*streamScriptedModel)(nil)
 
@@ -218,6 +235,73 @@ func TestAgentRunStreamEquivalenceWithRunForTextOnly(t *testing.T) {
 		t.Fatalf("final content mismatch: stream=%q gen=%q",
 			streamResult.Messages[len(streamResult.Messages)-1].Content,
 			genResult.Messages[len(genResult.Messages)-1].Content)
+	}
+}
+
+func TestAgentRunStreamRouterTracksAttemptsAndUsesProviderStreaming(t *testing.T) {
+	t.Parallel()
+
+	primary := &streamFailModel{err: &ModelError{Kind: ModelErrorUnavailable, Message: "primary unavailable"}}
+	fallback := newStreamScriptedModel(textDeltas("from fallback"))
+	registry := NewProviderRegistry()
+	if err := registry.Register(ProviderEntry{ID: "primary", Model: primary}); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(ProviderEntry{ID: "fallback", Model: fallback}); err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewModelRouter(ModelRouterConfig{
+		Registry: registry,
+		Policy:   RoutingPolicy{Primary: "primary"},
+		Fallback: &FallbackPolicy{Chain: []ProviderID{"fallback"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "router", Model: "fixture-model"},
+		Router:     router,
+		Listener:   recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
+	if err != nil {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	result, err := run.Drain()
+	if err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+	if primary.streamCalls != 1 {
+		t.Fatalf("primary streaming calls = %d, want 1", primary.streamCalls)
+	}
+	if got := len(fallback.Calls()); got != 1 {
+		t.Fatalf("fallback streaming calls = %d, want 1", got)
+	}
+	if got := result.ModelAttempts; len(got) != 2 ||
+		got[0].Provider != "primary" || got[0].Status != ModelAttemptFallback || got[0].Error != primary.err ||
+		got[1].Provider != "fallback" || got[1].Status != ModelAttemptSuccess {
+		t.Fatalf("ModelAttempts = %#v", got)
+	}
+
+	var events []RunEvent
+	for _, event := range recorder.Events() {
+		if event.Type == RunEventModelAttemptStarted || event.Type == RunEventModelAttemptFinished {
+			events = append(events, event)
+		}
+	}
+	if got, want := len(events), 4; got != want {
+		t.Fatalf("attempt events = %d, want %d: %#v", got, want, events)
+	}
+	if events[0].Type != RunEventModelAttemptStarted || events[0].Provider != "primary" ||
+		events[1].Type != RunEventModelAttemptFinished || events[1].Provider != "primary" || events[1].AttemptStatus != ModelAttemptFallback ||
+		events[2].Type != RunEventModelAttemptStarted || events[2].Provider != "fallback" ||
+		events[3].Type != RunEventModelAttemptFinished || events[3].Provider != "fallback" || events[3].AttemptStatus != ModelAttemptSuccess {
+		t.Fatalf("attempt events = %#v", events)
 	}
 }
 

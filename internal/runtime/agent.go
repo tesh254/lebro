@@ -818,9 +818,25 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		return response, attempts, nil
 	}
 
-	reader, err := streamingModel.Stream(ctx, request)
+	var reader StreamReader
+	var attempts []ModelAttempt
+	var err error
+	if a.router != nil {
+		result, streamErr := a.router.streamWithAttempts(ctx, request, &agentModelAttemptObserver{
+			emitter: emitter,
+			runID:   runID,
+			step:    step,
+			stepID:  stepID,
+			starts:  make(map[ProviderID]time.Time),
+		})
+		reader = result.Reader
+		attempts = result.Attempts
+		err = streamErr
+	} else {
+		reader, err = streamingModel.Stream(ctx, request)
+	}
 	if err != nil {
-		return ModelResponse{}, nil, err
+		return ModelResponse{}, attempts, err
 	}
 	defer func() { _ = reader.Close() }()
 
@@ -832,24 +848,24 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return ModelResponse{}, nil, err
+			return ModelResponse{}, attempts, err
 		}
 		delta, derr := reader.Next()
 		if errors.Is(derr, io.EOF) {
 			if err := ctx.Err(); err != nil {
-				return ModelResponse{}, nil, err
+				return ModelResponse{}, attempts, err
 			}
 			break
 		}
 		if derr != nil {
-			return ModelResponse{}, nil, derr
+			return ModelResponse{}, attempts, derr
 		}
 		if err := delta.Validate(); err != nil {
-			return ModelResponse{}, nil, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		emitter.emitDelta(runID, step, stepID, delta)
 		if !sendDelta(ctx, deltas, delta) {
-			return ModelResponse{}, nil, context.Canceled
+			return ModelResponse{}, attempts, context.Canceled
 		}
 		if delta.Text != "" {
 			contentBuilder.WriteString(delta.Text)
@@ -867,7 +883,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			usage = delta.Usage
 		}
 		if delta.Err != nil {
-			return ModelResponse{}, nil, delta.Err
+			return ModelResponse{}, attempts, delta.Err
 		}
 	}
 
@@ -883,7 +899,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	if len(toolCalls) > 0 {
 		encoded, err := NewModelToolCalls(toolCalls...)
 		if err != nil {
-			return ModelResponse{}, nil, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
+			return ModelResponse{}, attempts, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
 		}
 		message.ToolCalls = encoded
 	}
@@ -893,7 +909,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		Usage:        usage,
 		FinishReason: finishReason,
 	}
-	return response, nil, nil
+	return response, attempts, nil
 }
 
 func (a *Agent) cancelledWithAttemptsResult(runID RunID, messages []Message, metadata map[string]string, step int, err error, attempts []ModelAttempt) RunResult {
@@ -1040,20 +1056,31 @@ func (a *Agent) generateModel(ctx context.Context, runID RunID, step int, stepID
 		return resp, nil, err
 	}
 
-	// Use router's GenerateWithAttempts to get all attempts with proper status.
-	result, err := a.router.GenerateWithAttempts(ctx, request)
-
-	// Emit events for each attempt.
-	for _, attempt := range result.Attempts {
-		attemptStart := emitter.emitModelAttemptStarted(runID, step, stepID, attempt.Provider, request.Model)
-		var attemptErr error
-		if attempt.Error != nil {
-			attemptErr = attempt.Error
-		}
-		emitter.emitModelAttemptFinished(runID, step, stepID, attempt.Provider, request.Model, attempt.Status, attemptStart, attemptErr)
-	}
+	result, err := a.router.generateWithAttempts(ctx, request, &agentModelAttemptObserver{
+		emitter: emitter,
+		runID:   runID,
+		step:    step,
+		stepID:  stepID,
+		starts:  make(map[ProviderID]time.Time),
+	})
 
 	return result.Response, result.Attempts, err
+}
+
+type agentModelAttemptObserver struct {
+	emitter *runEmitter
+	runID   RunID
+	step    int
+	stepID  StepID
+	starts  map[ProviderID]time.Time
+}
+
+func (o *agentModelAttemptObserver) modelAttemptStarted(provider ProviderID, model string) {
+	o.starts[provider] = o.emitter.emitModelAttemptStarted(o.runID, o.step, o.stepID, provider, model)
+}
+
+func (o *agentModelAttemptObserver) modelAttemptFinished(attempt ModelAttempt) {
+	o.emitter.emitModelAttemptFinished(o.runID, o.step, o.stepID, attempt.Provider, attempt.Model, attempt.Status, o.starts[attempt.Provider], attempt.Error)
 }
 
 // streamingModelForRun returns the streaming model for the current run. When

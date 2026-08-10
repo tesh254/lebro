@@ -67,6 +67,10 @@ func (f *FallbackPolicy) Generate(ctx context.Context, req ModelRequest, skip Pr
 
 // GenerateWithAttempts walks the fallback chain and returns all attempts.
 func (f *FallbackPolicy) GenerateWithAttempts(ctx context.Context, req ModelRequest, skip ProviderID, registry *ProviderRegistry, reqs ProviderCapabilities, eligible []ProviderID, priorAttempts []ModelAttempt) (RouteResult, error) {
+	return f.generateWithAttempts(ctx, req, skip, registry, reqs, eligible, priorAttempts, discardModelAttemptObserver{})
+}
+
+func (f *FallbackPolicy) generateWithAttempts(ctx context.Context, req ModelRequest, skip ProviderID, registry *ProviderRegistry, reqs ProviderCapabilities, eligible []ProviderID, priorAttempts []ModelAttempt, observer modelAttemptObserver) (RouteResult, error) {
 	if f == nil {
 		return RouteResult{}, errors.New("lebro: fallback policy is nil")
 	}
@@ -100,21 +104,30 @@ func (f *FallbackPolicy) GenerateWithAttempts(ctx context.Context, req ModelRequ
 		if !entry.Capabilities.Satisfies(reqs) {
 			continue
 		}
+		observer.modelAttemptStarted(id, req.Model)
 		resp, genErr := entry.Model.Generate(ctx, req)
 		if genErr == nil {
-			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptSuccess})
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptSuccess}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return RouteResult{Response: resp, Attempts: attempts}, nil
 		}
 		var modelErr *ModelError
 		if !errors.As(genErr, &modelErr) {
-			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return RouteResult{Attempts: attempts}, genErr
 		}
 		if !f.IsRetryable(modelErr) {
-			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: modelErr})
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: modelErr}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return RouteResult{Attempts: attempts}, genErr
 		}
-		attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
+		attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		lastErr = genErr
 	}
 
@@ -135,6 +148,10 @@ func (f *FallbackPolicy) Stream(ctx context.Context, req ModelRequest, skip Prov
 
 // StreamWithAttempts walks the fallback chain for streaming and returns all attempts.
 func (f *FallbackPolicy) StreamWithAttempts(ctx context.Context, req ModelRequest, skip ProviderID, registry *ProviderRegistry, reqs ProviderCapabilities, eligible []ProviderID, priorAttempts []ModelAttempt) (StreamRouteResult, error) {
+	return f.streamWithAttempts(ctx, req, skip, registry, reqs, eligible, priorAttempts, discardModelAttemptObserver{})
+}
+
+func (f *FallbackPolicy) streamWithAttempts(ctx context.Context, req ModelRequest, skip ProviderID, registry *ProviderRegistry, reqs ProviderCapabilities, eligible []ProviderID, priorAttempts []ModelAttempt, observer modelAttemptObserver) (StreamRouteResult, error) {
 	if f == nil {
 		return StreamRouteResult{}, errors.New("lebro: fallback policy is nil")
 	}
@@ -170,40 +187,60 @@ func (f *FallbackPolicy) StreamWithAttempts(ctx context.Context, req ModelReques
 
 		streamingModel := AsStreamingModel(entry.Model)
 		if streamingModel != nil {
+			observer.modelAttemptStarted(id, req.Model)
 			reader, streamErr := streamingModel.Stream(ctx, req)
 			if streamErr == nil {
-				attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptSuccess})
+				attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptSuccess}
+				attempts = append(attempts, attempt)
+				observer.modelAttemptFinished(attempt)
 				return StreamRouteResult{Reader: reader, Attempts: attempts}, nil
 			}
 			var modelErr *ModelError
 			if !errors.As(streamErr, &modelErr) {
-				attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(streamErr)})
+				attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(streamErr)}
+				attempts = append(attempts, attempt)
+				observer.modelAttemptFinished(attempt)
 				return StreamRouteResult{Attempts: attempts}, streamErr
 			}
-			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
 			if !f.IsRetryable(modelErr) {
+				attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: modelErr}
+				attempts = append(attempts, attempt)
+				observer.modelAttemptFinished(attempt)
 				return StreamRouteResult{Attempts: attempts}, streamErr
 			}
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			lastErr = streamErr
 			continue
 		}
 
 		// Fallback to Generate for non-streaming providers.
+		observer.modelAttemptStarted(id, req.Model)
 		resp, genErr := entry.Model.Generate(ctx, req)
 		if genErr == nil {
-			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptSuccess})
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptSuccess}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			reader := responseToStreamReader(resp)
 			return StreamRouteResult{Reader: reader, Attempts: attempts}, nil
 		}
 		var modelErr *ModelError
 		if !errors.As(genErr, &modelErr) {
-			attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return StreamRouteResult{Attempts: attempts}, genErr
 		}
-		attempts = append(attempts, ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
 		if !f.IsRetryable(modelErr) {
+			attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFailed, Error: modelErr}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return StreamRouteResult{Attempts: attempts}, genErr
 		}
+		attempt := ModelAttempt{Provider: id, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		lastErr = genErr
 	}
 

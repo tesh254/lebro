@@ -76,6 +76,17 @@ type StreamRouteResult struct {
 	Attempts []ModelAttempt
 }
 
+type modelAttemptObserver interface {
+	modelAttemptStarted(ProviderID, string)
+	modelAttemptFinished(ModelAttempt)
+}
+
+type discardModelAttemptObserver struct{}
+
+func (discardModelAttemptObserver) modelAttemptStarted(ProviderID, string) {}
+
+func (discardModelAttemptObserver) modelAttemptFinished(ModelAttempt) {}
+
 // Generate routes the request to the appropriate provider and delegates the
 // call. When a fallback policy is configured and the primary provider fails
 // with a retryable error, the router walks the fallback chain.
@@ -90,6 +101,10 @@ func (r *ModelRouter) Generate(ctx context.Context, req ModelRequest) (ModelResp
 // GenerateWithAttempts routes the request and returns all provider attempts
 // for observability.
 func (r *ModelRouter) GenerateWithAttempts(ctx context.Context, req ModelRequest) (RouteResult, error) {
+	return r.generateWithAttempts(ctx, req, discardModelAttemptObserver{})
+}
+
+func (r *ModelRouter) generateWithAttempts(ctx context.Context, req ModelRequest, observer modelAttemptObserver) (RouteResult, error) {
 	if r == nil {
 		return RouteResult{}, errors.New("lebro: model router is nil")
 	}
@@ -102,25 +117,34 @@ func (r *ModelRouter) GenerateWithAttempts(ctx context.Context, req ModelRequest
 
 	var attempts []ModelAttempt
 
+	observer.modelAttemptStarted(target, req.Model)
 	resp, genErr := entry.Model.Generate(ctx, req)
 	if genErr == nil {
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptSuccess})
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptSuccess}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		return RouteResult{Response: resp, Attempts: attempts}, nil
 	}
 
 	if r.fallback == nil {
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		return RouteResult{Attempts: attempts}, genErr
 	}
 
 	var modelErr *ModelError
 	if !errors.As(genErr, &modelErr) || !r.fallback.IsRetryable(modelErr) {
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		return RouteResult{Attempts: attempts}, genErr
 	}
 
-	attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
-	return r.fallback.GenerateWithAttempts(ctx, req, target, r.registry, reqs, r.policy.Eligible, attempts)
+	attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr}
+	attempts = append(attempts, attempt)
+	observer.modelAttemptFinished(attempt)
+	return r.fallback.generateWithAttempts(ctx, req, target, r.registry, reqs, r.policy.Eligible, attempts, observer)
 }
 
 // Stream routes the streaming request to the appropriate provider. When the
@@ -138,6 +162,10 @@ func (r *ModelRouter) Stream(ctx context.Context, req ModelRequest) (StreamReade
 // StreamWithAttempts routes the streaming request and returns all provider
 // attempts for observability.
 func (r *ModelRouter) StreamWithAttempts(ctx context.Context, req ModelRequest) (StreamRouteResult, error) {
+	return r.streamWithAttempts(ctx, req, discardModelAttemptObserver{})
+}
+
+func (r *ModelRouter) streamWithAttempts(ctx context.Context, req ModelRequest, observer modelAttemptObserver) (StreamRouteResult, error) {
 	if r == nil {
 		return StreamRouteResult{}, errors.New("lebro: model router is nil")
 	}
@@ -152,48 +180,66 @@ func (r *ModelRouter) StreamWithAttempts(ctx context.Context, req ModelRequest) 
 
 	streamingModel := AsStreamingModel(entry.Model)
 	if streamingModel != nil {
+		observer.modelAttemptStarted(target, req.Model)
 		reader, streamErr := streamingModel.Stream(ctx, req)
 		if streamErr == nil {
-			attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptSuccess})
+			attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptSuccess}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return StreamRouteResult{Reader: reader, Attempts: attempts}, nil
 		}
 
 		if r.fallback == nil {
-			attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(streamErr)})
+			attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(streamErr)}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return StreamRouteResult{Attempts: attempts}, streamErr
 		}
 
 		var modelErr *ModelError
 		if !errors.As(streamErr, &modelErr) || !r.fallback.IsRetryable(modelErr) {
-			attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(streamErr)})
+			attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(streamErr)}
+			attempts = append(attempts, attempt)
+			observer.modelAttemptFinished(attempt)
 			return StreamRouteResult{Attempts: attempts}, streamErr
 		}
 
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
-		return r.fallback.StreamWithAttempts(ctx, req, target, r.registry, reqs, r.policy.Eligible, attempts)
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
+		return r.fallback.streamWithAttempts(ctx, req, target, r.registry, reqs, r.policy.Eligible, attempts, observer)
 	}
 
 	// Fallback to Generate for non-streaming providers.
+	observer.modelAttemptStarted(target, req.Model)
 	resp, genErr := entry.Model.Generate(ctx, req)
 	if genErr == nil {
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptSuccess})
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptSuccess}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		reader := responseToStreamReader(resp)
 		return StreamRouteResult{Reader: reader, Attempts: attempts}, nil
 	}
 
 	if r.fallback == nil {
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		return StreamRouteResult{Attempts: attempts}, genErr
 	}
 
 	var modelErr *ModelError
 	if !errors.As(genErr, &modelErr) || !r.fallback.IsRetryable(modelErr) {
-		attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)})
+		attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFailed, Error: toModelError(genErr)}
+		attempts = append(attempts, attempt)
+		observer.modelAttemptFinished(attempt)
 		return StreamRouteResult{Attempts: attempts}, genErr
 	}
 
-	attempts = append(attempts, ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr})
-	return r.fallback.StreamWithAttempts(ctx, req, target, r.registry, reqs, r.policy.Eligible, attempts)
+	attempt := ModelAttempt{Provider: target, Model: req.Model, Status: ModelAttemptFallback, Error: modelErr}
+	attempts = append(attempts, attempt)
+	observer.modelAttemptFinished(attempt)
+	return r.fallback.streamWithAttempts(ctx, req, target, r.registry, reqs, r.policy.Eligible, attempts, observer)
 }
 
 // resolveTargetWithEntry applies the routing policy to determine the primary

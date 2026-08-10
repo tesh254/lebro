@@ -192,6 +192,57 @@ func TestModelRouter_NoFallbackOnNonRetryableError(t *testing.T) {
 	}
 }
 
+func TestModelRouter_StreamWithAttemptsMarksNonRetryableFailuresFailed(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name    string
+		primary Model
+	}{
+		{
+			name:    "streaming provider",
+			primary: &streamFailModel{err: &ModelError{Kind: ModelErrorAuthentication, Message: "bad key"}},
+		},
+		{
+			name:    "non-streaming provider",
+			primary: &stubModel{responses: []stubResponse{{err: &ModelError{Kind: ModelErrorAuthentication, Message: "bad key"}}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewProviderRegistry()
+			fallback := &stubModel{responses: []stubResponse{{resp: ModelResponse{Message: Message{Role: RoleAssistant}, FinishReason: FinishReasonStop}}}}
+			if err := reg.Register(ProviderEntry{ID: "primary", Model: tc.primary}); err != nil {
+				t.Fatal(err)
+			}
+			if err := reg.Register(ProviderEntry{ID: "fallback", Model: fallback}); err != nil {
+				t.Fatal(err)
+			}
+			router, err := NewModelRouter(ModelRouterConfig{
+				Registry: reg,
+				Policy:   RoutingPolicy{Primary: "primary"},
+				Fallback: &FallbackPolicy{Chain: []ProviderID{"fallback"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := router.StreamWithAttempts(context.Background(), ModelRequest{})
+			if err == nil {
+				t.Fatal("StreamWithAttempts() error = nil, want non-retryable error")
+			}
+			if got := len(result.Attempts); got != 1 {
+				t.Fatalf("attempts = %#v, want one", result.Attempts)
+			}
+			if got := result.Attempts[0].Status; got != ModelAttemptFailed {
+				t.Fatalf("attempt status = %q, want %q", got, ModelAttemptFailed)
+			}
+			if fallback.calls != 0 {
+				t.Fatalf("fallback calls = %d, want 0", fallback.calls)
+			}
+		})
+	}
+}
+
 func TestModelRouter_EmptyRegistryError(t *testing.T) {
 	reg := NewProviderRegistry()
 	_, err := NewModelRouter(ModelRouterConfig{Registry: reg})
