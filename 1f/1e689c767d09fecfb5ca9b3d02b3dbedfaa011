@@ -1,0 +1,28 @@
+internal/runtime/fallback.go
+  s_ce6421ae599642::t_a5a6a5c121b877 114,117
+internal/runtime/agent.go
+  s_ce6421ae599642::t_df128c232fdbb1 812,816,818
+  s_ce6421ae599642::t_550b77cf8d8a3c 700,703-709,711-712,714-718,721-732,734-755,758,760-762
+  s_ce6421ae599642::t_180cb525a8fa1f 770,774,776-779,784
+  s_ce6421ae599642::t_e86075aa8596dd 793,797
+  s_ce6421ae599642::t_9be0fa2b532c3b 823
+  s_ce6421ae599642::t_8bd8b04de16f06 657,662,676-677,684,690
+  s_ce6421ae599642::t_e5cc11f55aef05 835,840,845,848,852,870,886,896
+  s_ce6421ae599642::t_b00421eeeccb76 908-917
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1f1e689c767d09fecfb5ca9b3d02b3dbedfaa011",
+  "prompts": {},
+  "sessions": {
+    "s_ce6421ae599642": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_01263d3f8ffeHQZj9pHjBu9qRQ",
+        "model": "accounts/fireworks/models/qwen3p7-plus"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
