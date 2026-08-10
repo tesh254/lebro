@@ -1,0 +1,34 @@
+internal/runtime/workflow_fanout_test.go
+  s_d5c0da6c6a95ce::t_b631bdfb969f8b 1312,1340-1358
+  s_d5c0da6c6a95ce::t_571227c3fb14c4 1359-1365
+internal/runtime/workflow.go
+  s_d5c0da6c6a95ce::t_761a5fdcac71a9 706,721,728
+  s_d5c0da6c6a95ce::t_2046aaea88c5f1 783,794,807,826,836,840,849,869,883,890,897,907,929,937
+  s_d5c0da6c6a95ce::t_21a94b689ee4dd 1432,1456-1457
+  s_d5c0da6c6a95ce::t_b15f89af8faa05 950
+  s_d5c0da6c6a95ce::t_3b6b12dbabb4f6 2292-2305
+  s_d5c0da6c6a95ce::t_ff1440dc5b5722 1244-1245
+  s_d5c0da6c6a95ce::t_aed4736b9709a2 1749-1751
+internal/runtime/storage.go
+  s_d5c0da6c6a95ce::t_054e7c3b8064b2 91
+internal/runtime/run_record.go
+  s_d5c0da6c6a95ce::t_748d6ed6de1c56 266
+examples/workflow-fanout-join/main.go
+  s_d5c0da6c6a95ce::t_31cd1931b92c1f 43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d6a9bbc75a838e432954efe2be97f8a946f6515c",
+  "prompts": {},
+  "sessions": {
+    "s_d5c0da6c6a95ce": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_012bea450ffeUs4sjHb5itvJIE",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
