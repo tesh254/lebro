@@ -1,0 +1,63 @@
+README.md
+  s_104046230317b0::t_31353641f2051d 19,21
+  s_104046230317b0::t_2678e9258a90b1 453-489
+examples/README.md
+  s_104046230317b0::t_f5bd7f1e14b474 89-95
+internal/runtime/vector.go
+  s_104046230317b0::t_873db27323d142 63-67
+  s_104046230317b0::t_6d6baef0c838c3 1-62,68-233
+internal/runtime/memory_vector_test.go
+  s_104046230317b0::t_70d75ae1a0e6f0 1-213,215-216,224-269
+  s_104046230317b0::t_30be5af197b294 214,217-223
+internal/runtime/postgres_vector_test.go
+  s_104046230317b0::t_d68cca7af9e293 1-47
+CHANGELOG.md
+  s_104046230317b0::t_e78f184c0af9d3 9-29
+examples/vector-search/main.go
+  s_104046230317b0::t_4754a9b927513f 1-51
+internal/runtime/sqlite_vector_test.go
+  s_104046230317b0::t_de8ab85f248e9f 1-24
+internal/runtime/postgres_vector.go
+  s_104046230317b0::t_a49d4e09edf117 35
+  s_104046230317b0::t_c54f4d30431c3f 1-6,8-9,11-34,36-316
+  s_104046230317b0::t_ec6e81fb27f6a7 7,10
+public.go
+  s_104046230317b0::t_b08d33aa9d7123 119,123-127
+  s_104046230317b0::t_3bd2eb1d9aaabe 344-350
+  s_104046230317b0::t_0facb98bb2ed1f 120
+  s_104046230317b0::t_c3a0950c4fa12e 121-122
+  s_104046230317b0::t_8ab11cc271f1f4 338-343
+  s_104046230317b0::t_774c5a57b46440 282-286
+  s_104046230317b0::t_7154f2e74a4df7 334-337
+examples/vector-search/main_test.go
+  s_104046230317b0::t_7f67ed4445f447 1-40
+internal/runtime/contract_suite_test.go
+  s_104046230317b0::t_8431b8ad50f831 35-41
+go.mod
+  s_104046230317b0::t_7b55a5e8ff1fcb 22
+internal/testkit/contract_vector.go
+  s_104046230317b0::t_17f5fb374d738c 1-383
+internal/runtime/sqlite_vector.go
+  s_104046230317b0::t_ff22cb3ce3a98d 32-35
+  s_104046230317b0::t_454fb99ef2bc3a 1-6,8-9,13-31,36-194,196-293
+  s_104046230317b0::t_dc3c3dcef8bf63 7,10-12
+  s_104046230317b0::t_e7218098fb5ff0 195
+internal/runtime/memory_vector.go
+  s_104046230317b0::t_873db27323d142 1-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6eaebce0cee682d837d08a7d86dedc56cfd6b3c6",
+  "prompts": {},
+  "sessions": {
+    "s_104046230317b0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0122b0decffetpCunvtJ5uLBTa",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
