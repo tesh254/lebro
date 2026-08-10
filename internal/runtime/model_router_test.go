@@ -80,7 +80,7 @@ func TestModelRouter_PredicateRouting(t *testing.T) {
 func TestModelRouter_CapabilityFiltering(t *testing.T) {
 	reg := NewProviderRegistry()
 	noTools := &stubModel{responses: []stubResponse{{resp: ModelResponse{Message: Message{Role: RoleAssistant}, FinishReason: FinishReasonStop}}}}
-	withTools := &stubModel{responses: []stubResponse{{resp: ModelResponse{Message: Message{Role: RoleAssistant}, FinishReason: FinishReasonStop}}}}
+	withTools := &stubModel{responses: []stubResponse{{resp: ModelResponse{Message: Message{Role: RoleAssistant, Content: "tools-ok"}, FinishReason: FinishReasonStop}}}}
 
 	if err := reg.Register(ProviderEntry{ID: "no-tools", Model: noTools, Capabilities: ProviderCapabilities{}}); err != nil {
 		t.Fatalf("register no-tools: %v", err)
@@ -97,10 +97,38 @@ func TestModelRouter_CapabilityFiltering(t *testing.T) {
 		t.Fatalf("NewModelRouter: %v", err)
 	}
 
+	// When primary doesn't satisfy capabilities, router falls back to eligible provider.
+	req := ModelRequest{Tools: []ToolDefinition{{ID: "test"}}}
+	resp, err := router.Generate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected router to fall back to capable provider, got error: %v", err)
+	}
+	if resp.Message.Content != "tools-ok" {
+		t.Errorf("Content = %q, want %q", resp.Message.Content, "tools-ok")
+	}
+}
+
+func TestModelRouter_NoEligibleProviderSatisfiesCapabilities(t *testing.T) {
+	reg := NewProviderRegistry()
+	noTools := &stubModel{responses: []stubResponse{{resp: ModelResponse{Message: Message{Role: RoleAssistant}, FinishReason: FinishReasonStop}}}}
+
+	if err := reg.Register(ProviderEntry{ID: "no-tools", Model: noTools, Capabilities: ProviderCapabilities{}}); err != nil {
+		t.Fatalf("register no-tools: %v", err)
+	}
+
+	router, err := NewModelRouter(ModelRouterConfig{
+		Registry: reg,
+		Policy:   RoutingPolicy{Primary: "no-tools"},
+	})
+	if err != nil {
+		t.Fatalf("NewModelRouter: %v", err)
+	}
+
+	// When no provider satisfies capabilities, router should fail.
 	req := ModelRequest{Tools: []ToolDefinition{{ID: "test"}}}
 	_, err = router.Generate(context.Background(), req)
 	if err == nil {
-		t.Fatal("expected capability error")
+		t.Fatal("expected capability error when no provider satisfies requirements")
 	}
 }
 
