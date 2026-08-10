@@ -247,6 +247,7 @@ type runEmitter struct {
 	parentStep StepID
 	parentPos  int
 	seq        int
+	mu         sync.Mutex
 }
 
 func newRunEmitter(ctx context.Context, listener RunListener, clock Clock, _ IDSource) *runEmitter {
@@ -255,9 +256,13 @@ func newRunEmitter(ctx context.Context, listener RunListener, clock Clock, _ IDS
 }
 
 func (e *runEmitter) dispatch(event RunEvent) {
+	e.mu.Lock()
+	e.seq++
+	event.Sequence = e.seq
 	event.ParentRunID = e.parentRun
 	event.ParentStepID = e.parentStep
 	event.ParentStep = e.parentPos
+	e.mu.Unlock()
 	e.listener.OnRunEvent(event)
 }
 
@@ -280,7 +285,6 @@ func (e *runEmitter) emit(runID RunID, step int, stepID StepID, eventType RunEve
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      eventType,
@@ -296,7 +300,6 @@ func (e *runEmitter) emitModelStarted(runID RunID, step int, stepID StepID) time
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventModelStarted,
@@ -318,7 +321,6 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 		toolCallID = delta.ToolCall.ID
 		toolID = delta.ToolCall.ToolID
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:              e.seq,
 		Type:                  RunEventDelta,
@@ -341,7 +343,6 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:     e.seq,
 		Type:         RunEventModelFinished,
@@ -360,7 +361,6 @@ func (e *runEmitter) emitToolRequested(runID RunID, step int, stepID StepID, too
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:   e.seq,
 		Type:       RunEventToolRequested,
@@ -378,7 +378,6 @@ func (e *runEmitter) emitToolStarted(runID RunID, step int, stepID StepID, toolC
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:   e.seq,
 		Type:       RunEventToolStarted,
@@ -397,7 +396,6 @@ func (e *runEmitter) emitToolFinished(runID RunID, step int, stepID StepID, star
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:   e.seq,
 		Type:       RunEventToolFinished,
@@ -418,7 +416,6 @@ func (e *runEmitter) emitStepStarted(runID RunID, step int, stepID StepID) time.
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventStepStarted,
@@ -435,7 +432,6 @@ func (e *runEmitter) emitStepFinished(runID RunID, step int, stepID StepID, star
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventStepFinished,
@@ -456,7 +452,6 @@ func (e *runEmitter) emitStepAttemptStarted(runID RunID, step int, stepID StepID
 	if !e.enabled() {
 		return ts
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventStepAttemptStarted,
@@ -479,7 +474,6 @@ func (e *runEmitter) emitStepAttemptFinished(runID RunID, step int, stepID StepI
 		return
 	}
 	now := e.clock.Now()
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventStepAttemptFinished,
@@ -498,7 +492,6 @@ func (e *runEmitter) terminal(runID RunID, step int, stepID StepID, eventType Ru
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      eventType,
@@ -518,7 +511,6 @@ func (e *runEmitter) emitSuspended(runID RunID, step int, stepID StepID) {
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventSuspended,
@@ -539,7 +531,6 @@ func (e *runEmitter) emitResumed(runID RunID, step int, stepID StepID) {
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventResumed,
@@ -560,7 +551,6 @@ func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, br
 	if !e.enabled() {
 		return
 	}
-	e.seq++
 	e.dispatch(RunEvent{
 		Sequence:  e.seq,
 		Type:      RunEventBranchSelected,
@@ -583,6 +573,44 @@ func NewFixedClock(t time.Time) Clock {
 }
 
 func (c fixedClock) Now() time.Time { return c.t }
+
+// emitFanOutBranchStepStarted records a step_started event for a child step
+// within a fan-out branch. The Branch field carries the fan-out branch name so
+// consumers can correlate concurrent child events to their branch.
+func (e *runEmitter) emitFanOutBranchStepStarted(runID RunID, step int, stepID StepID, branch string) time.Time {
+	ts := e.now()
+	if !e.enabled() {
+		return ts
+	}
+	e.dispatch(RunEvent{
+		Type:      RunEventStepStarted,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Branch:    branch,
+		Timestamp: ts,
+	})
+	return ts
+}
+
+// emitFanOutBranchStepFinished records a step_finished event for a child step
+// within a fan-out branch. The Branch field carries the fan-out branch name.
+func (e *runEmitter) emitFanOutBranchStepFinished(runID RunID, step int, stepID StepID, branch string, start time.Time, err error) {
+	if !e.enabled() {
+		return
+	}
+	now := e.clock.Now()
+	e.dispatch(RunEvent{
+		Type:      RunEventStepFinished,
+		RunID:     runID,
+		StepID:    stepID,
+		Step:      step,
+		Branch:    branch,
+		Timestamp: now,
+		Duration:  now.Sub(start),
+		Error:     err,
+	})
+}
 
 // fixedIDSource returns predetermined IDs in order. It is intended for
 // deterministic tests.

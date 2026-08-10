@@ -6,6 +6,27 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Bounded parallel fan-out and join for linear workflows. A `StepDefinition`
+  may declare a `FanOut` with `Branches` (each with a `Name`, optional
+  `InputMapper`, and ordered `Steps`), `MaxParallel` (bounds active branches),
+  and `FailurePolicy` (`FanOutFailFast` cancels siblings after the first child
+  failure; `FanOutCollectAll` lets every branch finish). The executor runs
+  branches concurrently within the configured bound and joins their outputs in
+  declaration order as a JSON array of `{"name":"...","output":...}` objects,
+  independent of completion timing. `WorkflowRunResult.FanOut` exposes each
+  child branch's terminal state and the join outcome; the persisted snapshot
+  carries the same records. Fan-out steps must not declare a `Handler`,
+  `OutputSchema`, `SuspendSchema`, `Retry`, or conditional `Branches`.
+  Suspend within a fan-out child is rejected at runtime as an invalid output.
+  Conditional branches inside fan-out children are supported. New error kinds:
+  `WorkflowErrorFanOutBranchFailed`, `WorkflowErrorFanOutInputMapperFailed`,
+  `WorkflowErrorInvalidFanOutInput` (with matching sentinels). The run emitter
+  is now thread-safe so concurrent child step events maintain monotonic
+  sequencing. The snapshot envelope version is bumped to `4` and adds the
+  optional `fan_out` field; readers tolerate `0`, `1`, `2`, and `3` as legacy.
+  New public types: `FanOut`, `FanOutBranch`, `FanOutFailurePolicy`,
+  `FanOutInputMapper`, `FanOutBranchResult`, `FanOutJoinResult`.
+
 - Conditional branching for linear workflows. A `StepDefinition` may declare
   `Branches` (each with a `Name`, pure-Go `BranchPredicate`, and ordered
   `Steps`) plus an optional `Default` branch name. When the executor reaches a
