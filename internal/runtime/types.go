@@ -107,11 +107,30 @@ const (
 // RunResult is the provider-neutral result shape returned by executable
 // primitives. The executor is intentionally introduced in a later task.
 type RunResult struct {
-	ID       RunID
-	Status   RunStatus
-	Messages []Message
-	Metadata map[string]string
+	ID            RunID
+	Status        RunStatus
+	Messages      []Message
+	Metadata      map[string]string
+	ModelAttempts []ModelAttempt
 }
+
+// ModelAttempt records one provider invocation during a run. When routing and
+// fallback are in use, multiple attempts may be recorded per run.
+type ModelAttempt struct {
+	Provider ProviderID
+	Model    string
+	Status   ModelAttemptStatus
+	Error    *ModelError
+}
+
+// ModelAttemptStatus describes the outcome of a single provider attempt.
+type ModelAttemptStatus string
+
+const (
+	ModelAttemptSuccess  ModelAttemptStatus = "success"
+	ModelAttemptFallback ModelAttemptStatus = "fallback"
+	ModelAttemptFailed   ModelAttemptStatus = "failed"
+)
 
 // StructuredOutput returns the structured JSON payload of the final assistant
 // message in the transcript. The value is empty when the final assistant

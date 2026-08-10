@@ -153,8 +153,12 @@ type AgentConfig struct {
 	// Definition identifies the agent and supplies instructions, model name,
 	// and the tool IDs the agent is permitted to invoke.
 	Definition AgentDefinition
-	// Model is the provider-neutral language-model adapter. Required.
+	// Model is the provider-neutral language-model adapter. Required when
+	// Router is nil.
 	Model Model
+	// Router optionally routes model calls through a provider registry with
+	// routing policies and fallback chains. When set, Model is ignored.
+	Router *ModelRouter
 	// Tools resolves schema-backed tool handlers by stable ID. May be nil when
 	// Definition.Tools is empty.
 	Tools *ToolRegistry
@@ -197,6 +201,7 @@ type AgentConfig struct {
 type Agent struct {
 	definition     AgentDefinition
 	model          Model
+	router         *ModelRouter
 	tools          *ToolRegistry
 	outputSchema   *ModelOutputSchema
 	compiledOutput CompiledSchema
@@ -219,8 +224,8 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	if config.Definition.ID == "" {
 		return nil, errors.New("lebro: agent definition ID is required")
 	}
-	if config.Model == nil || isNilInterface(config.Model) {
-		return nil, errors.New("lebro: agent model is required")
+	if config.Router == nil && (config.Model == nil || isNilInterface(config.Model)) {
+		return nil, errors.New("lebro: agent model or router is required")
 	}
 	if len(config.Definition.Tools) > 0 && (config.Tools == nil) {
 		return nil, errors.New("lebro: agent tool registry is required when the definition references tools")
@@ -274,6 +279,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	return &Agent{
 		definition:     definition,
 		model:          config.Model,
+		router:         config.Router,
 		tools:          config.Tools,
 		outputSchema:   outputSchema,
 		compiledOutput: compiledOutput,
@@ -365,7 +371,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			Tools:        cloneToolDefinitions(toolDefinitions),
 			OutputSchema: cloneModelOutputSchema(outputSchema),
 		}
-		response, err := a.model.Generate(runCtx, request)
+		response, attempts, err := a.generateModel(runCtx, runID, step, stepID, emitter, request)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
 				cause := preferContextError(err, cancelledErr)
@@ -375,7 +381,10 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			}
 			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
-			return a.failWithMessages(runID, metadata, step, transcript, &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err})
+			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err}
+			result := a.failWithMessagesResult(runID, metadata, step, transcript, agentErr)
+			result.ModelAttempts = attempts
+			return result, agentErr
 		}
 		if err := response.Validate(); err != nil {
 			if compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
@@ -399,18 +408,23 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			if err := a.validateStructuredOutput(compiledOutput, response); err != nil {
 				agentErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: err}
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
-				return a.failWithMessages(runID, metadata, step, transcript, agentErr)
+				result := a.failWithMessagesResult(runID, metadata, step, transcript, agentErr)
+				result.ModelAttempts = attempts
+				return result, agentErr
 			}
 			result := RunResult{
-				ID:       runID,
-				Status:   RunStatusSucceeded,
-				Messages: transcript,
-				Metadata: metadata,
+				ID:            runID,
+				Status:        RunStatusSucceeded,
+				Messages:      transcript,
+				Metadata:      metadata,
+				ModelAttempts: attempts,
 			}
 			if persistErr := a.persistNewMessages(ctx, input.ThreadID, runID, transcript, loadedCount); persistErr != nil {
 				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
-				return a.failWithMessages(runID, metadata, step, transcript, persistAgentErr)
+				result := a.failWithMessagesResult(runID, metadata, step, transcript, persistAgentErr)
+				result.ModelAttempts = attempts
+				return result, persistAgentErr
 			}
 			emitter.terminal(runID, step, stepID, RunEventSucceeded, RunStatusSucceeded, nil)
 			return result, nil
@@ -1007,6 +1021,111 @@ func (a *Agent) applyDeadline(ctx context.Context) (context.Context, context.Can
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, a.deadline)
+}
+
+// generateModel calls the model either directly or through the router, emitting
+// model_attempt events when routing is in use. It returns the response,
+// accumulated model attempts, and any error.
+func (a *Agent) generateModel(ctx context.Context, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
+	if a.router == nil {
+		resp, err := a.model.Generate(ctx, request)
+		return resp, nil, err
+	}
+
+	registry := a.router.Registry()
+	policy := a.router.Policy()
+	fallback := a.router.Fallback()
+
+	target := resolveRouterTarget(policy, request, registry)
+	var attempts []ModelAttempt
+
+	entry, err := registry.Get(target)
+	if err != nil {
+		return ModelResponse{}, nil, fmt.Errorf("lebro: router resolve provider: %w", err)
+	}
+
+	reqs := requestRequirements(request)
+	if !entry.Capabilities.Satisfies(reqs) {
+		return ModelResponse{}, nil, fmt.Errorf("lebro: provider %q lacks required capabilities", entry.ID)
+	}
+
+	attemptStart := emitter.emitModelAttemptStarted(runID, step, stepID, entry.ID, request.Model)
+	resp, genErr := entry.Model.Generate(ctx, request)
+	if genErr == nil {
+		emitter.emitModelAttemptFinished(runID, step, stepID, entry.ID, request.Model, ModelAttemptSuccess, attemptStart, nil)
+		attempts = append(attempts, ModelAttempt{Provider: entry.ID, Model: request.Model, Status: ModelAttemptSuccess})
+		return resp, attempts, nil
+	}
+
+	var modelErr *ModelError
+	if !errors.As(genErr, &modelErr) {
+		emitter.emitModelAttemptFinished(runID, step, stepID, entry.ID, request.Model, ModelAttemptFailed, attemptStart, genErr)
+		attempts = append(attempts, ModelAttempt{Provider: entry.ID, Model: request.Model, Status: ModelAttemptFailed, Error: &ModelError{Kind: ModelErrorUnknown, Message: genErr.Error(), Err: genErr}})
+		return resp, attempts, genErr
+	}
+
+	emitter.emitModelAttemptFinished(runID, step, stepID, entry.ID, request.Model, ModelAttemptFallback, attemptStart, genErr)
+	attempts = append(attempts, ModelAttempt{Provider: entry.ID, Model: request.Model, Status: ModelAttemptFallback, Error: modelErr})
+
+	if fallback == nil || !fallback.IsRetryable(modelErr) {
+		return resp, attempts, genErr
+	}
+
+	// Walk fallback chain with event emission.
+	for _, id := range fallback.Chain {
+		if id == entry.ID {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return ModelResponse{}, attempts, err
+		}
+		nextEntry, getErr := registry.Get(id)
+		if getErr != nil {
+			continue
+		}
+		if !nextEntry.Capabilities.Satisfies(reqs) {
+			continue
+		}
+		fbStart := emitter.emitModelAttemptStarted(runID, step, stepID, nextEntry.ID, request.Model)
+		fbResp, fbErr := nextEntry.Model.Generate(ctx, request)
+		if fbErr == nil {
+			emitter.emitModelAttemptFinished(runID, step, stepID, nextEntry.ID, request.Model, ModelAttemptSuccess, fbStart, nil)
+			attempts = append(attempts, ModelAttempt{Provider: nextEntry.ID, Model: request.Model, Status: ModelAttemptSuccess})
+			return fbResp, attempts, nil
+		}
+		var fbModelErr *ModelError
+		if !errors.As(fbErr, &fbModelErr) {
+			emitter.emitModelAttemptFinished(runID, step, stepID, nextEntry.ID, request.Model, ModelAttemptFailed, fbStart, fbErr)
+			attempts = append(attempts, ModelAttempt{Provider: nextEntry.ID, Model: request.Model, Status: ModelAttemptFailed, Error: &ModelError{Kind: ModelErrorUnknown, Message: fbErr.Error(), Err: fbErr}})
+			return fbResp, attempts, fbErr
+		}
+		emitter.emitModelAttemptFinished(runID, step, stepID, nextEntry.ID, request.Model, ModelAttemptFallback, fbStart, fbErr)
+		attempts = append(attempts, ModelAttempt{Provider: nextEntry.ID, Model: request.Model, Status: ModelAttemptFallback, Error: fbModelErr})
+		if !fallback.IsRetryable(fbModelErr) {
+			return fbResp, attempts, fbErr
+		}
+	}
+
+	return ModelResponse{}, attempts, genErr
+}
+
+func resolveRouterTarget(policy RoutingPolicy, req ModelRequest, registry *ProviderRegistry) ProviderID {
+	if policy.Predicate != nil {
+		if id := policy.Predicate(req); id != "" {
+			return id
+		}
+	}
+	if policy.Primary != "" {
+		return policy.Primary
+	}
+	if len(policy.Eligible) > 0 {
+		return policy.Eligible[0]
+	}
+	ids := registry.IDs()
+	if len(ids) > 0 {
+		return ids[0]
+	}
+	return ""
 }
 
 func (a *Agent) cancelled(runID RunID, messages []Message, metadata map[string]string, step int, err error) (RunResult, error) {
