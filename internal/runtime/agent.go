@@ -906,7 +906,6 @@ func (a *Agent) cancelledWithAttemptsResult(runID RunID, messages []Message, met
 	}
 }
 
-
 func cloneToolCallValue(call ModelToolCall) ModelToolCall {
 	call.Arguments = cloneRawMessage(call.Arguments)
 	return call
