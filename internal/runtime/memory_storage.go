@@ -511,6 +511,21 @@ func cloneWorkflowRunRecord(v WorkflowRunRecord) WorkflowRunRecord {
 		finished := *v.FinishedAt
 		v.FinishedAt = &finished
 	}
+	if len(v.FanOut) > 0 {
+		fanOut := make([]FanOutJoinResult, len(v.FanOut))
+		for i, result := range v.FanOut {
+			fanOut[i] = result
+			if len(result.Branches) > 0 {
+				branches := make([]FanOutBranchResult, len(result.Branches))
+				for j, branch := range result.Branches {
+					branches[j] = branch
+					branches[j].Output = cloneJSON(branch.Output)
+				}
+				fanOut[i].Branches = branches
+			}
+		}
+		v.FanOut = fanOut
+	}
 	return v
 }
 func cloneWorkflowSnapshotRecord(v WorkflowSnapshotRecord) WorkflowSnapshotRecord {

@@ -139,6 +139,7 @@ var sqliteSchemaMigrations = []string{
 	`ALTER TABLE workflow_runs ADD COLUMN workflow_version TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE workflow_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE workflow_runs ADD COLUMN path TEXT`,
+	`ALTER TABLE workflow_runs ADD COLUMN fan_out TEXT`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -500,8 +501,12 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 	if err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	fanOut, err := sqliteFanOutJSON(v.FanOut)
+	if err != nil {
+		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workflow_id     = excluded.workflow_id,
 			thread_id       = excluded.thread_id,
@@ -517,9 +522,10 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 			step_outputs    = excluded.step_outputs,
 			failure         = excluded.failure,
 			workflow_version= excluded.workflow_version,
-			path            = excluded.path`,
+			path            = excluded.path,
+			fan_out         = excluded.fan_out`,
 		v.ID, v.WorkflowID, sqliteNullableString(string(v.ThreadID)), v.Status, sqliteJSON(v.Input), sqliteJSON(v.Output), sqliteJSON(v.Metadata), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), sqliteTime(v.UpdatedAt),
-		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion, path); err != nil {
+		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion, path, fanOut); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -529,7 +535,7 @@ func (r *sqliteRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Work
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path FROM workflow_runs WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs WHERE id = ?`, id)
 	record, err := scanWorkflowRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -549,7 +555,7 @@ func (r *sqliteRepositories) ListWorkflowRuns(ctx context.Context, filter Workfl
 		return Page[WorkflowRunRecord]{}, err
 	}
 	var (
-		query = `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path FROM workflow_runs`
+		query = `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs`
 		args  []any
 		where []string
 	)
@@ -748,10 +754,10 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	var record WorkflowRunRecord
 	var threadID sql.NullString
 	var input, output, metadata sql.NullString
-	var stepOutputs, failure, path sql.NullString
+	var stepOutputs, failure, path, fanOut sql.NullString
 	var finishedAt sql.NullString
 	var startedAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path, &fanOut); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
@@ -761,6 +767,7 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	record.StepOutputs = sqliteRawJSONArray(stepOutputs)
 	record.Failure = sqliteParseFailure(failure)
 	record.Path = sqliteRawStepIDArray(path)
+	record.FanOut = sqliteParseFanOut(fanOut)
 	started, err := sqliteParseTime(startedAt)
 	if err != nil {
 		return WorkflowRunRecord{}, err
@@ -930,6 +937,33 @@ func sqliteStepIDArray(ids []StepID) (any, error) {
 		return nil, fmt.Errorf("lebro: encode path: %w", err)
 	}
 	return string(encoded), nil
+}
+
+// sqliteFanOutJSON marshals fan-out join results for the fan_out column. nil or
+// empty becomes NULL so readers can distinguish "no fan-out" from "empty array".
+func sqliteFanOutJSON(results []FanOutJoinResult) (any, error) {
+	if len(results) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(results)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode fan-out: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// sqliteParseFanOut decodes a nullable fan_out column. NULL and invalid JSON
+// both yield nil; a malformed payload is treated as no fan-out rather than
+// failing the read so a corrupted row remains inspectable.
+func sqliteParseFanOut(v sql.NullString) []FanOutJoinResult {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return nil
+	}
+	var results []FanOutJoinResult
+	if err := json.Unmarshal([]byte(v.String), &results); err != nil {
+		return nil
+	}
+	return results
 }
 
 // sqliteRawStepIDArray decodes a nullable JSON-array column of StepIDs back

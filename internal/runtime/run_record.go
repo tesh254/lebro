@@ -262,8 +262,8 @@ func (e *runEmitter) dispatch(event RunEvent) {
 	event.ParentRunID = e.parentRun
 	event.ParentStepID = e.parentStep
 	event.ParentStep = e.parentPos
-	e.listener.OnRunEvent(event)
 	e.mu.Unlock()
+	e.listener.OnRunEvent(event)
 }
 
 // enabled reports whether the emitter will dispatch events. When false, all
