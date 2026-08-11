@@ -1,0 +1,24 @@
+internal/runtime/postgres_vector.go
+  s_104046230317b0::t_9eaaf64e08af6a 37-40,61-68
+  s_104046230317b0::t_d25a02d4139316 119-121,145-146,148
+internal/runtime/vector.go
+  s_104046230317b0::t_cd145dbea44993 223-225
+internal/runtime/sqlite_vector.go
+  s_104046230317b0::t_81023b8e62a331 73-80,83-84,95-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "13502e5a4a8b22d324ad170403edec0c0825efe5",
+  "prompts": {},
+  "sessions": {
+    "s_104046230317b0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0122b0decffetpCunvtJ5uLBTa",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
