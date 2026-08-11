@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -556,5 +557,96 @@ func TestRetrievalToolSatisfiesToolContract(t *testing.T) {
 	}
 	if !strings.Contains(string(result.Output), `"chunks"`) {
 		t.Fatalf("Output = %s, want a chunks envelope", result.Output)
+	}
+}
+
+// TestVectorRetrieverRejectsWrongQueryDimension keeps a provider defect classified
+// as an embedding failure rather than surfacing as a retrieval failure once the
+// store rejects the width. The indexer already does this on the write path.
+func TestVectorRetrieverRejectsWrongQueryDimension(t *testing.T) {
+	retriever, embedder, _ := seedRetrievalIndex(t, VectorRetrieverConfig{})
+	// Right count, wrong width for the 16-dimension index.
+	embedder.vectors = [][]float32{{1, 2, 3}}
+
+	_, err := retriever.Retrieve(context.Background(), RetrievalQuery{Query: "anything"})
+	if !errors.Is(err, ErrRAGEmbedding) {
+		t.Fatalf("Retrieve error = %v, want ErrRAGEmbedding", err)
+	}
+	if errors.Is(err, ErrRAGRetrieval) {
+		t.Fatalf("Retrieve error = %v, want it not to classify as ErrRAGRetrieval", err)
+	}
+	if !strings.Contains(err.Error(), "dimension") {
+		t.Fatalf("error = %q, want it to report the dimension mismatch", err.Error())
+	}
+}
+
+// spyRetriever records the query it was handed so a test can assert what the
+// tool actually forwarded after clamping.
+type spyRetriever struct{ last RetrievalQuery }
+
+func (s *spyRetriever) Retrieve(_ context.Context, query RetrievalQuery) ([]RetrievedChunk, error) {
+	s.last = query
+	return nil, nil
+}
+
+// TestRetrievalToolClampsTopKWhenUnconfigured covers the zero-config case: with
+// neither TopK nor MaxTopK set, an unbounded model-supplied top_k would otherwise
+// pass straight through, defeating the cap MaxTopK documents.
+func TestRetrievalToolClampsTopKWhenUnconfigured(t *testing.T) {
+	spy := &spyRetriever{}
+	tool, err := NewRetrievalTool(RetrievalToolConfig{ID: "search", Retriever: spy})
+	if err != nil {
+		t.Fatalf("NewRetrievalTool error = %v", err)
+	}
+
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"query":"x","top_k":1000}`)); err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if spy.last.TopK != DefaultRetrievalTopK {
+		t.Fatalf("forwarded TopK = %d, want DefaultRetrievalTopK of %d", spy.last.TopK, DefaultRetrievalTopK)
+	}
+}
+
+// TestRetrievalToolTopKResolution pins the interaction between the configured
+// default, the cap, and a model-supplied value across the whole matrix.
+func TestRetrievalToolTopKResolution(t *testing.T) {
+	tests := []struct {
+		name      string
+		topK      int
+		maxTopK   int
+		requested int
+		want      int
+	}{
+		{name: "unconfigured clamps to package default", requested: 1000, want: DefaultRetrievalTopK},
+		{name: "unconfigured honors a small request", requested: 2, want: 2},
+		{name: "configured TopK caps the request", topK: 3, requested: 1000, want: 3},
+		{name: "explicit MaxTopK caps the request", maxTopK: 7, requested: 1000, want: 7},
+		{name: "MaxTopK wins over TopK for a request", topK: 3, maxTopK: 7, requested: 1000, want: 7},
+		{name: "no request uses configured TopK", topK: 3, maxTopK: 7, want: 3},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			spy := &spyRetriever{}
+			tool, err := NewRetrievalTool(RetrievalToolConfig{
+				ID:        "search",
+				Retriever: spy,
+				TopK:      test.topK,
+				MaxTopK:   test.maxTopK,
+			})
+			if err != nil {
+				t.Fatalf("NewRetrievalTool error = %v", err)
+			}
+
+			arguments := `{"query":"x"}`
+			if test.requested > 0 {
+				arguments = fmt.Sprintf(`{"query":"x","top_k":%d}`, test.requested)
+			}
+			if _, err := tool.Execute(context.Background(), json.RawMessage(arguments)); err != nil {
+				t.Fatalf("Execute error = %v", err)
+			}
+			if spy.last.TopK != test.want {
+				t.Fatalf("forwarded TopK = %d, want %d", spy.last.TopK, test.want)
+			}
+		})
 	}
 }

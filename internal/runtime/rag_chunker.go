@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 )
 
 // DefaultChunkSize is the character-window size used when a
@@ -78,6 +79,18 @@ func (c *CharacterChunker) Chunk(ctx context.Context, document Document) ([]Chun
 	if err := document.Validate(); err != nil {
 		return nil, &RAGError{Kind: RAGErrorInvalidDocument, DocumentID: document.ID, Err: err}
 	}
+	// Rune conversion replaces each invalid byte with U+FFFD, which would index
+	// and later retrieve content that differs from what was ingested. Rejecting
+	// it keeps ingestion lossless rather than silently rewriting the document;
+	// callers that expect arbitrary bytes should decode or sanitize upstream,
+	// where the right substitution is known.
+	if !utf8.ValidString(document.Content) {
+		return nil, &RAGError{
+			Kind:       RAGErrorInvalidDocument,
+			DocumentID: document.ID,
+			Err:        errors.New("lebro: document content must be valid UTF-8"),
+		}
+	}
 
 	// Convert once: indexing runes directly keeps window boundaries aligned to
 	// character boundaries without re-scanning the string per window.
@@ -110,12 +123,9 @@ func (c *CharacterChunker) Chunk(ctx context.Context, document Document) ([]Chun
 		}
 	}
 
-	if len(chunks) == 0 {
-		return nil, &RAGError{
-			Kind:       RAGErrorChunking,
-			DocumentID: document.ID,
-			Err:        errors.New("lebro: document produced no chunks"),
-		}
-	}
+	// No empty-result guard is needed here: Validate has already rejected empty
+	// content, and any non-empty valid string yields at least one rune, so the
+	// loop above always appends. The Indexer still guards the general Chunker
+	// contract, where a custom implementation could return nothing.
 	return chunks, nil
 }

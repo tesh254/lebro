@@ -418,3 +418,63 @@ func assertModelErrorKind(t *testing.T, err error, want lebro.ModelErrorKind, ou
 		*out = modelErr
 	}
 }
+
+// TestEmbedderResponseErrorMatchesChatAdapter pins the delegation: both adapters
+// must classify an HTTP error identically, so one retry policy covers both and
+// a change to the chat mapping cannot silently skip embeddings.
+func TestEmbedderResponseErrorMatchesChatAdapter(t *testing.T) {
+	const body = `{"error":{"message":"slow down","type":"rate_limit_exceeded","code":"rate_limited","param":"input"}}`
+
+	newServer := func() *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Retry-After", "3")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+
+	embedServer := newServer()
+	defer embedServer.Close()
+	embedder, err := NewEmbedder(EmbedderConfig{BaseURL: embedServer.URL, APIKey: "k", Model: "m", Dimension: 2})
+	if err != nil {
+		t.Fatalf("NewEmbedder error = %v", err)
+	}
+	_, embedErr := embedder.Embed(context.Background(), []string{"a"})
+
+	chatServer := newServer()
+	defer chatServer.Close()
+	model, err := New(Config{BaseURL: chatServer.URL, APIKey: "k", Model: "m"})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+	_, chatErr := model.Generate(context.Background(), lebro.ModelRequest{
+		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+	})
+
+	var embedModelErr, chatModelErr *lebro.ModelError
+	if !errors.As(embedErr, &embedModelErr) {
+		t.Fatalf("embed error = %v, want *lebro.ModelError", embedErr)
+	}
+	if !errors.As(chatErr, &chatModelErr) {
+		t.Fatalf("chat error = %v, want *lebro.ModelError", chatErr)
+	}
+
+	if embedModelErr.Kind != chatModelErr.Kind {
+		t.Fatalf("Kind: embeddings = %q, chat = %q", embedModelErr.Kind, chatModelErr.Kind)
+	}
+	if embedModelErr.Code != chatModelErr.Code {
+		t.Fatalf("Code: embeddings = %q, chat = %q", embedModelErr.Code, chatModelErr.Code)
+	}
+	if embedModelErr.StatusCode != chatModelErr.StatusCode {
+		t.Fatalf("StatusCode: embeddings = %d, chat = %d", embedModelErr.StatusCode, chatModelErr.StatusCode)
+	}
+	if embedModelErr.Message != chatModelErr.Message {
+		t.Fatalf("Message: embeddings = %q, chat = %q", embedModelErr.Message, chatModelErr.Message)
+	}
+	if embedModelErr.RetryAfter != chatModelErr.RetryAfter {
+		t.Fatalf("RetryAfter: embeddings = %v, chat = %v", embedModelErr.RetryAfter, chatModelErr.RetryAfter)
+	}
+	if string(embedModelErr.Extension) != string(chatModelErr.Extension) {
+		t.Fatalf("Extension: embeddings = %s, chat = %s", embedModelErr.Extension, chatModelErr.Extension)
+	}
+}

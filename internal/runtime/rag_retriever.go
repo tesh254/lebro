@@ -124,6 +124,15 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query RetrievalQuery) ([
 			Err:  fmt.Errorf("lebro: embedding model returned %d vectors for 1 input", len(vectors)),
 		}
 	}
+	// Check the width here rather than letting the store reject it, so a
+	// provider defect is reported as an embedding failure instead of surfacing
+	// as a retrieval failure. This matches what the indexer already does.
+	if dimension := r.embeddings.Dimension(); len(vectors[0]) != dimension {
+		return nil, &RAGError{
+			Kind: RAGErrorEmbedding,
+			Err:  fmt.Errorf("lebro: query embedding has dimension %d, want %d", len(vectors[0]), dimension),
+		}
+	}
 
 	results, err := r.store.Search(ctx, SimilarityQuery{
 		Vector:   vectors[0],
@@ -256,10 +265,12 @@ type RetrievalToolConfig struct {
 	// TopK is the result count used when the model does not request one. A zero
 	// value defers to the retriever's own default.
 	TopK int
-	// MaxTopK caps a model-supplied top_k. A zero value uses TopK when set, so
-	// a model cannot enlarge its own context window beyond what the application
-	// budgeted. Requests above the cap are clamped rather than rejected: a
-	// clamped retrieval is more useful to a model than a validation error.
+	// MaxTopK caps a model-supplied top_k, so a model cannot enlarge its own
+	// context window beyond what the application budgeted. A zero value falls
+	// back to TopK, or to DefaultRetrievalTopK when TopK is also unset, so the
+	// cap holds even for a tool configured with neither. Requests above the cap
+	// are clamped rather than rejected: a clamped retrieval is more useful to a
+	// model than a validation error.
 	MaxTopK int
 	// MinScore is the cosine-similarity floor applied to every query. It must be
 	// in [0, 1].
@@ -341,11 +352,16 @@ func NewRetrievalTool(config RetrievalToolConfig) (*RetrievalTool, error) {
 		description = "Search the indexed document corpus for passages relevant to a natural-language query."
 	}
 
-	// An unset cap falls back to the configured default so a model-supplied
-	// top_k can never exceed the application's own budget by default.
+	// An unset cap falls back to the configured default, and then to the package
+	// default, so a model-supplied top_k can never exceed the application's own
+	// budget. Leaving it at zero would make resolveTopK pass any requested count
+	// straight through, which is the opposite of what MaxTopK promises.
 	maxTopK := config.MaxTopK
 	if maxTopK == 0 {
 		maxTopK = config.TopK
+	}
+	if maxTopK == 0 {
+		maxTopK = DefaultRetrievalTopK
 	}
 
 	return &RetrievalTool{

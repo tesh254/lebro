@@ -242,37 +242,16 @@ func (e *Embedder) requestContext(ctx context.Context) (context.Context, context
 	return context.WithTimeout(ctx, e.timeout)
 }
 
-// classifyResponseError mirrors the chat adapter's HTTP error mapping so one
-// retry policy covers both adapters.
+// The chat adapter's classifiers are reused through a zero-value Model: they
+// read no receiver state beyond the provider name, which both adapters share.
+// Delegating rather than duplicating keeps one status-to-kind mapping, so a
+// change to the chat adapter's classification cannot silently skip embeddings
+// and one retry policy really does cover both.
 func (e *Embedder) classifyResponseError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
-	var parsed chatErrorBody
-	_ = json.Unmarshal(body, &parsed)
-
-	modelErr := &lebro.ModelError{
-		Kind:       statusToKind(resp.StatusCode),
-		Provider:   providerName,
-		Code:       parsed.Error.Code,
-		StatusCode: resp.StatusCode,
-		Message:    parsed.Error.Message,
-	}
-	if modelErr.Message == "" {
-		modelErr.Message = fmt.Sprintf("lebro: HTTP %d", resp.StatusCode)
-	}
-	if parsed.Error.Type != "" || parsed.Error.Param != "" {
-		extension, _ := json.Marshal(map[string]string{"type": parsed.Error.Type, "param": parsed.Error.Param})
-		modelErr.Extension = extension
-	}
-	if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
-		modelErr.RetryAfter = retryAfter
-	}
-	return modelErr
+	return (&Model{}).classifyResponseError(resp)
 }
 
 func (e *Embedder) classifyTransportError(ctx context.Context, err error) error {
-	// The chat adapter's classifier is reused through a zero-value Model: it
-	// reads no receiver state beyond the provider name, which both adapters
-	// share, so the classification stays identical across the two.
 	return (&Model{}).classifyTransportError(ctx, err)
 }
 

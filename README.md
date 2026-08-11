@@ -577,15 +577,20 @@ agent, _ := lebro.NewAgent(lebro.AgentConfig{
 The tool's input schema accepts only `query` and an optional `top_k`, with
 `additionalProperties: false`. Retrieval **scope is configuration, not a model's
 choice**: the metadata filter is fixed at construction and is not model-settable,
-a model-supplied `top_k` is clamped to `MaxTopK`, and a caller filter that names
-an enforced key loses to the configured value. A model therefore chooses what to
-search for but not what it is allowed to read. An empty result set is a success
-with an empty `chunks` array rather than an error, so a model never branches on
-response shape.
+a model-supplied `top_k` is clamped, and a caller filter that names an enforced
+key loses to the configured value. A model therefore chooses what to search for
+but not what it is allowed to read. The clamp falls back from `MaxTopK` to
+`TopK` to `DefaultRetrievalTopK`, so it still bounds a tool configured with
+neither. An empty result set is a success with an empty `chunks` array rather
+than an error, so a model never branches on response shape.
 
 `CharacterChunker` measures `Size` and `Overlap` in runes, so a multi-byte
 character is never split across chunks. It is deliberately the simple initial
 strategy: it assumes nothing about language, markup, or sentence structure.
+Content that is not valid UTF-8 is rejected rather than silently rewritten,
+since rune conversion would replace each invalid byte and index text that
+differs from what was submitted; decode or sanitize upstream, where the right
+substitution is known.
 
 Stage failures are normalized as `*RAGError` naming the stage that failed, with
 the underlying provider or store error preserved:

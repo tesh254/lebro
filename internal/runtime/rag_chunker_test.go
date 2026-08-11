@@ -313,3 +313,22 @@ func TestCharacterChunkerChunksAreValid(t *testing.T) {
 		}
 	}
 }
+
+// TestCharacterChunkerRejectsInvalidUTF8 covers lossless ingestion: rune
+// conversion would replace each invalid byte with U+FFFD, indexing content that
+// differs from what was submitted.
+func TestCharacterChunkerRejectsInvalidUTF8(t *testing.T) {
+	chunker, err := NewCharacterChunker(CharacterChunkerConfig{Size: 10})
+	if err != nil {
+		t.Fatalf("NewCharacterChunker error = %v", err)
+	}
+
+	invalid := string([]byte{0xff, 0xfe, 'a', 'b', 'c'})
+	_, err = chunker.Chunk(context.Background(), Document{ID: "doc-1", Content: invalid})
+	if !errors.Is(err, ErrRAGInvalidDocument) {
+		t.Fatalf("Chunk error = %v, want ErrRAGInvalidDocument", err)
+	}
+	if !strings.Contains(err.Error(), "UTF-8") {
+		t.Fatalf("error = %q, want it to name the encoding defect", err.Error())
+	}
+}

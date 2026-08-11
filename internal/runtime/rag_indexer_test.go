@@ -547,3 +547,93 @@ func TestIndexerNormalizesUntypedChunkerError(t *testing.T) {
 type failingChunker struct{ err error }
 
 func (c failingChunker) Chunk(context.Context, Document) ([]Chunk, error) { return nil, c.err }
+
+// bufferReusingEmbedder returns the same backing slice on every call, refilled
+// with the call number. Real providers are free to do this, and the indexer must
+// not depend on the slice staying valid after Embed returns.
+type bufferReusingEmbedder struct {
+	dimension int
+	buffer    []float32
+	calls     int
+}
+
+func (e *bufferReusingEmbedder) Dimension() int { return e.dimension }
+
+func (e *bufferReusingEmbedder) Embed(_ context.Context, inputs []string) ([][]float32, error) {
+	e.calls++
+	if e.buffer == nil {
+		e.buffer = make([]float32, e.dimension)
+	}
+	for i := range e.buffer {
+		e.buffer[i] = float32(e.calls)
+	}
+	vectors := make([][]float32, len(inputs))
+	for i := range inputs {
+		vectors[i] = e.buffer
+	}
+	return vectors, nil
+}
+
+// TestIndexerCopiesProviderVectors guards against aliasing across batches: the
+// records accumulate until a single upsert at the end, so retaining the
+// provider's slice would let a later batch rewrite earlier vectors.
+func TestIndexerCopiesProviderVectors(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryVectorStore()
+	embedder := &bufferReusingEmbedder{dimension: 8}
+
+	chunker, err := NewCharacterChunker(CharacterChunkerConfig{Size: 10})
+	if err != nil {
+		t.Fatalf("NewCharacterChunker error = %v", err)
+	}
+	// One chunk per batch, so each chunk sees a different buffer fill.
+	indexer, err := NewIndexer(IndexerConfig{
+		Chunker:    chunker,
+		Embeddings: embedder,
+		Store:      store,
+		Index:      "docs",
+		BatchSize:  1,
+	})
+	if err != nil {
+		t.Fatalf("NewIndexer error = %v", err)
+	}
+	if err := indexer.EnsureIndex(ctx); err != nil {
+		t.Fatalf("EnsureIndex error = %v", err)
+	}
+
+	// 30 runes at a window of 10 yields 3 chunks, hence 3 Embed calls.
+	if _, err := indexer.Ingest(ctx, Document{ID: "doc-1", Content: strings.Repeat("a", 30)}); err != nil {
+		t.Fatalf("Ingest error = %v", err)
+	}
+	if embedder.calls != 3 {
+		t.Fatalf("Embed calls = %d, want 3", embedder.calls)
+	}
+
+	// Each chunk must retain the vector from its own batch. Without a copy all
+	// three would hold the final call's values.
+	for chunkIndex, want := range []float32{1, 2, 3} {
+		id := ChunkID("doc-1", chunkIndex)
+		hits, err := store.Search(ctx, SimilarityQuery{
+			Vector: []float32{want, want, want, want, want, want, want, want},
+			Index:  "docs",
+			TopK:   10,
+		})
+		if err != nil {
+			t.Fatalf("Search error = %v", err)
+		}
+		var found bool
+		for _, hit := range hits {
+			if hit.ID == id {
+				found = true
+				// A cosine score of 1 means the stored vector is parallel to the
+				// batch fill it should have kept.
+				if hit.Score < 0.999 {
+					t.Fatalf("chunk %s score against its own batch vector = %f, want ~1", id, hit.Score)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("chunk %s not found in the index", id)
+		}
+	}
+}

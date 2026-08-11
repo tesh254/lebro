@@ -372,3 +372,65 @@ func TestCloneVectorMetadataFilterIsDefensive(t *testing.T) {
 // contains keeps the assertion sites terse; it is a thin alias so the intent
 // reads as an assertion rather than a string operation.
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
+
+// TestDocumentValidateRejectsNullMetadata covers the crash path: JSON null
+// unmarshals into a nil map without error, and the indexer writes provenance
+// keys into that map.
+func TestDocumentValidateRejectsNullMetadata(t *testing.T) {
+	document := Document{ID: "doc-1", Content: "hello", Metadata: json.RawMessage(`null`)}
+	err := document.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want a rejection of null metadata")
+	}
+	if !contains(err.Error(), "null") {
+		t.Fatalf("Validate() error = %q, want it to name the null metadata", err.Error())
+	}
+}
+
+// TestChunkMetadataSurvivesNullMetadata guards the same defect one layer down: a
+// custom Chunker can emit chunk metadata that never passed Document.Validate.
+func TestChunkMetadataSurvivesNullMetadata(t *testing.T) {
+	encoded, err := chunkMetadata(Chunk{
+		ID:         "doc-1#0",
+		DocumentID: "doc-1",
+		Content:    "hello",
+		Index:      0,
+		Metadata:   json.RawMessage(`null`),
+	})
+	if err != nil {
+		t.Fatalf("chunkMetadata error = %v", err)
+	}
+
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal error = %v", err)
+	}
+	if string(decoded[ChunkMetadataDocumentID]) != `"doc-1"` {
+		t.Fatalf("document_id = %s, want provenance written despite null metadata", decoded[ChunkMetadataDocumentID])
+	}
+}
+
+// TestChunkFromMetadataRejectsMalformedReservedValues covers reserved keys that
+// are present but unusable. Decoding JSON null into a string or int is a silent
+// no-op, so without these checks a hit would carry an empty document ID or a
+// negative index as though it were real provenance.
+func TestChunkFromMetadataRejectsMalformedReservedValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata string
+	}{
+		{name: "null document_id", metadata: `{"document_id":null}`},
+		{name: "empty document_id", metadata: `{"document_id":""}`},
+		{name: "null source", metadata: `{"source":null}`},
+		{name: "empty source", metadata: `{"source":""}`},
+		{name: "null chunk_index", metadata: `{"chunk_index":null}`},
+		{name: "negative chunk_index", metadata: `{"chunk_index":-5}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := chunkFromMetadata(SimilarityResult{ID: "x", Metadata: json.RawMessage(test.metadata)}); err == nil {
+				t.Fatalf("chunkFromMetadata(%s) error = nil, want a rejection", test.metadata)
+			}
+		})
+	}
+}

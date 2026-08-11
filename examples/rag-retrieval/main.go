@@ -120,11 +120,19 @@ func main() {
 		if content == "" && !message.ToolCalls.IsZero() {
 			content = "(requested retrieval)"
 		}
-		if len(content) > 96 {
-			content = content[:96] + "..."
-		}
-		fmt.Printf("  %-9s %s\n", message.Role, content)
+		fmt.Printf("  %-9s %s\n", message.Role, truncate(content, 96))
 	}
+}
+
+// truncate shortens text to at most limit runes. It counts runes rather than
+// bytes so a multi-byte character is never cut in half — the same rune-safety
+// property the chunker guarantees.
+func truncate(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "..."
 }
 
 // localEmbedder is a deterministic EmbeddingModel used so the example needs no
@@ -161,12 +169,16 @@ func (e localEmbedder) Embed(ctx context.Context, inputs []string) ([][]float32,
 // scriptedModel stands in for a provider: it requests retrieval on the first
 // turn, then answers from the tool result. A real model makes the same two
 // calls through the same bounded loop.
+//
+// The second turn derives its answer from the retrieved chunks in the transcript
+// rather than returning a canned string, so a retrieval regression shows up in
+// the example's output instead of being masked by a hard-coded reply.
 type scriptedModel struct {
 	toolID lebro.ToolID
 	calls  int
 }
 
-func (m *scriptedModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+func (m *scriptedModel) Generate(_ context.Context, request lebro.ModelRequest) (lebro.ModelResponse, error) {
 	m.calls++
 	if m.calls == 1 {
 		calls, err := lebro.NewModelToolCalls(lebro.ModelToolCall{
@@ -182,10 +194,37 @@ func (m *scriptedModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro
 			FinishReason: lebro.FinishReasonToolCalls,
 		}, nil
 	}
+
 	return lebro.ModelResponse{
-		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "You may request a full refund within 30 days of purchase."},
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: answerFromRetrieval(request.Messages)},
 		FinishReason: lebro.FinishReasonStop,
 	}, nil
+}
+
+// answerFromRetrieval reads the most recent tool message off the transcript and
+// quotes the top retrieved chunk. A real model would summarize instead; the
+// point here is that the answer is a function of what retrieval returned.
+func answerFromRetrieval(messages []lebro.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != lebro.RoleTool {
+			continue
+		}
+		var payload struct {
+			Chunks []struct {
+				Content string `json:"content"`
+				Source  string `json:"source"`
+			} `json:"chunks"`
+		}
+		if err := json.Unmarshal([]byte(messages[i].Content), &payload); err != nil {
+			return "I could not read the retrieval result."
+		}
+		if len(payload.Chunks) == 0 {
+			return "I found nothing relevant in the handbook."
+		}
+		top := payload.Chunks[0]
+		return fmt.Sprintf("According to %s: %s", top.Source, top.Content)
+	}
+	return "I did not retrieve anything."
 }
 
 func must(err error) {

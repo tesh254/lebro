@@ -214,9 +214,13 @@ func (i *Indexer) Ingest(ctx context.Context, document Document) (IndexResult, e
 				return IndexResult{}, &RAGError{Kind: RAGErrorInvalidDocument, DocumentID: document.ID, Err: err}
 			}
 			records = append(records, EmbeddingRecord{
-				ID:        chunk.ID,
-				Index:     i.index,
-				Vector:    vector,
+				ID:    chunk.ID,
+				Index: i.index,
+				// Copy the provider's slice: records accumulate across batches
+				// and are upserted once at the end, so an EmbeddingModel that
+				// reuses its buffer between calls would otherwise rewrite the
+				// vectors of every chunk collected so far.
+				Vector:    append([]float32(nil), vector...),
 				Dimension: dimension,
 				Metadata:  metadata,
 				Content:   chunk.Content,

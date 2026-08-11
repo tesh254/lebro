@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -171,6 +172,12 @@ func (d Document) Validate() error {
 	if err := json.Unmarshal(d.Metadata, &decoded); err != nil {
 		return fmt.Errorf("lebro: document metadata must be a JSON object: %w", err)
 	}
+	// JSON null unmarshals into a nil map without error, so it must be rejected
+	// explicitly: the indexer merges provenance keys into this map, and writing
+	// to a nil map panics.
+	if decoded == nil {
+		return errors.New("lebro: document metadata must be a JSON object, got null")
+	}
 	for _, reserved := range reservedChunkMetadataKeys {
 		if _, exists := decoded[reserved]; exists {
 			return fmt.Errorf("lebro: document metadata must not set reserved key %q", reserved)
@@ -244,6 +251,10 @@ type Chunker interface {
 // still preserve order.
 type EmbeddingModel interface {
 	// Embed returns one vector per input string, in the same order.
+	//
+	// Callers must not assume they own the returned slices, and must copy any
+	// vector they retain beyond the call: an implementation is permitted to
+	// reuse its buffers between calls.
 	Embed(ctx context.Context, inputs []string) ([][]float32, error)
 
 	// Dimension reports the fixed length of every vector this model produces.
@@ -303,6 +314,13 @@ func chunkMetadata(chunk Chunk) (json.RawMessage, error) {
 		if err := json.Unmarshal(chunk.Metadata, &merged); err != nil {
 			return nil, fmt.Errorf("lebro: chunk metadata must be a JSON object: %w", err)
 		}
+		// Decoding JSON null replaces the initialized map with a nil one, so it
+		// must be re-established before the provenance keys are written. A
+		// custom Chunker can emit metadata that never passed Document.Validate,
+		// so this guard is not redundant with it.
+		if merged == nil {
+			merged = map[string]json.RawMessage{}
+		}
 	}
 
 	documentID, err := json.Marshal(chunk.DocumentID)
@@ -343,6 +361,12 @@ func chunkMetadata(chunk Chunk) (json.RawMessage, error) {
 // Missing reserved keys are tolerated: a record written by something other than
 // an Indexer still yields a usable chunk with its content and score, rather
 // than failing an otherwise good retrieval.
+//
+// A reserved key that is present but not usable is a different matter and is
+// rejected. Decoding JSON null into a string or int is a silent no-op, so
+// tolerating it would surface an empty document ID or a negative chunk index as
+// though it were real provenance — exactly the guarantee retrieval results are
+// supposed to carry.
 func chunkFromMetadata(result SimilarityResult) (Chunk, error) {
 	chunk := Chunk{ID: result.ID, Content: result.Content}
 	if len(result.Metadata) == 0 {
@@ -358,17 +382,34 @@ func chunkFromMetadata(result SimilarityResult) (Chunk, error) {
 		if err := json.Unmarshal(raw, &chunk.DocumentID); err != nil {
 			return Chunk{}, fmt.Errorf("lebro: decode chunk document ID: %w", err)
 		}
+		if chunk.DocumentID == "" {
+			return Chunk{}, fmt.Errorf("lebro: chunk metadata %q must be a non-empty string", ChunkMetadataDocumentID)
+		}
 		delete(decoded, ChunkMetadataDocumentID)
 	}
 	if raw, ok := decoded[ChunkMetadataSource]; ok {
 		if err := json.Unmarshal(raw, &chunk.Source); err != nil {
 			return Chunk{}, fmt.Errorf("lebro: decode chunk source: %w", err)
 		}
+		// An indexer omits an empty source rather than writing "", so a present
+		// but empty source is malformed provenance, not an absent one.
+		if chunk.Source == "" {
+			return Chunk{}, fmt.Errorf("lebro: chunk metadata %q must be a non-empty string", ChunkMetadataSource)
+		}
 		delete(decoded, ChunkMetadataSource)
 	}
 	if raw, ok := decoded[ChunkMetadataChunkIndex]; ok {
+		// A null index decodes as a silent no-op, leaving 0 — indistinguishable
+		// from a legitimate first chunk — so it is rejected explicitly rather
+		// than through the range check below.
+		if isJSONNull(raw) {
+			return Chunk{}, fmt.Errorf("lebro: chunk metadata %q must not be null", ChunkMetadataChunkIndex)
+		}
 		if err := json.Unmarshal(raw, &chunk.Index); err != nil {
 			return Chunk{}, fmt.Errorf("lebro: decode chunk index: %w", err)
+		}
+		if chunk.Index < 0 {
+			return Chunk{}, fmt.Errorf("lebro: chunk metadata %q must not be negative, got %d", ChunkMetadataChunkIndex, chunk.Index)
 		}
 		delete(decoded, ChunkMetadataChunkIndex)
 	}
@@ -381,4 +422,11 @@ func chunkFromMetadata(result SimilarityResult) (Chunk, error) {
 		chunk.Metadata = encoded
 	}
 	return chunk, nil
+}
+
+// isJSONNull reports whether raw is the JSON null literal. It exists because
+// decoding null into a Go string or int succeeds without changing the target,
+// so a null is otherwise indistinguishable from an absent key.
+func isJSONNull(raw json.RawMessage) bool {
+	return string(bytes.TrimSpace(raw)) == "null"
 }

@@ -42,8 +42,19 @@ var (
 	_ lebro.Tool           = (*lebro.RetrievalTool)(nil)
 )
 
+// seededCorpus is the fixture the RAG contract tests share. The store and
+// embeddings are exposed so a test can build a second retriever — with a
+// different filter, for instance — against the same indexed documents.
+type seededCorpus struct {
+	Indexer    *lebro.Indexer
+	Retriever  *lebro.VectorRetriever
+	Store      lebro.VectorStore
+	Embeddings lebro.EmbeddingModel
+	Index      string
+}
+
 // seedCorpus builds the full public RAG pipeline over an in-memory vector store.
-func seedCorpus(t *testing.T) (*lebro.Indexer, *lebro.VectorRetriever) {
+func seedCorpus(t *testing.T) seededCorpus {
 	t.Helper()
 	ctx := context.Background()
 
@@ -102,7 +113,13 @@ func seedCorpus(t *testing.T) (*lebro.Indexer, *lebro.VectorRetriever) {
 	if err != nil {
 		t.Fatalf("NewVectorRetriever error = %v", err)
 	}
-	return indexer, retriever
+	return seededCorpus{
+		Indexer:    indexer,
+		Retriever:  retriever,
+		Store:      store,
+		Embeddings: embeddings,
+		Index:      "handbook",
+	}
 }
 
 // TestMAD47RAGPublicContract walks the acceptance path through the façade: a
@@ -112,7 +129,8 @@ func TestMAD47RAGPublicContract(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	indexer, retriever := seedCorpus(t)
+	corpus := seedCorpus(t)
+	indexer, retriever := corpus.Indexer, corpus.Retriever
 	if indexer.Index() != "handbook" {
 		t.Fatalf("Index() = %q, want %q", indexer.Index(), "handbook")
 	}
@@ -140,33 +158,30 @@ func TestMAD47RAGPublicContract(t *testing.T) {
 }
 
 // TestMAD47RetrievalRespectsMetadataFilter covers the acceptance criterion that
-// retrieval honors configured metadata filters.
+// retrieval honors configured metadata filters. Both retrievers query the same
+// seeded store, so the filtered result set is compared against a reachable
+// baseline rather than against an empty index.
 func TestMAD47RetrievalRespectsMetadataFilter(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	_, unfiltered := seedCorpus(t)
+	corpus := seedCorpus(t)
+	const query = "confidential supplier pricing and margin targets"
 
 	// Without a filter the internal document is reachable, which is what makes
 	// the filtered case meaningful rather than vacuous.
-	all, err := unfiltered.Retrieve(ctx, lebro.RetrievalQuery{Query: "confidential supplier pricing and margin targets", TopK: 10})
+	all, err := corpus.Retriever.Retrieve(ctx, lebro.RetrievalQuery{Query: query, TopK: 10})
 	if err != nil {
-		t.Fatalf("Retrieve error = %v", err)
+		t.Fatalf("unfiltered Retrieve error = %v", err)
 	}
-	sawInternal := false
-	for _, result := range all {
-		if result.DocumentID == "internal" {
-			sawInternal = true
-		}
-	}
-	if !sawInternal {
+	if !containsDocument(all, "internal") {
 		t.Fatal("unfiltered retrieval did not reach the internal document; the filter assertion would be vacuous")
 	}
 
 	filtered, err := lebro.NewVectorRetriever(lebro.VectorRetrieverConfig{
-		Embeddings: stubEmbeddingModel{dimension: 32},
-		Store:      lebro.NewMemoryVectorStore(),
-		Index:      "handbook",
+		Embeddings: corpus.Embeddings,
+		Store:      corpus.Store,
+		Index:      corpus.Index,
 		TopK:       10,
 		Filter: lebro.VectorMetadataFilter{
 			Match: map[string]json.RawMessage{"visibility": json.RawMessage(`"public"`)},
@@ -175,11 +190,56 @@ func TestMAD47RetrievalRespectsMetadataFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewVectorRetriever error = %v", err)
 	}
-	// A fresh store has no index, so this also confirms the vector sentinel
-	// survives through the RAG error wrapper.
-	if _, err := filtered.Retrieve(ctx, lebro.RetrievalQuery{Query: "anything"}); !errors.Is(err, lebro.ErrVectorNotFound) {
-		t.Fatalf("Retrieve error = %v, want ErrVectorNotFound", err)
+
+	public, err := filtered.Retrieve(ctx, lebro.RetrievalQuery{Query: query, TopK: 10})
+	if err != nil {
+		t.Fatalf("filtered Retrieve error = %v", err)
 	}
+	if containsDocument(public, "internal") {
+		t.Fatal("filtered retrieval returned the internal document")
+	}
+	// The filter must narrow rather than empty the result set, or an
+	// always-empty filter would pass the exclusion check above.
+	if len(public) == 0 {
+		t.Fatal("filtered retrieval returned nothing; the filter excluded the public documents too")
+	}
+	for _, result := range public {
+		if result.DocumentID != "refunds" && result.DocumentID != "shipping" {
+			t.Fatalf("filtered retrieval returned unexpected document %q", result.DocumentID)
+		}
+	}
+}
+
+// TestMAD47RetrievalWrapsVectorSentinel keeps the store's error sentinel
+// reachable through the RAG stage wrapper.
+func TestMAD47RetrievalWrapsVectorSentinel(t *testing.T) {
+	t.Parallel()
+
+	retriever, err := lebro.NewVectorRetriever(lebro.VectorRetrieverConfig{
+		Embeddings: stubEmbeddingModel{dimension: 32},
+		Store:      lebro.NewMemoryVectorStore(),
+		Index:      "absent",
+	})
+	if err != nil {
+		t.Fatalf("NewVectorRetriever error = %v", err)
+	}
+
+	_, err = retriever.Retrieve(context.Background(), lebro.RetrievalQuery{Query: "anything"})
+	if !errors.Is(err, lebro.ErrVectorNotFound) {
+		t.Fatalf("error = %v, want ErrVectorNotFound", err)
+	}
+	if !errors.Is(err, lebro.ErrRAGRetrieval) {
+		t.Fatalf("error = %v, want ErrRAGRetrieval", err)
+	}
+}
+
+func containsDocument(results []lebro.RetrievedChunk, documentID string) bool {
+	for _, result := range results {
+		if result.DocumentID == documentID {
+			return true
+		}
+	}
+	return false
 }
 
 // TestMAD47RetrievalToolFilterIsNotModelSettable is the isolation guarantee that
@@ -188,7 +248,7 @@ func TestMAD47RetrievalToolFilterIsNotModelSettable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	_, retriever := seedCorpus(t)
+	retriever := seedCorpus(t).Retriever
 	tool, err := lebro.NewRetrievalTool(lebro.RetrievalToolConfig{
 		ID:          "search_handbook",
 		Retriever:   retriever,
@@ -228,7 +288,7 @@ func TestMAD47RetrievalToolRealSchemaBoundary(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	_, retriever := seedCorpus(t)
+	retriever := seedCorpus(t).Retriever
 	tool, err := lebro.NewRetrievalTool(lebro.RetrievalToolConfig{
 		ID:        "search_handbook",
 		Retriever: retriever,
@@ -282,7 +342,7 @@ func TestMAD47AgentUsesRetrievalToolInBoundedLoop(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	_, retriever := seedCorpus(t)
+	retriever := seedCorpus(t).Retriever
 	tool, err := lebro.NewRetrievalTool(lebro.RetrievalToolConfig{
 		ID:          "search_handbook",
 		Retriever:   retriever,

@@ -25,8 +25,11 @@ All notable changes to this project are documented in this file.
   existing bounded loop — no implicit context injection and no hidden agent
   behavior. Retrieval scope is configuration rather than a model's choice: the
   metadata filter is fixed at construction and is not model-settable, a
-  model-supplied `top_k` is clamped to `MaxTopK`, and a caller filter naming an
-  enforced key loses to the configured value. Agent and workflow packages never
+  model-supplied `top_k` is clamped (falling back from `MaxTopK` to `TopK` to
+  `DefaultRetrievalTopK`, so the bound holds even when neither is configured),
+  and a caller filter naming an enforced key loses to the configured value.
+  Ingestion is lossless: content that is not valid UTF-8 is rejected rather than
+  silently rewritten by rune conversion. Agent and workflow packages never
   reference RAG types, so the core runtime remains usable with no RAG or vector
   dependency. New public types: `Document`, `Chunk`, `Chunker`,
   `CharacterChunker`, `CharacterChunkerConfig`, `EmbeddingModel`, `Indexer`,
