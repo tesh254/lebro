@@ -1,0 +1,54 @@
+public.go
+  s_59ef6bf4ec7b61::t_6fc1b3e35d824e 186-189
+  s_59ef6bf4ec7b61::t_e480d6a54e88b0 319-328
+  s_59ef6bf4ec7b61::t_e83bc6cf04994b 47-50
+  s_59ef6bf4ec7b61::t_4c778fc362b8a7 273-276
+examples/supervised-delegation/main_test.go
+  s_59ef6bf4ec7b61::t_d07fd5f3fe6e43 1-30
+examples/README.md
+  s_59ef6bf4ec7b61::t_bcbfabb944467f 111-117
+internal/runtime/agent.go
+  s_59ef6bf4ec7b61::t_26e0c7db05313e 1065
+  s_59ef6bf4ec7b61::t_0a1f5b89dffe8a 445
+  s_59ef6bf4ec7b61::t_7c3a056003214f 479-481,485,490-491
+  s_59ef6bf4ec7b61::t_470ee189b4e20f 767
+  s_59ef6bf4ec7b61::t_aec17bae7f18d8 1047
+  s_59ef6bf4ec7b61::t_654528dd956c5b 1061-1064,1066
+  s_59ef6bf4ec7b61::t_e1a31a53e727ef 468-478,482-484,486-489
+internal/runtime/subagent.go
+  s_59ef6bf4ec7b61::t_0dececa20bb17f 324
+  s_59ef6bf4ec7b61::t_c70d313ae1eb25 347-389
+examples/supervised-delegation/main.go
+  s_59ef6bf4ec7b61::t_79a0c9567a3792 36,50,104
+  s_59ef6bf4ec7b61::t_e9ad82cdbf51f7 1-35,37-49,51-103,105-173
+contracts_test.go
+  s_59ef6bf4ec7b61::t_01141b998d176f 121-167,176-191
+  s_59ef6bf4ec7b61::t_f2e70220349fe6 168-175
+README.md
+  s_59ef6bf4ec7b61::t_586d43e31b83b5 794-863
+  s_59ef6bf4ec7b61::t_ef9bd3e7d917f5 972-979
+internal/runtime/subagent_test.go
+  s_59ef6bf4ec7b61::t_05a92019028036 1-11,64-93,96-99,101-161,163-181,183-246,248-351,353-374,376-419,421-445,447-525,527-549,551-554,556-599,601-646,648-666,668-688
+  s_59ef6bf4ec7b61::t_869ab2eb018bca 420
+  s_59ef6bf4ec7b61::t_4b10f2b6298ecd 162,247,555
+  s_59ef6bf4ec7b61::t_ce2a9533a44908 94-95,100,182,352,375,446,526,550,600,647,667
+  s_59ef6bf4ec7b61::t_1df423ef170688 12-63
+CHANGELOG.md
+  s_59ef6bf4ec7b61::t_80fd4b55eb46ef 9-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8c79dbfcc36fac302b639eb4d35726696496aea9",
+  "prompts": {},
+  "sessions": {
+    "s_59ef6bf4ec7b61": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5671d99c-cb68-4579-9833-6da7a385eae6",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
