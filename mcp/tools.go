@@ -62,10 +62,11 @@ func (s *Server) ExposeTool(tool *lebro.RegisteredTool) error {
 }
 
 // toolResultToMCP converts a lebro ToolExecutionResult to an MCP CallToolResult.
-// Succeeded results carry the output as structured content and text. Tool-level
-// errors (invalid input/output, handler errors, panics) are returned as
-// CallToolResult with IsError=true so the LLM can observe and self-correct.
-// Cancellation is returned as a protocol-level error.
+// Succeeded results always carry text content and carry structured content only
+// when the output is valid JSON. Tool-level errors (invalid input/output,
+// handler errors, panics) are returned as CallToolResult with IsError=true so
+// the LLM can observe and self-correct. Cancellation is returned as a
+// protocol-level error.
 func toolResultToMCP(result lebro.ToolExecutionResult) (*mcpsdk.CallToolResult, error) {
 	switch result.State {
 	case lebro.ToolExecutionSucceeded:

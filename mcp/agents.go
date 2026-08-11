@@ -8,7 +8,6 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tesh254/lebro"
-	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
 
 // agentInputSchema is the JSON Schema for the MCP tool wrapping a lebro agent.
@@ -36,16 +35,7 @@ var agentInputSchema = json.RawMessage(`{
 
 // agentInputCompiled is the compiled agent input schema, used to validate
 // MCP tool arguments before the agent runs.
-var agentInputCompiled = mustCompileSchema(agentInputSchema)
-
-func mustCompileSchema(schema json.RawMessage) lebro.CompiledSchema {
-	compiler := lebrojsonschema.NewCompiler()
-	compiled, err := compiler.Compile(schema)
-	if err != nil {
-		panic(fmt.Sprintf("lebro/mcp: compile agent input schema: %v", err))
-	}
-	return compiled
-}
+var agentInputCompiled = mustCompileMCPInputSchema(agentInputSchema)
 
 // agentCallInput is the typed arguments for an agent MCP tool.
 type agentCallInput struct {

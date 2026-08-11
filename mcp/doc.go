@@ -14,13 +14,11 @@
 //
 // MCP client arguments cannot set thread IDs or runtime metadata, preventing
 // them from selecting another caller's durable conversation or injecting
-// authorization metadata into tool execution. Resume endpoints require
-// ServerConfig.AuthorizeWorkflowResume, which must enforce ownership of the
-// supplied workflow run ID. Runtime and handler failures are translated to
-// Runtime and handler failures are translated to stable public error messages
-// rather than exposing internal error details. Note that panics raised inside
-// agent or workflow execution are not recovered here and may surface to the
-// client; keep agent/workflow handlers panic-free or recover at the boundary.
+// authorization metadata into tool execution. Workflow resume is intentionally
+// not exposed until lebro provides a durable atomic resume claim. Runtime and
+// handler failures are translated to stable public error messages rather than
+// exposing internal error details. Keep agent and workflow integrations
+// panic-free, or recover uncaught panics at the application boundary.
 // MCP agent inputs accept only user text; the agent's configured instructions
 // are the only system prompt.
 //

@@ -3,11 +3,11 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"regexp"
 	"sync"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/tesh254/lebro"
 )
 
 // mcpToolNamePattern matches the MCP spec's tool name character set: letters,
@@ -23,21 +23,15 @@ type ServerConfig struct {
 	// PageSize is the maximum number of items returned in a single list
 	// response. Zero uses the SDK default (1000).
 	PageSize int
-	// AuthorizeWorkflowResume authorizes a client to resume the identified
-	// durable workflow run. It is required before ExposeWorkflowResume can
-	// register a resume endpoint.
-	AuthorizeWorkflowResume func(context.Context, lebro.RunID) error
 }
 
 // Server exposes selected lebro tools, agents, and workflows through an MCP
 // server. Only explicitly registered primitives are visible to MCP clients.
 // The zero value is not usable; construct one with NewServer.
 type Server struct {
-	mcpServer               *mcpsdk.Server
-	mu                      sync.Mutex
-	exposed                 map[string]struct{}
-	workflows               map[string]*lebro.LinearWorkflow
-	authorizeWorkflowResume func(context.Context, lebro.RunID) error
+	mcpServer *mcpsdk.Server
+	mu        sync.Mutex
+	exposed   map[string]struct{}
 }
 
 // NewServer creates an MCP server that exposes lebro primitives. The server
@@ -59,10 +53,8 @@ func NewServer(config ServerConfig) *Server {
 		opts.PageSize = config.PageSize
 	}
 	return &Server{
-		mcpServer:               mcpsdk.NewServer(config.Implementation, opts),
-		exposed:                 make(map[string]struct{}),
-		workflows:               make(map[string]*lebro.LinearWorkflow),
-		authorizeWorkflowResume: config.AuthorizeWorkflowResume,
+		mcpServer: mcpsdk.NewServer(config.Implementation, opts),
+		exposed:   make(map[string]struct{}),
 	}
 }
 
@@ -86,6 +78,15 @@ func (s *Server) Connect(ctx context.Context, transport mcpsdk.Transport) (*mcps
 // StreamableHTTPHandler from the SDK.
 func (s *Server) Run(ctx context.Context, transport mcpsdk.Transport) error {
 	return s.mcpServer.Run(ctx, transport)
+}
+
+// StreamableHTTPHandler returns an HTTP handler for multi-session MCP
+// deployments. The handler serves this Server's explicit allow-list over the
+// SDK's Streamable HTTP transport.
+func (s *Server) StreamableHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) http.Handler {
+	return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+		return s.mcpServer
+	}, opts)
 }
 
 // registerName reserves a tool name in the allow-list. It returns an error if

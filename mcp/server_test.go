@@ -70,9 +70,6 @@ func newTestServer(t *testing.T) *mcp.Server {
 	t.Helper()
 	return mcp.NewServer(mcp.ServerConfig{
 		Implementation: &mcpsdk.Implementation{Name: "test-server", Version: "test"},
-		AuthorizeWorkflowResume: func(context.Context, lebro.RunID) error {
-			return nil
-		},
 	})
 }
 
@@ -522,24 +519,16 @@ func TestExposeWorkflow_Success(t *testing.T) {
 	if err := srv.ExposeWorkflow(wf); err != nil {
 		t.Fatalf("ExposeWorkflow: %v", err)
 	}
-	if err := srv.ExposeWorkflowResume(wf); err != nil {
-		t.Fatalf("ExposeWorkflowResume: %v", err)
-	}
-
 	session, cleanup := connectServer(t, srv)
 	defer cleanup()
 
 	names := toolNames(t, session)
-	if len(names) != 2 {
-		t.Fatalf("expected 2 tools (run + resume), got %d: %v", len(names), names)
+	if len(names) != 1 {
+		t.Fatalf("expected 1 workflow tool, got %d: %v", len(names), names)
 	}
 	if names[0] != "workflow.sum" {
 		t.Fatalf("expected workflow.sum, got %q", names[0])
 	}
-	if names[1] != "workflow.sum.resume" {
-		t.Fatalf("expected workflow.sum.resume, got %q", names[1])
-	}
-
 	result := callTool(t, session, "workflow.sum", map[string]any{
 		"input": map[string]any{"a": 3, "b": 4},
 	})
@@ -559,7 +548,6 @@ func TestExposeWorkflow_InvalidArguments(t *testing.T) {
 	srv := newTestServer(t)
 	wf := mustWorkflow(t, "validated")
 	must(t, srv.ExposeWorkflow(wf))
-	must(t, srv.ExposeWorkflowResume(wf))
 
 	session, cleanup := connectServer(t, srv)
 	defer cleanup()
@@ -567,10 +555,6 @@ func TestExposeWorkflow_InvalidArguments(t *testing.T) {
 	runResult := callTool(t, session, "workflow.validated", map[string]any{"unknown": true})
 	if !runResult.IsError {
 		t.Fatal("expected IsError=true for unknown workflow argument")
-	}
-	resumeResult := callTool(t, session, "workflow.validated.resume", map[string]any{})
-	if !resumeResult.IsError {
-		t.Fatal("expected IsError=true for missing resume run_id")
 	}
 }
 
@@ -594,26 +578,6 @@ func TestExposeWorkflow_NonJSONOutputIsTextOnly(t *testing.T) {
 	}
 }
 
-func TestExposeWorkflow_ResumeSeparateRegistration(t *testing.T) {
-	srv := newTestServer(t)
-	wf := mustWorkflow(t, "sep")
-
-	if err := srv.ExposeWorkflow(wf); err != nil {
-		t.Fatalf("ExposeWorkflow: %v", err)
-	}
-
-	session, cleanup := connectServer(t, srv)
-	defer cleanup()
-
-	names := toolNames(t, session)
-	if len(names) != 1 {
-		t.Fatalf("expected 1 tool (run only), got %d: %v", len(names), names)
-	}
-	if names[0] != "workflow.sep" {
-		t.Fatalf("expected workflow.sep, got %q", names[0])
-	}
-}
-
 func TestExposeWorkflow_DuplicateRejected(t *testing.T) {
 	srv := newTestServer(t)
 	wf := mustWorkflow(t, "dup")
@@ -623,60 +587,6 @@ func TestExposeWorkflow_DuplicateRejected(t *testing.T) {
 	err := srv.ExposeWorkflow(wf)
 	if err == nil {
 		t.Fatal("expected duplicate error")
-	}
-}
-
-func TestExposeWorkflowResume_DuplicateRejected(t *testing.T) {
-	srv := newTestServer(t)
-	wf := mustWorkflow(t, "dupr")
-	must(t, srv.ExposeWorkflow(wf))
-	must(t, srv.ExposeWorkflowResume(wf))
-	err := srv.ExposeWorkflowResume(wf)
-	if err == nil {
-		t.Fatal("expected duplicate error for resume")
-	}
-}
-
-func TestExposeWorkflowResume_WithoutExposeWorkflow(t *testing.T) {
-	srv := newTestServer(t)
-	wf := mustWorkflow(t, "noresume")
-	err := srv.ExposeWorkflowResume(wf)
-	if err == nil {
-		t.Fatal("expected error when resume called without prior ExposeWorkflow")
-	}
-	if !strings.Contains(err.Error(), "requires ExposeWorkflow") {
-		t.Fatalf("expected 'requires ExposeWorkflow' error, got %q", err)
-	}
-}
-
-func TestExposeWorkflowResume_RequiresAuthorizer(t *testing.T) {
-	srv := mcp.NewServer(mcp.ServerConfig{
-		Implementation: &mcpsdk.Implementation{Name: "test-server", Version: "test"},
-	})
-	wf := mustWorkflow(t, "authorize")
-	must(t, srv.ExposeWorkflow(wf))
-	err := srv.ExposeWorkflowResume(wf)
-	if err == nil || !strings.Contains(err.Error(), "AuthorizeWorkflowResume is required") {
-		t.Fatalf("ExposeWorkflowResume error = %v", err)
-	}
-}
-
-func TestExposeWorkflowResume_AuthorizationDenied(t *testing.T) {
-	srv := mcp.NewServer(mcp.ServerConfig{
-		Implementation: &mcpsdk.Implementation{Name: "test-server", Version: "test"},
-		AuthorizeWorkflowResume: func(context.Context, lebro.RunID) error {
-			return errors.New("denied")
-		},
-	})
-	wf := mustWorkflow(t, "denied")
-	must(t, srv.ExposeWorkflow(wf))
-	must(t, srv.ExposeWorkflowResume(wf))
-
-	session, cleanup := connectServer(t, srv)
-	defer cleanup()
-	result := callTool(t, session, "workflow.denied.resume", map[string]any{"run_id": "run-1"})
-	if !result.IsError || contentText(result) != "lebro/mcp: workflow resume not authorized" {
-		t.Fatalf("resume result = %#v", result)
 	}
 }
 
@@ -747,6 +657,13 @@ func TestConnect_ReturnsSession(t *testing.T) {
 	_ = clientTransport
 }
 
+func TestStreamableHTTPHandler_ReturnsHandler(t *testing.T) {
+	srv := newTestServer(t)
+	if srv.StreamableHTTPHandler(nil) == nil {
+		t.Fatal("StreamableHTTPHandler returned nil")
+	}
+}
+
 func TestNoToolsByDefault(t *testing.T) {
 	srv := newTestServer(t)
 	session, cleanup := connectServer(t, srv)
@@ -771,13 +688,12 @@ func TestMixedPrimitives(t *testing.T) {
 
 	wf := mustWorkflow(t, "myworkflow")
 	must(t, srv.ExposeWorkflow(wf))
-	must(t, srv.ExposeWorkflowResume(wf))
 
 	session, cleanup := connectServer(t, srv)
 	defer cleanup()
 
 	names := toolNames(t, session)
-	expected := []string{"agent.myagent", "echo", "workflow.myworkflow", "workflow.myworkflow.resume"}
+	expected := []string{"agent.myagent", "echo", "workflow.myworkflow"}
 	if len(names) != len(expected) {
 		t.Fatalf("expected %d tools, got %d: %v", len(expected), len(names), names)
 	}

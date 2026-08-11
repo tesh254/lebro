@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -60,5 +61,24 @@ func TestExampleExposesWeatherTool(t *testing.T) {
 	}
 	if result.IsError {
 		t.Fatalf("weather lookup returned an error: %#v", result.Content)
+	}
+	var output struct {
+		TemperatureC float64 `json:"temperature_c"`
+		Condition    string  `json:"condition"`
+		City         string  `json:"city"`
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("weather content = %#v", result.Content)
+	}
+	textContent, ok := result.Content[0].(*mcpsdk.TextContent)
+	if !ok {
+		t.Fatalf("weather content type = %T, want TextContent", result.Content[0])
+	}
+	text := textContent.Text
+	if err := json.Unmarshal([]byte(text), &output); err != nil {
+		t.Fatalf("decode weather output: %v", err)
+	}
+	if output.TemperatureC != 24.5 || output.Condition != "sunny" || output.City != "Nairobi" {
+		t.Fatalf("weather output = %#v", output)
 	}
 }
