@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -476,5 +477,134 @@ func TestEmbedderResponseErrorMatchesChatAdapter(t *testing.T) {
 	}
 	if string(embedModelErr.Extension) != string(chatModelErr.Extension) {
 		t.Fatalf("Extension: embeddings = %s, chat = %s", embedModelErr.Extension, chatModelErr.Extension)
+	}
+}
+
+// stalledErrorBodyURL serves one HTTP error response whose body is truncated: it
+// declares a Content-Length larger than what it writes, then holds the
+// connection open. A client therefore returns from Do with a usable response and
+// an error status, and blocks inside the body read until the caller cancels.
+//
+// This is written against a raw listener rather than httptest because the
+// pending read has to outlive Do. With an httptest handler that stalls before
+// writing any body, net/http reports the cancellation from Do itself, which the
+// transport classifier already handled — so such a test passes whether or not
+// the response-error path is fixed, and proves nothing.
+//
+// cancel fires once the headers and partial body are on the wire.
+func stalledErrorBodyURL(t *testing.T, cancel context.CancelFunc) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen error = %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		// Drain the request so the client considers it sent.
+		_, _ = conn.Read(make([]byte, 4096))
+		// Promise 64 bytes of body and send 9, so the read stays pending.
+		_, _ = conn.Write([]byte("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 64\r\n\r\n{\"error\":"))
+		// Let the client return from Do and enter the body read before
+		// cancelling. Cancelling immediately would surface from Do instead, which
+		// the transport classifier already handled.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		// Hold the connection until the test tears the listener down.
+		<-done
+	}()
+
+	t.Cleanup(func() {
+		_ = listener.Close()
+	})
+	return "http://" + listener.Addr().String()
+}
+
+// TestEmbedderCancelDuringErrorBodyRead asserts that a cancellation landing
+// during the error-body read is reported as cancellation. The HTTP status is
+// real, but the caller asked to stop, so reporting a retryable server error
+// would both break errors.Is(err, context.Canceled) and invite a retry of a
+// request nobody is waiting for.
+//
+// Verified to fail before the fix, where this returned kind=unavailable
+// status=500 with errors.Is(err, context.Canceled) false.
+func TestEmbedderCancelDuringErrorBodyRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := stalledErrorBodyURL(t, cancel)
+
+	embedder, err := NewEmbedder(EmbedderConfig{BaseURL: baseURL, APIKey: "k", Model: "m", Dimension: 2})
+	if err != nil {
+		t.Fatalf("NewEmbedder error = %v", err)
+	}
+
+	_, err = embedder.Embed(ctx, []string{"a"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Embed error = %v, want context.Canceled", err)
+	}
+	// The HTTP status must not leak through as a retryable model error.
+	var modelErr *lebro.ModelError
+	if errors.As(err, &modelErr) {
+		t.Fatalf("error = %v (kind %q), want bare cancellation", modelErr, modelErr.Kind)
+	}
+}
+
+// TestModelCancelDuringErrorBodyRead is the same guarantee on the chat adapter,
+// which shares the classifier.
+func TestModelCancelDuringErrorBodyRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	baseURL := stalledErrorBodyURL(t, cancel)
+
+	model, err := New(Config{BaseURL: baseURL, APIKey: "k", Model: "m"})
+	if err != nil {
+		t.Fatalf("New error = %v", err)
+	}
+
+	_, err = model.Generate(ctx, lebro.ModelRequest{
+		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Generate error = %v, want context.Canceled", err)
+	}
+	var modelErr *lebro.ModelError
+	if errors.As(err, &modelErr) {
+		t.Fatalf("error = %v (kind %q), want bare cancellation", modelErr, modelErr.Kind)
+	}
+}
+
+// TestClassifyResponseErrorKeepsStatusWhenBodyReadSucceeds guards against
+// over-correction: a normal HTTP error on a live context must still surface as
+// the status error, not as cancellation.
+func TestClassifyResponseErrorKeepsStatusWhenBodyReadSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"boom"}}`))
+	}))
+	defer server.Close()
+
+	embedder, err := NewEmbedder(EmbedderConfig{BaseURL: server.URL, APIKey: "k", Model: "m", Dimension: 2})
+	if err != nil {
+		t.Fatalf("NewEmbedder error = %v", err)
+	}
+
+	_, err = embedder.Embed(context.Background(), []string{"a"})
+	var modelErr *lebro.ModelError
+	assertModelErrorKind(t, err, lebro.ModelErrorUnavailable, &modelErr)
+	if modelErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("StatusCode = %d, want 500", modelErr.StatusCode)
+	}
+	if modelErr.Message != "boom" {
+		t.Fatalf("Message = %q, want %q", modelErr.Message, "boom")
+	}
+	if errors.Is(err, context.Canceled) {
+		t.Fatal("a live-context HTTP error was misreported as cancellation")
 	}
 }

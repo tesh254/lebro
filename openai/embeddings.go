@@ -193,7 +193,7 @@ func (e *Embedder) Embed(ctx context.Context, inputs []string) ([][]float32, err
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return nil, e.classifyResponseError(resp)
+		return nil, e.classifyResponseError(reqCtx, resp)
 	}
 
 	payload, err := io.ReadAll(resp.Body)
@@ -247,8 +247,8 @@ func (e *Embedder) requestContext(ctx context.Context) (context.Context, context
 // Delegating rather than duplicating keeps one status-to-kind mapping, so a
 // change to the chat adapter's classification cannot silently skip embeddings
 // and one retry policy really does cover both.
-func (e *Embedder) classifyResponseError(resp *http.Response) error {
-	return (&Model{}).classifyResponseError(resp)
+func (e *Embedder) classifyResponseError(ctx context.Context, resp *http.Response) error {
+	return (&Model{}).classifyResponseError(ctx, resp)
 }
 
 func (e *Embedder) classifyTransportError(ctx context.Context, err error) error {
