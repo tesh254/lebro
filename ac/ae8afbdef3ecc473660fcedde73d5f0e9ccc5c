@@ -1,0 +1,31 @@
+openai/adapter.go
+  s_0d5d4c397c521e::t_064fee5ba92f9e 263-266
+  s_0d5d4c397c521e::t_5e840e386f78d5 147,254-262,508
+openai/embeddings.go
+  s_0d5d4c397c521e::t_f8bd1410e1d616 196
+  s_0d5d4c397c521e::t_a347da7a27776a 250-251
+openai/embeddings_test.go
+  s_0d5d4c397c521e::t_d5f57d545cc0d7 482,508,519,542,544-551,557-563,565,567-575,580-610
+  s_0d5d4c397c521e::t_db5db04f38835b 515-518
+  s_0d5d4c397c521e::t_b013df854aa80d 8
+  s_0d5d4c397c521e::t_f135dfd4cd0c26 483-486,488-495,497-507,509-514,520-523,525,527,533-537,541,543,555,564,566,576-579
+  s_0d5d4c397c521e::t_2ce111d077a888 487,496,524,526,528-532,538-540,552-554,556
+CHANGELOG.md
+  s_0d5d4c397c521e::t_78817942c12e78 58-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "acae8afbdef3ecc473660fcedde73d5f0e9ccc5c",
+  "prompts": {},
+  "sessions": {
+    "s_0d5d4c397c521e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438c2b27-4a46-4e89-af57-57f16a0bfd30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
