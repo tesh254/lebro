@@ -791,6 +791,76 @@ Run the combined workflow example (no network or API key required):
 go run ./examples/workflow-agents-tools
 ```
 
+## Supervised agent delegation
+
+`lebro.NewSubagent` exposes an `Agent` (or another `Workflow`) as a named,
+schema-backed capability that a supervising agent can delegate focused work to.
+A `Subagent` implements `Tool`, so registering one in a `ToolRegistry` and
+listing its ID in the supervisor's definition is all that is required: the
+supervisor selects it through ordinary model tool-calling, and the delegation
+inherits the same execution boundary as any other tool. Arguments are
+schema-validated before the child starts, results are validated on the way
+back, handler panics are contained, and the supervisor's tool allow-list
+governs which subagents it may reach.
+
+```go
+research, _ := lebro.NewSubagent(lebro.SubagentConfig{
+    ID:          "delegate.research",
+    Agent:       researcher,
+    Description: "Delegate a factual research question to the researcher.",
+    MaxSteps:    4,
+    Deadline:    30 * time.Second,
+})
+_ = registry.Register(research)
+
+supervisor, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{
+        ID:    "supervisor",
+        Tools: []lebro.ToolID{"delegate.research"},
+    },
+    Model: model,
+    Tools: registry,
+})
+```
+
+The default delegation contract takes a required `task` and an optional
+`context` string. Message roles stay application-controlled, so a supervisor
+cannot inject a system prompt or a synthetic tool result into the child
+transcript. The result reports the child's `agent_id`, `run_id`, `status`, and
+`output`, so a supervisor can reason about a delegation without a second
+lookup. Both schemas can be overridden with `InputSchema` and `OutputSchema`.
+
+Delegated runs are bounded independently of the parent. `MaxSteps` narrows the
+child's step budget for the duration of the delegation without mutating the
+target agent, so concurrent delegations to the same agent keep their own
+budgets. `Deadline` is layered on the parent context: a child that exhausts its
+own deadline fails the delegation and returns control to the supervisor, while
+the parent context stays live. A parent that is itself cancelled still cancels
+the child.
+
+Thread context is isolated by default. A delegated run receives a fresh
+transcript containing only the delegated task; the parent's `ThreadID` and
+metadata are withheld unless `ShareThread` or `ShareMetadata` opts in. Sharing
+is configured per subagent rather than per call, so a supervisor cannot widen a
+child's view of the parent thread by changing what it sends.
+
+Parent and child runs stay correlated through the run event stream. Every child
+event carries the parent's `ParentRunID`, `ParentStepID`, and `ParentStep`,
+identifying the exact supervisor step that started the delegation, while the
+child keeps its own run ID — namespaced under the parent run so the two are
+never confused.
+
+Nesting is permitted: a delegated agent may itself hold subagent tools, and
+each level is bounded by its own `MaxSteps` and `Deadline`. There is no global
+depth cap, so a recursive topology must be bounded by the deadlines its levels
+declare.
+
+Run the supervised delegation example (no network or API key required):
+
+```sh
+go run ./examples/supervised-delegation
+```
+
 ## Token and event streaming with cancellation
 
 `lebro.StreamingModel` extends the provider-neutral `Model` interface with
@@ -897,6 +967,14 @@ tool, and an agent in a single linear workflow:
 
 ```sh
 go run ./examples/workflow-agents-tools
+```
+
+The supervised-delegation example runs a supervisor that selects a named
+subagent, delegates a focused task to it under independent bounds, and reads
+the correlated result:
+
+```sh
+go run ./examples/supervised-delegation
 ```
 
 The streaming example runs a bounded agent against a scripted streaming model

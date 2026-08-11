@@ -6,6 +6,33 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Supervised agent delegation. `NewSubagent` exposes an `Agent` (or any
+  `Workflow`) as a named, schema-backed capability that a supervising agent can
+  delegate focused work to. A `Subagent` implements `Tool`, so registering one
+  in a `ToolRegistry` and listing its ID in the supervisor's definition is
+  sufficient: selection happens through ordinary model tool-calling, and the
+  delegation reuses the existing execution boundary for input and output schema
+  validation, panic containment, and per-agent tool allow-listing. The default
+  delegation contract takes a required `task` and optional `context` string and
+  returns the child's `agent_id`, `run_id`, `status`, and `output`; both schemas
+  are overridable. Delegated runs are bounded independently of the parent:
+  `MaxSteps` narrows the child's step budget without mutating the target agent,
+  and `Deadline` is layered on the parent context so a child that exhausts its
+  own budget fails the delegation while the parent stays live. Thread context is
+  isolated by default — a delegated run sees only its task — with `ShareThread`
+  and `ShareMetadata` opting into sharing per subagent rather than per call.
+  Parent and child runs stay correlated through the run event stream: child
+  events carry `ParentRunID`, `ParentStepID`, and `ParentStep` identifying the
+  delegating step, while the child run ID is namespaced under the parent run so
+  the two are never conflated. Nesting is permitted and bounded per level; there
+  is no global depth cap. New public types: `Subagent`, `SubagentConfig`,
+  `SubagentError`, `SubagentErrorKind`. New error kinds:
+  `SubagentErrorInvalidInput`, `SubagentErrorRunFailed`,
+  `SubagentErrorCancelled`, with matching `ErrSubagentInvalidInput`,
+  `ErrSubagentRunFailed`, and `ErrSubagentCancelled` sentinels (all
+  `errors.Is`-compatible). A runnable example is in
+  `examples/supervised-delegation`.
+
 - Provider-neutral vector storage contracts and initial adapters. A new
   `VectorStore` interface provides index management, embedding upsert/delete,
   and cosine-similarity search with metadata filtering and score thresholds.

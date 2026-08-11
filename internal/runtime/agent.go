@@ -442,7 +442,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 
 			toolStart := emitter.emitToolStarted(runID, step, stepID, call.ID, call.ToolID)
 
-			result := a.executeToolCall(runCtx, runID, step, call, metadata)
+			result := a.executeToolCall(runCtx, runID, step, stepID, input.ThreadID, call, metadata)
 			emitter.emitToolFinished(runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 
 			transcript = append(transcript, toolResultMessage(call.ID, result))
@@ -463,6 +463,30 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	emitter.terminal(runID, a.maxSteps, "", RunEventFailed, RunStatusFailed, exhausted)
 	result := a.failWithAttemptsResult(runID, metadata, a.maxSteps, transcript, exhausted, allAttempts)
 	return result, exhausted
+}
+
+// runDelegated executes the agent loop as a delegated child run: bounded by
+// maxSteps in place of the agent's own configured bound, and with its run
+// identifiers namespaced under idPrefix so the child is distinguishable from
+// the parent that delegated to it.
+//
+// It operates on a shallow copy so a shared agent's configuration is never
+// mutated and concurrent delegations to the same agent keep their own budgets
+// and namespaces. Every field is a value or a concurrency-safe pointer, so the
+// copy shares state with the original exactly where it should — notably the
+// underlying ID source, whose sequence stays monotonic across delegations.
+func (a *Agent) runDelegated(ctx context.Context, input RunInput, maxSteps int, idPrefix string) (RunResult, error) {
+	if a == nil {
+		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
+	}
+	delegated := *a
+	if maxSteps > 0 {
+		delegated.maxSteps = maxSteps
+	}
+	if idPrefix != "" {
+		delegated.idSource = prefixedIDSource{prefix: idPrefix, inner: a.idSource}
+	}
+	return delegated.Run(ctx, input)
 }
 
 // StreamRun is the handle returned by Agent.RunStream. The caller drains
@@ -740,7 +764,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			}
 			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
 			toolStart := p.emitter.emitToolStarted(p.runID, step, stepID, call.ID, call.ToolID)
-			result := a.executeToolCall(p.ctx, p.runID, step, call, p.metadata)
+			result := a.executeToolCall(p.ctx, p.runID, step, stepID, p.threadID, call, p.metadata)
 			p.emitter.emitToolFinished(p.runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
@@ -1020,7 +1044,7 @@ func (a *Agent) validateStructuredOutput(compiled CompiledSchema, response Model
 	}
 }
 
-func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, call ModelToolCall, metadata map[string]string) ToolExecutionResult {
+func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, stepID StepID, threadID ThreadID, call ModelToolCall, metadata map[string]string) ToolExecutionResult {
 	if a.tools == nil {
 		return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not registered: %w", call.ToolID, ErrToolNotFound))
 	}
@@ -1034,7 +1058,12 @@ func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, call
 	toolMetadata["run_id"] = string(runID)
 	toolMetadata["step"] = fmt.Sprintf("%d", step)
 	toolMetadata["tool_call_id"] = call.ID
-	return a.tools.Execute(ctx, call.ToolID, ToolExecutionRequest{
+	// Publish the typed invocation alongside the string metadata so a nested
+	// run started by a handler (a Subagent, for example) is correlated to this
+	// run by the same mechanism workflow-nested runs use, without re-parsing
+	// the metadata strings. Handlers that ignore it are unaffected.
+	toolCtx := withWorkflowInvocation(ctx, runID, step, stepID, threadID, metadata)
+	return a.tools.Execute(toolCtx, call.ToolID, ToolExecutionRequest{
 		Arguments: cloneRawMessage(call.Arguments),
 		Metadata:  toolMetadata,
 	})

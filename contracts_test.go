@@ -118,6 +118,77 @@ func TestMAD10PublicContracts(t *testing.T) {
 	}
 }
 
+// TestSubagentPublicContract asserts the delegation capability is reachable and
+// usable through the root package alone, since a supervisor is assembled from
+// the façade rather than from internal/runtime.
+func TestSubagentPublicContract(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	subagent, err := NewSubagent(SubagentConfig{
+		ID:            "delegate",
+		Agent:         contractWorkflow{},
+		Description:   "Delegates a focused task.",
+		MaxSteps:      3,
+		Deadline:      time.Second,
+		ShareThread:   false,
+		ShareMetadata: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A Subagent is a Tool, so a supervisor selects it the same way it selects
+	// any other capability.
+	var asTool Tool = subagent
+	definition := asTool.Definition()
+	if definition.ID != "delegate" {
+		t.Fatalf("subagent definition = %#v", definition)
+	}
+	if !json.Valid(definition.InputSchema) || !json.Valid(definition.OutputSchema) {
+		t.Fatalf("subagent schemas are not valid JSON: %#v", definition)
+	}
+
+	output, err := asTool.Execute(ctx, json.RawMessage(`{"task":"summarize the report"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		AgentID string `json:"agent_id"`
+		RunID   string `json:"run_id"`
+		Status  string `json:"status"`
+		Output  string `json:"output"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentID != "echo" || result.Status != string(RunStatusSucceeded) {
+		t.Fatalf("delegation result = %#v", result)
+	}
+	if result.RunID != "run-1" {
+		t.Fatalf("delegation run ID = %q, want the child run ID", result.RunID)
+	}
+	// contractWorkflow echoes the delegated task back as a user message and
+	// produces no assistant turn, so the delegation reports an empty output
+	// rather than inventing one from a non-assistant message.
+	if result.Output != "" {
+		t.Fatalf("delegation output = %q, want empty", result.Output)
+	}
+
+	// The normalized delegation failures are matchable through the façade.
+	_, err = asTool.Execute(ctx, json.RawMessage(`{"task":""}`))
+	if !errors.Is(err, ErrSubagentInvalidInput) {
+		t.Fatalf("error = %v, want ErrSubagentInvalidInput", err)
+	}
+	var subagentErr *SubagentError
+	if !errors.As(err, &subagentErr) {
+		t.Fatalf("error %v is not a *SubagentError", err)
+	}
+	if subagentErr.Kind != SubagentErrorInvalidInput {
+		t.Fatalf("kind = %q, want %q", subagentErr.Kind, SubagentErrorInvalidInput)
+	}
+}
+
 func TestCanonicalRuntimeValues(t *testing.T) {
 	t.Parallel()
 
