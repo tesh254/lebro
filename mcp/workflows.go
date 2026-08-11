@@ -10,9 +10,7 @@ import (
 	"github.com/tesh254/lebro"
 )
 
-// workflowInputSchema is the JSON Schema for the MCP tool wrapping a lebro
-// workflow. The arguments object carries the workflow input.
-var workflowInputSchema = json.RawMessage(`{
+var workflowCallInputSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"input": {
@@ -22,7 +20,52 @@ var workflowInputSchema = json.RawMessage(`{
 	"additionalProperties": false
 }`)
 
-var workflowInputCompiled = mustCompileMCPInputSchema(workflowInputSchema)
+var workflowCallInputCompiled = mustCompileMCPInputSchema(workflowCallInputSchema)
+
+func workflowToolInputSchema(toolName string, inputSchema json.RawMessage) json.RawMessage {
+	input := json.RawMessage(`{"description":"The JSON input to the first workflow step."}`)
+	if len(inputSchema) > 0 {
+		input = workflowInputPropertySchema(toolName, inputSchema)
+	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]json.RawMessage{
+			"input": input,
+		},
+		"additionalProperties": false,
+	}
+	if len(inputSchema) > 0 {
+		schema["required"] = []string{"input"}
+	}
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		panic(fmt.Sprintf("lebro/mcp: encode workflow input schema: %v", err))
+	}
+	return encoded
+}
+
+// workflowInputPropertySchema gives embedded schemas their own resource root,
+// so local references such as #/$defs/request keep resolving inside the entry
+// schema rather than against the surrounding MCP tool schema.
+func workflowInputPropertySchema(toolName string, inputSchema json.RawMessage) json.RawMessage {
+	var schema map[string]json.RawMessage
+	if err := json.Unmarshal(inputSchema, &schema); err != nil {
+		return append(json.RawMessage(nil), inputSchema...)
+	}
+	if _, hasID := schema["$id"]; hasID {
+		return append(json.RawMessage(nil), inputSchema...)
+	}
+	id, err := json.Marshal(fmt.Sprintf("urn:lebro:mcp:workflow-input:%x", toolName))
+	if err != nil {
+		panic(fmt.Sprintf("lebro/mcp: encode workflow input schema ID: %v", err))
+	}
+	schema["$id"] = id
+	encoded, err := json.Marshal(schema)
+	if err != nil {
+		panic(fmt.Sprintf("lebro/mcp: encode workflow input schema: %v", err))
+	}
+	return encoded
+}
 
 // workflowCallInput is the typed arguments for a workflow MCP tool.
 type workflowCallInput struct {
@@ -42,11 +85,12 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 	if err := s.registerName(toolName); err != nil {
 		return err
 	}
+	inputSchema := workflowToolInputSchema(toolName, wf.InputSchema())
 
 	mcpTool := &mcpsdk.Tool{
 		Name:        toolName,
 		Description: def.Description,
-		InputSchema: workflowInputSchema,
+		InputSchema: inputSchema,
 	}
 
 	handler := func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -54,7 +98,7 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		if err := workflowInputCompiled.Validate(arguments); err != nil {
+		if err := workflowCallInputCompiled.Validate(arguments); err != nil {
 			mcpResult := &mcpsdk.CallToolResult{}
 			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow arguments: %w", err))
 			return mcpResult, nil
@@ -63,6 +107,11 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 		if err := json.Unmarshal(arguments, &input); err != nil {
 			mcpResult := &mcpsdk.CallToolResult{}
 			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow arguments: %w", err))
+			return mcpResult, nil
+		}
+		if err := wf.ValidateInput(input.Input); err != nil {
+			mcpResult := &mcpsdk.CallToolResult{}
+			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow input: %w", err))
 			return mcpResult, nil
 		}
 		runInput := lebro.WorkflowRunInput{
@@ -84,17 +133,18 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 
 // workflowResultToMCP converts a lebro WorkflowRunResult to an MCP
 // CallToolResult. The output is returned as structured content and text. When
-// the workflow suspended, the suspend details are included so the client can
-// resume.
+// the workflow suspends, the suspend details identify the durable run, but
+// resume is not available through MCP.
 func workflowResultToMCP(result lebro.WorkflowRunResult) *mcpsdk.CallToolResult {
 	mcpResult := &mcpsdk.CallToolResult{}
 	if result.Status == lebro.RunStatusSuspended && result.Suspend != nil {
 		suspendInfo, _ := json.Marshal(map[string]any{
-			"run_id":   string(result.ID),
-			"status":   string(result.Status),
-			"step_id":  string(result.Suspend.StepID),
-			"step":     result.Suspend.Step,
-			"contract": json.RawMessage(result.Suspend.Contract),
+			"run_id":           string(result.ID),
+			"status":           string(result.Status),
+			"step_id":          string(result.Suspend.StepID),
+			"step":             result.Suspend.Step,
+			"contract":         json.RawMessage(result.Suspend.Contract),
+			"resume_available": false,
 		})
 		mcpResult.Content = []mcpsdk.Content{
 			&mcpsdk.TextContent{Text: string(suspendInfo)},

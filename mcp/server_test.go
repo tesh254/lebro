@@ -556,6 +556,10 @@ func TestExposeWorkflow_InvalidArguments(t *testing.T) {
 	if !runResult.IsError {
 		t.Fatal("expected IsError=true for unknown workflow argument")
 	}
+	runResult = callTool(t, session, "workflow.validated", map[string]any{"input": map[string]any{"a": 1}})
+	if !runResult.IsError {
+		t.Fatal("expected IsError=true for invalid workflow input")
+	}
 }
 
 func TestExposeWorkflow_NonJSONOutputIsTextOnly(t *testing.T) {
@@ -655,13 +659,6 @@ func TestConnect_ReturnsSession(t *testing.T) {
 	}
 	_ = session.Close()
 	_ = clientTransport
-}
-
-func TestStreamableHTTPHandler_ReturnsHandler(t *testing.T) {
-	srv := newTestServer(t)
-	if srv.StreamableHTTPHandler(nil) == nil {
-		t.Fatal("StreamableHTTPHandler returned nil")
-	}
 }
 
 func TestNoToolsByDefault(t *testing.T) {

@@ -84,6 +84,12 @@ func (s *Server) Run(ctx context.Context, transport mcpsdk.Transport) error {
 // deployments. The handler serves this Server's explicit allow-list over the
 // SDK's Streamable HTTP transport.
 func (s *Server) StreamableHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) http.Handler {
+	if opts == nil {
+		opts = &mcpsdk.StreamableHTTPOptions{
+			Stateless:                    true,
+			PropagateRequestCancellation: true,
+		}
+	}
 	return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
 		return s.mcpServer
 	}, opts)

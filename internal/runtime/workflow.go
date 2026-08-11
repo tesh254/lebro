@@ -630,6 +630,24 @@ func (w *LinearWorkflow) Definition() WorkflowDefinition {
 	return w.definition
 }
 
+// InputSchema returns a copy of the first step's input schema. It defines the
+// JSON value accepted by Run. A nil result means the workflow accepts any input.
+func (w *LinearWorkflow) InputSchema() json.RawMessage {
+	if w == nil || len(w.steps) == 0 {
+		return nil
+	}
+	return cloneRawMessage(w.steps[0].definition.InputSchema)
+}
+
+// ValidateInput validates a value against the first step's input schema without
+// creating a run or emitting workflow events.
+func (w *LinearWorkflow) ValidateInput(input json.RawMessage) error {
+	if w == nil || len(w.steps) == 0 {
+		return errors.New("lebro: workflow is nil")
+	}
+	return validateStepValue(w.steps[0].inputSchema, ValidationTargetStepInput, input)
+}
+
 // workflowSnapshotSchemaVersion is the envelope version the linear workflow
 // executor writes on every snapshot. Readers tolerate 0 (legacy/unspecified),
 // 1 (pre-suspend), 2 (pre-branch), and 3 (pre-fan-out); the fan-out release

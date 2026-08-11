@@ -66,7 +66,13 @@ func (s *Server) ExposeAgent(agent *lebro.Agent) error {
 		InputSchema: agentInputSchema,
 	}
 
-	handler := func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	handler := func(ctx context.Context, req *mcpsdk.CallToolRequest) (mcpResult *mcpsdk.CallToolResult, handlerErr error) {
+		defer func() {
+			if recover() != nil {
+				mcpResult = toolError("agent execution failed")
+				handlerErr = nil
+			}
+		}()
 		arguments := req.Params.Arguments
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
