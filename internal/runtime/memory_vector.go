@@ -167,5 +167,8 @@ func (s *MemoryVectorStore) Search(ctx context.Context, query SimilarityQuery) (
 			Content:  record.Content,
 		})
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return rankResults(results, query.TopK, query.MinScore), nil
 }

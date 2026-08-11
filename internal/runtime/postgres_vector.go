@@ -34,9 +34,10 @@ type PostgresVectorStoreOptions struct {
 	ConnMaxIdleTime time.Duration
 }
 
-// postgresVectorMigrations installs the vector schema. The last entry creates
-// the tracking table and is executed outside the migration transaction so a
-// fresh database does not abort the tx. Migrations must be append-only.
+// postgresVectorMigrations installs the vector schema one statement at a
+// time. The version is tracked in vector_schema_migrations (created by
+// postgresVectorBootstrapSQL outside the migration transaction). Migrations
+// must be append-only; never reorder or edit an applied step.
 var postgresVectorMigrations = []string{
 	`CREATE EXTENSION IF NOT EXISTS vector`,
 	`CREATE TABLE IF NOT EXISTS vector_indices (
@@ -55,11 +56,16 @@ var postgresVectorMigrations = []string{
 		UNIQUE (index_name, id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_vector_records_index ON vector_records(index_name)`,
-	`CREATE TABLE IF NOT EXISTS vector_schema_migrations (
-		version    INTEGER PRIMARY KEY,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`,
 }
+
+// postgresVectorBootstrapSQL creates the migration tracking table. It runs
+// outside the versioned migration transaction so a fresh database does not
+// abort the tx with "current transaction is aborted". Keeping it separate
+// from postgresVectorMigrations preserves append-only versioned migrations.
+const postgresVectorBootstrapSQL = `CREATE TABLE IF NOT EXISTS vector_schema_migrations (
+	version    INTEGER PRIMARY KEY,
+	applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)`
 
 // postgresVectorAdvisoryLockKey is a fixed 64-bit key for the
 // transaction-scoped advisory lock that serializes concurrent vector
@@ -110,9 +116,9 @@ func (s *PostgresVectorStore) Migrate(ctx context.Context) error {
 		return err
 	}
 	// Ensure the vector_schema_migrations table exists so the first run can
-	// record its version. This is the last entry in postgresVectorMigrations
-	// and is executed outside the versioned transaction.
-	if _, err := s.db.ExecContext(ctx, postgresVectorMigrations[len(postgresVectorMigrations)-1]); err != nil {
+	// record its version. This runs outside the versioned transaction so a
+	// fresh database does not abort the tx.
+	if _, err := s.db.ExecContext(ctx, postgresVectorBootstrapSQL); err != nil {
 		return fmt.Errorf("lebro: postgres vector: ensure schema_migrations table: %w", err)
 	}
 
@@ -136,10 +142,10 @@ func (s *PostgresVectorStore) Migrate(ctx context.Context) error {
 	default:
 		return fmt.Errorf("lebro: postgres vector: read schema version: %w", err)
 	}
-	if version > len(postgresVectorMigrations)-1 {
-		return fmt.Errorf("lebro: postgres vector: database schema version %d is newer than this build supports (max %d)", version, len(postgresVectorMigrations)-1)
+	if version > len(postgresVectorMigrations) {
+		return fmt.Errorf("lebro: postgres vector: database schema version %d is newer than this build supports (max %d)", version, len(postgresVectorMigrations))
 	}
-	for i := version; i < len(postgresVectorMigrations)-1; i++ {
+	for i := version; i < len(postgresVectorMigrations); i++ {
 		if _, err := tx.ExecContext(ctx, postgresVectorMigrations[i]); err != nil {
 			return fmt.Errorf("lebro: postgres vector: migration %d (schema version %d) failed: %w; database left unchanged", i+1, i+1, err)
 		}

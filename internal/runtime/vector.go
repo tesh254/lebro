@@ -220,6 +220,9 @@ func jsonEqual(a, b json.RawMessage) bool {
 // integers are preserved as json.Number instead of losing precision through
 // float64.
 func decodeJSONNumber(raw json.RawMessage) (any, error) {
+	if !json.Valid(raw) {
+		return nil, errors.New("invalid JSON")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var v any

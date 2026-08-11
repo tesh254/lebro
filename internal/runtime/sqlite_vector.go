@@ -70,25 +70,33 @@ func NewSQLiteVectorStore(dsn string) (*SQLiteVectorStore, error) {
 // Close releases the underlying database handle.
 func (s *SQLiteVectorStore) Close() error { return s.db.Close() }
 
+// sqliteVectorBootstrapSQL creates the migration tracking table. It runs
+// inside the migration transaction so a failed initial migration rolls it
+// back, preserving the all-or-nothing rollback guarantee.
+const sqliteVectorBootstrapSQL = `CREATE TABLE IF NOT EXISTS vector_schema_migrations (
+	version    INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`
+
 // Migrate applies any pending vector schema migrations atomically. It is
 // idempotent; a database already at the current version is a no-op. The
-// tracking table is created outside the migration transaction so a fresh
-// database does not abort the tx with "no such table".
+// tracking table is created inside the migration transaction so a failed
+// initial migration leaves no artifacts.
 func (s *SQLiteVectorStore) Migrate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
-	}
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS vector_schema_migrations (
-		version    INTEGER PRIMARY KEY,
-		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-	)`); err != nil {
-		return fmt.Errorf("lebro: sqlite vector: ensure schema_migrations table: %w", sqliteError(err))
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("lebro: sqlite vector: begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Create the tracking table inside the tx so a failed initial migration
+	// rolls it back. IF NOT EXISTS makes this a no-op on subsequent runs.
+	if _, err := tx.ExecContext(ctx, sqliteVectorBootstrapSQL); err != nil {
+		return fmt.Errorf("lebro: sqlite vector: ensure schema_migrations table: %w", err)
+	}
 
 	var version int
 	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM vector_schema_migrations").Scan(&version); err != nil {
