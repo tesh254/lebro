@@ -108,3 +108,10 @@ in-memory transport, so no network or API key is required):
 ```sh
 go run ./examples/mcp-client
 ```
+
+Run the supervised delegation example (a supervisor agent selects a named
+subagent and delegates a focused task to it; no network or API key required):
+
+```sh
+go run ./examples/supervised-delegation
+```

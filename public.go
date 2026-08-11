@@ -44,6 +44,10 @@ type (
 	ToolPanicError             = runtime.ToolPanicError
 	RegisteredTool             = runtime.RegisteredTool
 	ToolRegistry               = runtime.ToolRegistry
+	Subagent                   = runtime.Subagent
+	SubagentConfig             = runtime.SubagentConfig
+	SubagentError              = runtime.SubagentError
+	SubagentErrorKind          = runtime.SubagentErrorKind
 	SchemaCompiler             = runtime.SchemaCompiler
 	CompiledSchema             = runtime.CompiledSchema
 	ValidationTarget           = runtime.ValidationTarget
@@ -179,6 +183,10 @@ const (
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 
+	SubagentErrorInvalidInput = runtime.SubagentErrorInvalidInput
+	SubagentErrorRunFailed    = runtime.SubagentErrorRunFailed
+	SubagentErrorCancelled    = runtime.SubagentErrorCancelled
+
 	WorkflowErrorInvalidStepInput        = runtime.WorkflowErrorInvalidStepInput
 	WorkflowErrorInvalidStepOutput       = runtime.WorkflowErrorInvalidStepOutput
 	WorkflowErrorStepFailed              = runtime.WorkflowErrorStepFailed
@@ -262,6 +270,10 @@ var (
 	ErrAgentCancelled               = runtime.ErrAgentCancelled
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
 
+	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
+	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
+	ErrSubagentCancelled    = runtime.ErrSubagentCancelled
+
 	ErrWorkflowInvalidStepInput  = runtime.ErrWorkflowInvalidStepInput
 	ErrWorkflowInvalidStepOutput = runtime.ErrWorkflowInvalidStepOutput
 	ErrWorkflowStepFailure       = runtime.ErrWorkflowStepFailure
@@ -303,6 +315,16 @@ func NewToolSchemaValidator(compiler SchemaCompiler, definition ToolDefinition) 
 }
 
 func NewAgentStep(agent Workflow) (*AgentStep, error) { return runtime.NewAgentStep(agent) }
+
+// NewSubagent exposes a Workflow as a schema-backed delegation capability that
+// a supervising agent can select and invoke by stable tool ID. Register the
+// result in a ToolRegistry and list its ID in the supervisor's definition.
+// Delegated runs are bounded independently of the parent and are correlated to
+// it through the run event stream; thread context is shared only when the
+// configuration opts in.
+func NewSubagent(config SubagentConfig) (*Subagent, error) {
+	return runtime.NewSubagent(config)
+}
 
 func NewToolStep(tool *RegisteredTool) (*ToolStep, error) { return runtime.NewToolStep(tool) }
 
