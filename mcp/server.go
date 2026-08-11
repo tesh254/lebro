@@ -10,9 +10,26 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+const (
+	// maxToolNameLength is the MCP spec's limit on a tool name. Every length
+	// check and message in this package derives from it, so raising it when the
+	// spec changes cannot leave the client and server validating different
+	// limits.
+	maxToolNameLength = 128
+	// maxServerNameLength bounds a client's ServerName so that a namespaced
+	// tool ID, "<ServerName>.<remote name>", can still fit within
+	// maxToolNameLength. The reserved two characters are the separator and a
+	// single-character remote tool name, the shortest a server can advertise.
+	maxServerNameLength = maxToolNameLength - 2
+)
+
 // mcpToolNamePattern matches the MCP spec's tool name character set: letters,
-// digits, underscores, hyphens, and dots, up to 128 characters.
-var mcpToolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,128}$`)
+// digits, underscores, hyphens, and dots, up to maxToolNameLength characters.
+var mcpToolNamePattern = regexp.MustCompile(fmt.Sprintf(`^[a-zA-Z0-9_.-]{1,%d}$`, maxToolNameLength))
+
+// toolNameRequirement describes the tool name constraint in the one wording
+// every validation message in this package uses.
+var toolNameRequirement = fmt.Sprintf("must contain only letters, digits, underscores, hyphens, and dots (max %d chars)", maxToolNameLength)
 
 // ServerConfig configures an MCP server that exposes lebro primitives.
 type ServerConfig struct {
@@ -97,13 +114,13 @@ func (s *Server) StreamableHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) http.
 
 // registerName reserves a tool name in the allow-list. It returns an error if
 // the name is empty, already exposed, or does not conform to the MCP tool name
-// character set (letters, digits, underscores, hyphens, dots; max 128 chars).
+// character set (letters, digits, underscores, hyphens, dots) and length limit.
 func (s *Server) registerName(name string) error {
 	if name == "" {
 		return fmt.Errorf("lebro/mcp: tool name is required")
 	}
 	if !mcpToolNamePattern.MatchString(name) {
-		return fmt.Errorf("lebro/mcp: tool name %q must contain only letters, digits, underscores, hyphens, and dots (max 128 chars)", name)
+		return fmt.Errorf("lebro/mcp: tool name %q %s", name, toolNameRequirement)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
