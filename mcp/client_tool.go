@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -101,6 +102,27 @@ func (t *remoteTool) Execute(ctx context.Context, input json.RawMessage) (json.R
 		}
 	}
 
+	// An input-required result means the server wants the caller to fulfill its
+	// input requests and retry, which the lebro Tool contract cannot express
+	// mid-call.
+	//
+	// Whether such a result reaches here depends on how the caller configured
+	// ClientConfig.Options. When the SDK can satisfy the request — an
+	// elicitation or sampling handler is set, or the request is for roots,
+	// which the SDK advertises by default — its multi round-trip middleware
+	// fulfills it and retries, and this adapter only ever sees the final
+	// result. When it cannot, the call fails as an invocation error before
+	// reaching here. This branch covers the remaining case, so an unsatisfiable
+	// request is never mistaken for an empty success.
+	if result.NeedsInput() {
+		return nil, &RemoteToolError{
+			ServerName: t.serverName,
+			ToolName:   t.remoteName,
+			Message:    inputRequiredMessage(result),
+			Err:        ErrRemoteInputRequired,
+		}
+	}
+
 	return t.resultToRaw(result)
 }
 
@@ -151,7 +173,7 @@ func (t *remoteTool) resultToRaw(result *mcpsdk.CallToolResult) (json.RawMessage
 // output shape stable across calls.
 const textEnvelopeSchema = `{
 	"type":"object",
-	"required":["text"],
+	"required":["text","skipped_content_types"],
 	"properties":{
 		"text":{"type":"string"},
 		"skipped_content_types":{"type":"array","items":{"type":"string"}}
@@ -163,10 +185,19 @@ const textEnvelopeSchema = `{
 // with no textual form are named rather than dropped silently, so a caller
 // receiving an empty text can tell "the tool said nothing" apart from "the tool
 // answered with an image".
+//
+// skipped_content_types is always present, as an empty array when nothing was
+// skipped. Omitting it would give the envelope two shapes and undo the point of
+// having a fixed one: callers could not index the field without checking for it
+// first, which is exactly the per-response branching this envelope exists to
+// remove.
 func (t *remoteTool) encodeTextEnvelope(text string, skipped []string) (json.RawMessage, error) {
+	if skipped == nil {
+		skipped = []string{}
+	}
 	envelope := struct {
 		Text                string   `json:"text"`
-		SkippedContentTypes []string `json:"skipped_content_types,omitempty"`
+		SkippedContentTypes []string `json:"skipped_content_types"`
 	}{Text: text, SkippedContentTypes: skipped}
 
 	encoded, err := json.Marshal(envelope)
@@ -174,6 +205,43 @@ func (t *remoteTool) encodeTextEnvelope(text string, skipped []string) (json.Raw
 		return nil, t.invocationError("encode text content", err)
 	}
 	return encoded, nil
+}
+
+// inputRequiredMessage describes what the server asked for, so the failure is
+// actionable rather than merely labelled.
+func inputRequiredMessage(result *mcpsdk.CallToolResult) string {
+	if len(result.InputRequests) == 0 {
+		return "server requires further input before it can complete the call"
+	}
+
+	kinds := make([]string, 0, len(result.InputRequests))
+	seen := make(map[string]struct{}, len(result.InputRequests))
+	for _, request := range result.InputRequests {
+		kind := inputRequestKind(request)
+		if _, duplicate := seen[kind]; duplicate {
+			continue
+		}
+		seen[kind] = struct{}{}
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return fmt.Sprintf("server requires further input (%s) before it can complete the call", strings.Join(kinds, ", "))
+}
+
+// inputRequestKind names an input request by the MCP method that fulfills it.
+// Only elicitation is named explicitly; sampling and roots are deprecated as of
+// protocol version 2026-07-28 (SEP-2577), so naming their types here would mean
+// carrying a deprecation warning for the sake of a diagnostic string. They fall
+// through to their Go type name, which identifies them just as well.
+func inputRequestKind(request mcpsdk.InputRequest) string {
+	switch request.(type) {
+	case *mcpsdk.ElicitParams:
+		return "elicitation"
+	case nil:
+		return "unknown"
+	default:
+		return fmt.Sprintf("%T", request)
+	}
 }
 
 func (t *remoteTool) invocationError(message string, err error) error {

@@ -19,6 +19,12 @@ var (
 	// ErrRemoteToolError marks a remote tool that ran and reported a tool-level
 	// error (CallToolResult.IsError). The transport succeeded.
 	ErrRemoteToolError = errors.New("lebro/mcp: remote tool reported an error")
+	// ErrRemoteInputRequired marks a remote tool that asked for further input
+	// before it could complete. The call neither succeeded nor failed: the
+	// server expects the caller to fulfill its input requests and retry. This
+	// package does not implement that exchange, so the call is reported rather
+	// than silently treated as an empty result.
+	ErrRemoteInputRequired = errors.New("lebro/mcp: remote tool requires further input")
 )
 
 // RemoteToolError associates a remote failure with the server and tool that

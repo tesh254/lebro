@@ -48,7 +48,14 @@ func NewClient(config ClientConfig) *Client {
 		panic("lebro/mcp: ServerName is required")
 	}
 	if !mcpToolNamePattern.MatchString(config.ServerName) {
-		panic(fmt.Errorf("lebro/mcp: ServerName %q must contain only letters, digits, underscores, hyphens, and dots (max 128 chars)", config.ServerName))
+		panic(fmt.Errorf("lebro/mcp: ServerName %q %s", config.ServerName, toolNameRequirement))
+	}
+	// A name long enough to leave no room for the separator and a remote tool
+	// name would pass the pattern above and then fail on every tool, making a
+	// constructible client that can never discover anything. Rejecting it here
+	// puts the error where the mistake is.
+	if len(config.ServerName) > maxServerNameLength {
+		panic(fmt.Errorf("lebro/mcp: ServerName %q is %d chars; the limit is %d so namespaced tool IDs stay within the MCP limit of %d", config.ServerName, len(config.ServerName), maxServerNameLength, maxToolNameLength))
 	}
 	return &Client{
 		config:    config,
@@ -205,7 +212,7 @@ func (c *Client) adaptTool(remote *mcpsdk.Tool) (lebro.Tool, error) {
 
 	id := c.config.ServerName + "." + name
 	if !mcpToolNamePattern.MatchString(id) {
-		return nil, fmt.Errorf("lebro/mcp: tool ID %q must contain only letters, digits, underscores, hyphens, and dots (max 128 chars)", id)
+		return nil, fmt.Errorf("lebro/mcp: tool ID %q %s", id, toolNameRequirement)
 	}
 
 	return &remoteTool{

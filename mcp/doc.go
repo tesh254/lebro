@@ -64,6 +64,8 @@
 // server that advertises its own output schema keeps it. One that does not
 // gets a fixed text envelope, {"text": ..., "skipped_content_types": [...]},
 // naming any content with no textual form rather than dropping it silently.
+// Both fields are always present, so callers never branch on which shape a
+// particular response took.
 //
 // Output shape is therefore a property of the tool definition, not of an
 // individual response: a tool always returns the same shape, so its advertised
@@ -78,4 +80,11 @@
 // failures, where no tool result was produced, and ErrRemoteToolError for a
 // tool that ran and reported failure. Cancellation is reported as
 // ToolExecutionCancelled rather than either error class.
+//
+// ErrRemoteInputRequired covers a server that asks for further input before it
+// can answer. How such a call resolves depends on ClientConfig.Options: set an
+// elicitation or sampling handler there and the SDK fulfills the request and
+// retries, so only the final result reaches the adapter. Without a handler the
+// request cannot be satisfied, and the call is reported rather than mistaken
+// for an empty success.
 package mcp

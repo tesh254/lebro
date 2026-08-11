@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -571,6 +573,236 @@ func TestDiscoverTools_NotConnected(t *testing.T) {
 	}
 	if !errors.Is(err, mcp.ErrRemoteDiscovery) {
 		t.Errorf("errors.Is(err, ErrRemoteDiscovery) = false; err = %v", err)
+	}
+}
+
+// The envelope is only a stable contract if every field is always present.
+// Omitting skipped_content_types when nothing was skipped would force callers
+// to branch per response, which is what the fixed envelope exists to avoid.
+func TestRemoteTool_TextEnvelopeAlwaysCarriesSkippedContentTypes(t *testing.T) {
+	server := newTextServer(t, &mcpsdk.TextContent{Text: "all textual"})
+	client := connectClient(t, server, "remote")
+
+	registered := registerAndResolve(t, discoverOne(t, client, "remote.freeform"))
+	result := registered.Execute(context.Background(), lebro.ToolExecutionRequest{
+		Arguments: json.RawMessage(`{}`),
+	})
+	if result.State != lebro.ToolExecutionSucceeded {
+		t.Fatalf("State = %q, want %q (err: %v)", result.State, lebro.ToolExecutionSucceeded, result.Err)
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(result.Output, &fields); err != nil {
+		t.Fatalf("unmarshal output %q: %v", result.Output, err)
+	}
+	raw, present := fields["skipped_content_types"]
+	if !present {
+		t.Fatalf("skipped_content_types missing from %q", result.Output)
+	}
+	if string(raw) != "[]" {
+		t.Errorf("skipped_content_types = %s, want []", raw)
+	}
+}
+
+// The output schema must require every field the envelope always emits;
+// otherwise it documents a shape looser than the one produced.
+func TestRemoteTool_TextEnvelopeSchemaRequiresSkippedContentTypes(t *testing.T) {
+	server := newTextServer(t, &mcpsdk.TextContent{Text: "all textual"})
+	client := connectClient(t, server, "remote")
+
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	definition := discoverOne(t, client, "remote.freeform").Definition()
+	if err := json.Unmarshal(definition.OutputSchema, &schema); err != nil {
+		t.Fatalf("unmarshal output schema %q: %v", definition.OutputSchema, err)
+	}
+
+	for _, field := range []string{"text", "skipped_content_types"} {
+		if !slices.Contains(schema.Required, field) {
+			t.Errorf("required = %v, want it to contain %q", schema.Required, field)
+		}
+	}
+}
+
+// With no elicitation handler configured, a server asking for elicitation
+// cannot be satisfied: the SDK's multi round-trip middleware fails the call.
+// What matters at the lebro boundary is that the failure is reported rather
+// than passed off as an empty success.
+func TestRemoteTool_UnsatisfiableInputRequestIsNotReportedAsSuccess(t *testing.T) {
+	server := newRemoteServer(t, func(s *mcpsdk.Server) {
+		s.AddTool(&mcpsdk.Tool{
+			Name:        "asks",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				InputRequests: mcpsdk.InputRequestMap{
+					"1": &mcpsdk.ElicitParams{Message: "which city?"},
+				},
+			}, nil
+		})
+	})
+	client := connectClient(t, server, "remote")
+	registered := registerAndResolve(t, discoverOne(t, client, "remote.asks"))
+
+	result := registered.Execute(context.Background(), lebro.ToolExecutionRequest{
+		Arguments: json.RawMessage(`{}`),
+	})
+	if result.State == lebro.ToolExecutionSucceeded {
+		t.Fatalf("State = %q; the server never produced a result", result.State)
+	}
+	if !errors.Is(result.Err, mcp.ErrRemoteInvocation) {
+		t.Errorf("errors.Is(err, ErrRemoteInvocation) = false; err = %v", result.Err)
+	}
+	if errors.Is(result.Err, mcp.ErrRemoteToolError) {
+		t.Error("the tool never ran; this is not a tool-level error")
+	}
+}
+
+// Configuring an elicitation handler through ClientConfig.Options lets the SDK
+// fulfill the server's request and retry, so the adapter sees only the final
+// result. This is the counterpart to the unsatisfiable case above: whether an
+// input request fails is a property of the caller's configuration, not of the
+// adapter.
+func TestRemoteTool_ConfiguredElicitationHandlerSatisfiesInputRequest(t *testing.T) {
+	ctx := context.Background()
+	server := newRemoteServer(t, func(s *mcpsdk.Server) {
+		var asked bool
+		s.AddTool(&mcpsdk.Tool{
+			Name:        "asks",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			if !asked {
+				asked = true
+				return &mcpsdk.CallToolResult{
+					InputRequests: mcpsdk.InputRequestMap{
+						"1": &mcpsdk.ElicitParams{Message: "which city?"},
+					},
+				}, nil
+			}
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "Nairobi"}},
+			}, nil
+		})
+	})
+
+	clientTransport, serverTransport := mcpsdk.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+
+	client := mcp.NewClient(mcp.ClientConfig{
+		Implementation: &mcpsdk.Implementation{Name: "lebro-client", Version: "test"},
+		ServerName:     "remote",
+		Options: &mcpsdk.ClientOptions{
+			ElicitationHandler: func(context.Context, *mcpsdk.ElicitRequest) (*mcpsdk.ElicitResult, error) {
+				return &mcpsdk.ElicitResult{Action: "accept"}, nil
+			},
+		},
+	})
+	if err := client.Connect(ctx, clientTransport); err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+		_ = serverSession.Close()
+	})
+
+	registered := registerAndResolve(t, discoverOne(t, client, "remote.asks"))
+	result := registered.Execute(ctx, lebro.ToolExecutionRequest{
+		Arguments: json.RawMessage(`{}`),
+	})
+	if result.State != lebro.ToolExecutionSucceeded {
+		t.Fatalf("State = %q, want %q (err: %v)", result.State, lebro.ToolExecutionSucceeded, result.Err)
+	}
+
+	var envelope textEnvelope
+	if err := json.Unmarshal(result.Output, &envelope); err != nil {
+		t.Fatalf("unmarshal output %q: %v", result.Output, err)
+	}
+	if envelope.Text != "Nairobi" {
+		t.Errorf("text = %q, want %q", envelope.Text, "Nairobi")
+	}
+}
+
+// inputRequiredMessage feeds the ErrRemoteInputRequired guard in Execute.
+// Testing it directly keeps the guard honest, since the in-memory harness
+// cannot stage a request the SDK neither fulfills nor rejects.
+func TestInputRequiredMessage_NamesRequestedInputKinds(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		requests mcpsdk.InputRequestMap
+		want     string
+	}{
+		{
+			name:     "no requests",
+			requests: nil,
+			want:     "server requires further input before it can complete the call",
+		},
+		{
+			name:     "elicitation",
+			requests: mcpsdk.InputRequestMap{"1": &mcpsdk.ElicitParams{Message: "which city?"}},
+			want:     "server requires further input (elicitation) before it can complete the call",
+		},
+		{
+			name: "deduplicated",
+			requests: mcpsdk.InputRequestMap{
+				"1": &mcpsdk.ElicitParams{Message: "which city?"},
+				"2": &mcpsdk.ElicitParams{Message: "which day?"},
+			},
+			want: "server requires further input (elicitation) before it can complete the call",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := mcp.InputRequiredMessageForTest(&mcpsdk.CallToolResult{InputRequests: testCase.requests})
+			if got != testCase.want {
+				t.Errorf("message = %q, want %q", got, testCase.want)
+			}
+		})
+	}
+}
+
+// A ServerName that leaves no room for a separator and a one-character tool
+// name would produce only over-long IDs, so the client could never discover
+// anything. The failure belongs at construction, not at every discovery.
+func TestNewClient_RejectsServerNameThatCannotNamespace(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("NewClient did not panic on a ServerName too long to namespace")
+		}
+	}()
+	mcp.NewClient(mcp.ClientConfig{
+		Implementation: &mcpsdk.Implementation{Name: "lebro-client", Version: "test"},
+		ServerName:     strings.Repeat("a", mcp.MaxServerNameLengthForTest+1),
+	})
+}
+
+func TestNewClient_AcceptsLongestUsableServerName(t *testing.T) {
+	name := strings.Repeat("a", mcp.MaxServerNameLengthForTest)
+	server := newRemoteServer(t, func(s *mcpsdk.Server) {
+		s.AddTool(&mcpsdk.Tool{
+			Name:        "x",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}, func(context.Context, *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			return &mcpsdk.CallToolResult{
+				Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "{}"}},
+			}, nil
+		})
+	})
+	client := connectClient(t, server, name)
+
+	tools, err := client.DiscoverTools(context.Background())
+	if err != nil {
+		t.Fatalf("DiscoverTools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("discovered %d tools, want 1", len(tools))
+	}
+	// The longest usable ServerName plus a separator and a one-character tool
+	// name lands exactly on the MCP limit.
+	if got := len(tools[0].Definition().ID); got != mcp.MaxToolNameLengthForTest {
+		t.Errorf("ID length = %d, want %d (the MCP limit)", got, mcp.MaxToolNameLengthForTest)
 	}
 }
 
