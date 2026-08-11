@@ -93,3 +93,18 @@ similarity search; no network or API key required):
 ```sh
 go run ./examples/vector-search
 ```
+
+Run the MCP server example (exposes lebro tools over stdio for any
+MCP-compatible client; reads from stdin, so pipe requests or connect a client):
+
+```sh
+go run ./examples/mcp-server
+```
+
+Run the MCP client example (discovers tools on a remote MCP server and
+registers them as validated lebro tools; the server runs in-process over an
+in-memory transport, so no network or API key is required):
+
+```sh
+go run ./examples/mcp-client
+```
