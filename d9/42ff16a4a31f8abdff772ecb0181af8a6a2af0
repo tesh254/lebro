@@ -1,0 +1,60 @@
+mcp/agents.go
+  s_4d57cc05c81b44::t_dd1ffabfe79af2 27
+  s_4d57cc05c81b44::t_5c24421cff542d 61-62
+  s_4d57cc05c81b44::t_e9006c2b47f70d 107
+  s_4d57cc05c81b44::t_b271892f2304e4 132-137
+mcp/doc.go
+  s_4d57cc05c81b44::t_513f6898a10553 15-20
+  s_4d57cc05c81b44::t_457e69d53a7068 22-23
+examples/mcp-server/main_test.go
+  s_4d57cc05c81b44::t_817b0a01476c31 4,6-10,13-62
+mcp/server_test.go
+  s_4d57cc05c81b44::t_c0415c4bb4a2d3 10
+  s_4d57cc05c81b44::t_ed5155bea4ec7b 251-252
+  s_4d57cc05c81b44::t_e8c57644e582c8 435-444,446-454
+  s_4d57cc05c81b44::t_5bd450bf44ef9d 327,423,445,510
+  s_4d57cc05c81b44::t_6001187dd819e1 652-682
+  s_4d57cc05c81b44::t_f3d062b711b09d 73-75
+  s_4d57cc05c81b44::t_4c1e7a2b728817 293-295,314-315,317-325,328,333-337,340-347
+  s_4d57cc05c81b44::t_d391fd07c60c7f 296-306,311-313,976-989
+  s_4d57cc05c81b44::t_9e3992e5e59a9d 891-892
+  s_4d57cc05c81b44::t_7e412b42110c03 558-596
+  s_4d57cc05c81b44::t_a0aa7a39c3ee50 277,288-289,291-292,316,326,329-332,338-339,348-354
+  s_4d57cc05c81b44::t_4cbe51777d1a6d 1012-1026
+  s_4d57cc05c81b44::t_af61e916636ec0 880,896
+  s_4d57cc05c81b44::t_8bc357ec0333d3 881-890,893-895,897-909
+  s_4d57cc05c81b44::t_4e518713694ccc 910-926
+  s_4d57cc05c81b44::t_bcc122b3247702 936-953,955-957,967-968,973-975,990-995
+  s_4d57cc05c81b44::t_383fbb2d9c3b96 164-185
+  s_4d57cc05c81b44::t_ff5215be73bc4d 309-310
+  s_4d57cc05c81b44::t_48b18c6f21c69c 723-734
+mcp/workflows.go
+  s_4d57cc05c81b44::t_180fc70bf21199 14,61-62,121-124
+  s_4d57cc05c81b44::t_d6830432a6b758 50,55-56,103,110,134-135,178-181,186
+  s_4d57cc05c81b44::t_e874f441c91a5d 42-47
+  s_4d57cc05c81b44::t_2c7f65643295b9 91-95,167-171,215-217
+mcp/tools.go
+  ai_agent 87-89
+  s_4d57cc05c81b44::t_978611104e03c3 74-76
+  s_4d57cc05c81b44::t_55da2b6997b8f4 90,92-96,98
+mcp/server.go
+  s_4d57cc05c81b44::t_04fc5cff28499e 26-29,40,65,69-72
+  s_4d57cc05c81b44::t_9a5302974078bc 55-57
+  s_4d57cc05c81b44::t_94ac7d0cdf0b10 36-39,62-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d942ff16a4a31f8abdff772ecb0181af8a6a2af0",
+  "prompts": {},
+  "sessions": {
+    "s_4d57cc05c81b44": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00faa5a5cffeeKDasIxPf1GRqV",
+        "model": "accounts/fireworks/models/glm-5p2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
