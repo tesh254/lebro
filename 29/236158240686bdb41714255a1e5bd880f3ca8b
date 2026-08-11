@@ -1,0 +1,45 @@
+mcp/workflow_schema_test.go
+  s_4d57cc05c81b44::t_85a95171f3cd4b 1-31,33-42
+  s_4d57cc05c81b44::t_48bcbcd5ef55c0 32
+mcp/workflows_test.go
+  s_4d57cc05c81b44::t_ea24a1f2633bcb 33-34,36-49
+  s_4d57cc05c81b44::t_ff33f5d649876f 1-20,25,27-32
+  s_4d57cc05c81b44::t_1122e19d534500 21-24,26
+  s_4d57cc05c81b44::t_7607613b0aa23d 35
+mcp/agents.go
+  s_4d57cc05c81b44::t_24cf2205f08583 69-75
+mcp/server.go
+  s_4d57cc05c81b44::t_ff33f5d649876f 87,92
+  s_4d57cc05c81b44::t_abab43579f8161 88,91
+mcp/agents_test.go
+  s_4d57cc05c81b44::t_24cf2205f08583 1-29
+mcp/workflows.go
+  s_4d57cc05c81b44::t_ff33f5d649876f 136-137,142-147
+  s_4d57cc05c81b44::t_85a95171f3cd4b 26-27,29-39,63-68,93
+  s_4d57cc05c81b44::t_ea24a1f2633bcb 40-49,51-57
+  s_4d57cc05c81b44::t_a9c7eb00700a7f 13,23-24,101
+  s_4d57cc05c81b44::t_7607613b0aa23d 25,28,50,58-62
+mcp/http_test.go
+  s_4d57cc05c81b44::t_202824dcc9e34d 1-159
+internal/runtime/workflow.go
+  s_4d57cc05c81b44::t_85a95171f3cd4b 633-641
+mcp/tools_test.go
+  s_4d57cc05c81b44::t_a9c7eb00700a7f 1-14,18-52
+  s_4d57cc05c81b44::t_1611414acf57f5 15-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "29236158240686bdb41714255a1e5bd880f3ca8b",
+  "prompts": {},
+  "sessions": {
+    "s_4d57cc05c81b44": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_00faa5a5cffeeKDasIxPf1GRqV",
+        "model": "accounts/fireworks/models/glm-5p2"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
