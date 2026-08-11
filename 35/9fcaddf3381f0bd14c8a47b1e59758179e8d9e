@@ -1,0 +1,19 @@
+internal/runtime/sqlite_vector.go
+  s_104046230317b0::t_420f30796a92be 29-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "359fcaddf3381f0bd14c8a47b1e59758179e8d9e",
+  "prompts": {},
+  "sessions": {
+    "s_104046230317b0": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0122b0decffetpCunvtJ5uLBTa",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
