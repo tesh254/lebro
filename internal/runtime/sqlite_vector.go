@@ -26,9 +26,10 @@ type SQLiteVectorStore struct {
 }
 
 // sqliteVectorMigrations installs the vector schema one statement at a time.
-// The version is tracked in vector_schema_migrations (created outside the
-// migration transaction so a fresh database does not abort the tx). Migrations
-// must be append-only; never reorder or edit an applied step.
+// The version is tracked in vector_schema_migrations (created inside the
+// migration transaction by sqliteVectorBootstrapSQL so a failed initial
+// migration rolls it back). Migrations must be append-only; never reorder or
+// edit an applied step.
 var sqliteVectorMigrations = []string{
 	`CREATE TABLE IF NOT EXISTS vector_indices (
 		name      TEXT PRIMARY KEY,
