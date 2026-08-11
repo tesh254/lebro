@@ -1,0 +1,54 @@
+examples/rag-retrieval/main_test.go
+  s_0d5d4c397c521e::t_dbb79d16dab474 1-165
+internal/runtime/rag_retriever_test.go
+  s_0d5d4c397c521e::t_c9174819842556 530-543
+internal/runtime/rag.go
+  s_0d5d4c397c521e::t_fb44ab6a126acd 1-384
+internal/runtime/rag_indexer_test.go
+  s_0d5d4c397c521e::t_d34911c045cbd8 1-549
+public.go
+  s_0d5d4c397c521e::t_e25514ce289d33 411-449
+  s_0d5d4c397c521e::t_9471db972107da 259-272
+  s_0d5d4c397c521e::t_28c6629f39aaa5 331-336
+  s_0d5d4c397c521e::t_dc76646d5bf70b 132-149
+openai/embeddings_test.go
+  s_0d5d4c397c521e::t_a13ea90d45eb7c 1-209,211-227,229-251,253-264,266-267,269-304,307-328,330-363,365-398,403-416,420
+  s_0d5d4c397c521e::t_aa6e5eae394aa5 210,228,252,265,268,329,364
+  s_0d5d4c397c521e::t_12b592ecff635d 399-402,417-419
+  s_0d5d4c397c521e::t_7935278f93bfd6 305-306
+internal/runtime/rag_chunker_test.go
+  s_0d5d4c397c521e::t_d7f6b86cbf5529 192
+  s_0d5d4c397c521e::t_b369fb97ad0e2c 9
+internal/runtime/rag_test.go
+  s_0d5d4c397c521e::t_f784d6bbdd5c7d 6
+  s_0d5d4c397c521e::t_f25394f92c4424 1-5,7-371
+  s_0d5d4c397c521e::t_7a7163c163aa8b 372-374
+rag_contract_test.go
+  s_0d5d4c397c521e::t_756e03c8a48c7a 1-470
+examples/rag-retrieval/main.go
+  s_0d5d4c397c521e::t_79d5464ebb35f9 1-200
+README.md
+  s_0d5d4c397c521e::t_e37d30992e063b 19
+  s_0d5d4c397c521e::t_87f50e55240746 1111-1118
+  s_0d5d4c397c521e::t_713ce952893a87 488-611
+examples/README.md
+  s_0d5d4c397c521e::t_37c81c825eb895 118-125
+internal/runtime/rag_indexer.go
+  s_0d5d4c397c521e::t_d06615e2ec0046 1-255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3eced81dfa85a8a8dc0ee742187497619e244ee7",
+  "prompts": {},
+  "sessions": {
+    "s_0d5d4c397c521e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438c2b27-4a46-4e89-af57-57f16a0bfd30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
