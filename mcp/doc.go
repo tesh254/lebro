@@ -17,8 +17,10 @@
 // authorization metadata into tool execution. Resume endpoints require
 // ServerConfig.AuthorizeWorkflowResume, which must enforce ownership of the
 // supplied workflow run ID. Runtime and handler failures are translated to
-// stable public error messages rather than exposing internal error details.
-//
+// Runtime and handler failures are translated to stable public error messages
+// rather than exposing internal error details. Note that panics raised inside
+// agent or workflow execution are not recovered here and may surface to the
+// client; keep agent/workflow handlers panic-free or recover at the boundary.
 // MCP agent inputs accept only user text; the agent's configured instructions
 // are the only system prompt.
 //
