@@ -11,22 +11,12 @@ import (
 )
 
 // workflowInputSchema is the JSON Schema for the MCP tool wrapping a lebro
-// workflow. The arguments object carries the workflow input, optional thread
-// ID, and optional metadata.
+// workflow. The arguments object carries the workflow input.
 var workflowInputSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
 		"input": {
 			"description": "The JSON input to the first workflow step."
-		},
-		"thread_id": {
-			"type": "string",
-			"description": "Optional thread ID for durable workflow runs."
-		},
-		"metadata": {
-			"type": "object",
-			"description": "Optional run metadata.",
-			"additionalProperties": {"type": "string"}
 		}
 	},
 	"additionalProperties": false
@@ -43,35 +33,33 @@ var workflowResumeInputSchema = json.RawMessage(`{
 		},
 		"input": {
 			"description": "The resume input validated against the suspend contract."
-		},
-		"metadata": {
-			"type": "object",
-			"description": "Optional metadata merged into the resumed run.",
-			"additionalProperties": {"type": "string"}
 		}
 	},
 	"required": ["run_id"],
 	"additionalProperties": false
 }`)
 
+// Compiled schemas for validating workflow and resume arguments.
+var (
+	workflowInputCompiled       = mustCompileSchema(workflowInputSchema)
+	workflowResumeInputCompiled = mustCompileSchema(workflowResumeInputSchema)
+)
+
 // workflowCallInput is the typed arguments for a workflow MCP tool.
 type workflowCallInput struct {
-	Input    json.RawMessage   `json:"input,omitempty"`
-	ThreadID lebro.ThreadID    `json:"thread_id,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // workflowResumeCallInput is the typed arguments for a workflow resume MCP tool.
 type workflowResumeCallInput struct {
-	RunID    lebro.RunID       `json:"run_id"`
-	Input    json.RawMessage   `json:"input,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	RunID lebro.RunID     `json:"run_id"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // ExposeWorkflow registers a lebro LinearWorkflow as an MCP tool. The tool
 // name is "workflow.<id>" where id is the workflow's definition ID. MCP clients
-// invoke the workflow by calling the tool with input, optional thread ID, and
-// optional metadata; the tool returns the workflow's final output.
+// invoke the workflow by calling the tool with input; the tool returns the
+// workflow's final output.
 //
 // Only the run tool is registered. Use ExposeWorkflowResume to separately
 // register the resume tool for workflows configured with a Store.
@@ -100,6 +88,11 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
+		if err := workflowInputCompiled.Validate(arguments); err != nil {
+			mcpResult := &mcpsdk.CallToolResult{}
+			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow arguments: %w", err))
+			return mcpResult, nil
+		}
 		var input workflowCallInput
 		if err := json.Unmarshal(arguments, &input); err != nil {
 			mcpResult := &mcpsdk.CallToolResult{}
@@ -107,18 +100,14 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 			return mcpResult, nil
 		}
 		runInput := lebro.WorkflowRunInput{
-			Input:    input.Input,
-			ThreadID: input.ThreadID,
-			Metadata: input.Metadata,
+			Input: input.Input,
 		}
 		result, err := wf.Run(ctx, runInput)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
 			}
-			mcpResult := &mcpsdk.CallToolResult{}
-			mcpResult.SetError(err)
-			return mcpResult, nil
+			return toolError("workflow execution failed"), nil
 		}
 		return workflowResultToMCP(result), nil
 	}
@@ -129,8 +118,10 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 
 // ExposeWorkflowResume registers a resume tool for a lebro LinearWorkflow
 // configured with a Store. The tool name is "workflow.<id>.resume". MCP
-// clients invoke the tool with a run ID, resume input, and optional metadata
-// to continue a previously suspended workflow run.
+// clients invoke the tool with a run ID and resume input to continue a
+// previously suspended workflow run. ServerConfig.AuthorizeWorkflowResume
+// must authorize access to the run ID before this method can expose a resume
+// endpoint.
 //
 // ExposeWorkflowResume must be called after ExposeWorkflow for the same
 // workflow. Calling it for a workflow without a bound Store will succeed at
@@ -139,6 +130,9 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 func (s *Server) ExposeWorkflowResume(wf *lebro.LinearWorkflow) error {
 	if wf == nil {
 		return errors.New("lebro/mcp: workflow is nil")
+	}
+	if s.authorizeWorkflowResume == nil {
+		return errors.New("lebro/mcp: AuthorizeWorkflowResume is required")
 	}
 	def := wf.Definition()
 	runName := "workflow." + string(def.ID)
@@ -170,24 +164,26 @@ func (s *Server) ExposeWorkflowResume(wf *lebro.LinearWorkflow) error {
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
+		if err := workflowResumeInputCompiled.Validate(arguments); err != nil {
+			mcpResult := &mcpsdk.CallToolResult{}
+			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid resume arguments: %w", err))
+			return mcpResult, nil
+		}
 		var input workflowResumeCallInput
 		if err := json.Unmarshal(arguments, &input); err != nil {
 			mcpResult := &mcpsdk.CallToolResult{}
 			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid resume arguments: %w", err))
 			return mcpResult, nil
 		}
-		result, err := wf.Resume(ctx, lebro.WorkflowResumeInput{
-			RunID:    input.RunID,
-			Input:    input.Input,
-			Metadata: input.Metadata,
-		})
+		if err := s.authorizeWorkflowResume(ctx, input.RunID); err != nil {
+			return toolError("workflow resume not authorized"), nil
+		}
+		result, err := wf.Resume(ctx, lebro.WorkflowResumeInput{RunID: input.RunID, Input: input.Input})
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
 			}
-			mcpResult := &mcpsdk.CallToolResult{}
-			mcpResult.SetError(err)
-			return mcpResult, nil
+			return toolError("workflow resume failed"), nil
 		}
 		return workflowResultToMCP(result), nil
 	}
@@ -216,7 +212,9 @@ func workflowResultToMCP(result lebro.WorkflowRunResult) *mcpsdk.CallToolResult 
 		return mcpResult
 	}
 	if len(result.Output) > 0 {
-		mcpResult.StructuredContent = json.RawMessage(result.Output)
+		if json.Valid(result.Output) {
+			mcpResult.StructuredContent = json.RawMessage(result.Output)
+		}
 		mcpResult.Content = []mcpsdk.Content{
 			&mcpsdk.TextContent{Text: string(result.Output)},
 		}

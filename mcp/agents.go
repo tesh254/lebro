@@ -12,10 +12,9 @@ import (
 )
 
 // agentInputSchema is the JSON Schema for the MCP tool wrapping a lebro agent.
-// The arguments object carries messages, optional thread ID, and optional
-// metadata. Message items mirror lebro.Message fields including tool_calls,
-// structured_output, tool_call_id, and name so clients can provide complete
-// prior transcripts.
+// Clients may supply only user text. Runtime message roles and transcript-only
+// fields remain application-controlled, preventing schema drift from
+// lebro.Message and prompt or tool-call injection.
 var agentInputSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
@@ -25,44 +24,11 @@ var agentInputSchema = json.RawMessage(`{
 			"items": {
 				"type": "object",
 				"properties": {
-					"role": {
-						"type": "string",
-						"enum": ["system", "user", "assistant", "tool"]
-					},
-					"content": {"type": "string"},
-					"name": {"type": "string"},
-					"tool_call_id": {
-						"type": "string",
-						"description": "Required when role is 'tool'; links the tool result to the originating tool call."
-					},
-					"tool_calls": {
-						"type": "array",
-						"description": "Tool calls requested by an assistant message.",
-						"items": {
-							"type": "object",
-							"properties": {
-								"id": {"type": "string"},
-								"tool_id": {"type": "string"},
-								"arguments": {}
-							},
-							"required": ["id", "tool_id"]
-						}
-					},
-					"structured_output": {
-						"description": "Structured JSON output from an assistant message."
-					}
+					"content": {"type": "string"}
 				},
-				"required": ["role", "content"]
+				"required": ["content"],
+				"additionalProperties": false
 			}
-		},
-		"thread_id": {
-			"type": "string",
-			"description": "Optional thread ID for persistent conversation history."
-		},
-		"metadata": {
-			"type": "object",
-			"description": "Optional run metadata.",
-			"additionalProperties": {"type": "string"}
 		}
 	},
 	"additionalProperties": false
@@ -83,15 +49,17 @@ func mustCompileSchema(schema json.RawMessage) lebro.CompiledSchema {
 
 // agentCallInput is the typed arguments for an agent MCP tool.
 type agentCallInput struct {
-	Messages []lebro.Message   `json:"messages"`
-	ThreadID lebro.ThreadID    `json:"thread_id,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Messages []agentMessageInput `json:"messages"`
+}
+
+type agentMessageInput struct {
+	Content string `json:"content"`
 }
 
 // ExposeAgent registers a lebro Agent as an MCP tool. The tool name is
 // "agent.<id>" where id is the agent's definition ID. MCP clients invoke the
-// agent by calling the tool with messages, optional thread ID, and optional
-// metadata; the tool returns the agent's terminal response.
+// agent by calling the tool with user messages; the tool returns the agent's
+// terminal response.
 func (s *Server) ExposeAgent(agent *lebro.Agent) error {
 	if agent == nil {
 		return errors.New("lebro/mcp: agent is nil")
@@ -124,26 +92,19 @@ func (s *Server) ExposeAgent(agent *lebro.Agent) error {
 			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid agent arguments: %w", err))
 			return mcpResult, nil
 		}
-		filteredMessages := make([]lebro.Message, 0, len(input.Messages))
+		messages := make([]lebro.Message, 0, len(input.Messages))
 		for _, msg := range input.Messages {
-			if msg.Role == lebro.RoleSystem {
-				continue
-			}
-			filteredMessages = append(filteredMessages, msg)
+			messages = append(messages, lebro.Message{Role: lebro.RoleUser, Content: msg.Content})
 		}
 		runInput := lebro.RunInput{
-			Messages: filteredMessages,
-			ThreadID: input.ThreadID,
-			Metadata: input.Metadata,
+			Messages: messages,
 		}
 		result, err := agent.Run(ctx, runInput)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
 			}
-			mcpResult := &mcpsdk.CallToolResult{}
-			mcpResult.SetError(err)
-			return mcpResult, nil
+			return toolError("agent execution failed"), nil
 		}
 		return agentResultToMCP(result), nil
 	}
@@ -168,8 +129,12 @@ func agentResultToMCP(result lebro.RunResult) *mcpsdk.CallToolResult {
 			break
 		}
 	}
-	if text == "" && mcpResult.StructuredContent == nil {
-		text = fmt.Sprintf(`{"run_id":%q,"status":%q}`, result.ID, result.Status)
+	if text == "" {
+		if mcpResult.StructuredContent != nil {
+			text = string(mcpResult.StructuredContent.(json.RawMessage))
+		} else {
+			text = fmt.Sprintf(`{"run_id":%q,"status":%q}`, result.ID, result.Status)
+		}
 	}
 	mcpResult.Content = []mcpsdk.Content{
 		&mcpsdk.TextContent{Text: text},

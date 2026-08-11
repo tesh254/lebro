@@ -12,22 +12,15 @@
 //
 // # Security considerations
 //
-// This package is a protocol bridge, not a security boundary. When the MCP
-// server is reachable by untrusted clients, the application operator is
-// responsible for:
+// MCP client arguments cannot set thread IDs or runtime metadata, preventing
+// them from selecting another caller's durable conversation or injecting
+// authorization metadata into tool execution. Resume endpoints require
+// ServerConfig.AuthorizeWorkflowResume, which must enforce ownership of the
+// supplied workflow run ID. Runtime and handler failures are translated to
+// stable public error messages rather than exposing internal error details.
 //
-//   - Access control on thread IDs and workflow run IDs. The handlers forward
-//     caller-supplied identifiers directly to Agent.Run and Workflow.Resume.
-//     An MCP client that learns another tenant's thread ID or run ID can read
-//     or write that tenant's data. Wrap the transport or add middleware to
-//     enforce ownership checks before dispatching to lebro.
-//   - Error content. Tool handler errors and panic messages are returned to
-//     the MCP client via CallToolResult.IsError so the LLM can self-correct.
-//     If those errors contain sensitive backend details, sanitize them before
-//     exposing the server to untrusted networks.
-//
-// System messages supplied by MCP clients are filtered out before the agent
-// run begins; the agent's configured instructions are the only system prompt.
+// MCP agent inputs accept only user text; the agent's configured instructions
+// are the only system prompt.
 //
 // # Quick start
 //

@@ -23,16 +23,21 @@ type ServerConfig struct {
 	// PageSize is the maximum number of items returned in a single list
 	// response. Zero uses the SDK default (1000).
 	PageSize int
+	// AuthorizeWorkflowResume authorizes a client to resume the identified
+	// durable workflow run. It is required before ExposeWorkflowResume can
+	// register a resume endpoint.
+	AuthorizeWorkflowResume func(context.Context, lebro.RunID) error
 }
 
 // Server exposes selected lebro tools, agents, and workflows through an MCP
 // server. Only explicitly registered primitives are visible to MCP clients.
 // The zero value is not usable; construct one with NewServer.
 type Server struct {
-	mcpServer *mcpsdk.Server
-	mu        sync.Mutex
-	exposed   map[string]struct{}
-	workflows map[string]*lebro.LinearWorkflow
+	mcpServer               *mcpsdk.Server
+	mu                      sync.Mutex
+	exposed                 map[string]struct{}
+	workflows               map[string]*lebro.LinearWorkflow
+	authorizeWorkflowResume func(context.Context, lebro.RunID) error
 }
 
 // NewServer creates an MCP server that exposes lebro primitives. The server
@@ -47,14 +52,24 @@ func NewServer(config ServerConfig) *Server {
 			Tools: &mcpsdk.ToolCapabilities{ListChanged: true},
 		},
 	}
+	if config.PageSize < 0 {
+		panic(fmt.Errorf("lebro/mcp: PageSize must not be negative, got %d", config.PageSize))
+	}
 	if config.PageSize > 0 {
 		opts.PageSize = config.PageSize
 	}
 	return &Server{
-		mcpServer: mcpsdk.NewServer(config.Implementation, opts),
-		exposed:   make(map[string]struct{}),
-		workflows: make(map[string]*lebro.LinearWorkflow),
+		mcpServer:               mcpsdk.NewServer(config.Implementation, opts),
+		exposed:                 make(map[string]struct{}),
+		workflows:               make(map[string]*lebro.LinearWorkflow),
+		authorizeWorkflowResume: config.AuthorizeWorkflowResume,
 	}
+}
+
+func toolError(message string) *mcpsdk.CallToolResult {
+	result := &mcpsdk.CallToolResult{}
+	result.SetError(fmt.Errorf("lebro/mcp: %s", message))
+	return result
 }
 
 // Connect connects the MCP server over the given transport and returns a

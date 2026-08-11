@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/tesh254/lebro"
@@ -68,6 +70,9 @@ func newTestServer(t *testing.T) *mcp.Server {
 	t.Helper()
 	return mcp.NewServer(mcp.ServerConfig{
 		Implementation: &mcpsdk.Implementation{Name: "test-server", Version: "test"},
+		AuthorizeWorkflowResume: func(context.Context, lebro.RunID) error {
+			return nil
+		},
 	})
 }
 
@@ -156,6 +161,28 @@ func TestExposeTool_Success(t *testing.T) {
 	}
 }
 
+func TestExposeTool_NonJSONOutputIsTextOnly(t *testing.T) {
+	srv := newTestServer(t)
+	registry := mustRegistry(t)
+	must(t, registry.Register(rawOutputTool{}))
+	tool, _ := registry.Resolve("raw_output")
+	must(t, srv.ExposeTool(tool))
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+
+	result := callTool(t, session, "raw_output", map[string]any{})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", contentText(result))
+	}
+	if result.StructuredContent != nil {
+		t.Fatalf("StructuredContent = %v, want nil for non-JSON output", result.StructuredContent)
+	}
+	if got := contentText(result); got != "not-json" {
+		t.Fatalf("text content = %q, want %q", got, "not-json")
+	}
+}
+
 func TestExposeTool_AllowListEnforced(t *testing.T) {
 	srv := newTestServer(t)
 	registry := mustRegistry(t)
@@ -221,8 +248,8 @@ func TestExposeTool_HandlerError(t *testing.T) {
 		t.Fatal("expected IsError=true")
 	}
 	text := contentText(result)
-	if !strings.Contains(text, "intentional failure") {
-		t.Fatalf("expected error message in content, got %q", text)
+	if text != "lebro/mcp: tool execution failed" {
+		t.Fatalf("error content = %q", text)
 	}
 }
 
@@ -247,7 +274,7 @@ func TestExposeTool_InvalidInput(t *testing.T) {
 func TestExposeTool_Cancellation(t *testing.T) {
 	srv := newTestServer(t)
 	registry := mustRegistry(t)
-	cancelTool := &cancelCheckTool{}
+	cancelTool := &cancelCheckTool{started: make(chan struct{})}
 	must(t, registry.Register(cancelTool))
 	tool, _ := registry.Resolve("cancel_check")
 	if err := srv.ExposeTool(tool); err != nil {
@@ -258,13 +285,73 @@ func TestExposeTool_Cancellation(t *testing.T) {
 	defer cleanup()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	errCh := callToolAsync(session, ctx, "cancel_check", map[string]any{})
+	waitForStart(t, cancelTool.started)
 	cancel()
-	_, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
-		Name:      "cancel_check",
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallTool error = %v, want context.Canceled", err)
+	}
+}
+
+func TestExposeTool_DeadlineExceeded(t *testing.T) {
+	srv := newTestServer(t)
+	registry := mustRegistry(t)
+	must(t, registry.Register(deadlineTool{}))
+	tool, _ := registry.Resolve("deadline")
+	must(t, srv.ExposeTool(tool))
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+	_, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{
+		Name:      "deadline",
 		Arguments: map[string]any{},
 	})
-	if err == nil {
-		t.Fatal("expected error on cancelled context")
+	if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("CallTool error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestExposeAgent_Cancellation(t *testing.T) {
+	srv := newTestServer(t)
+	model := &cancellationModel{started: make(chan struct{})}
+	agent := mustAgent(t, model, "cancel-agent", "")
+	if err := srv.ExposeAgent(agent); err != nil {
+		t.Fatalf("ExposeAgent: %v", err)
+	}
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := callToolAsync(session, ctx, "agent.cancel-agent", map[string]any{
+		"messages": []map[string]any{{"content": "hi"}},
+	})
+	waitForStart(t, model.started)
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallTool error = %v, want context.Canceled", err)
+	}
+}
+
+func TestExposeWorkflow_Cancellation(t *testing.T) {
+	srv := newTestServer(t)
+	started := make(chan struct{})
+	wf := mustCancelWorkflow(t, "cancel-wf", started)
+	if err := srv.ExposeWorkflow(wf); err != nil {
+		t.Fatalf("ExposeWorkflow: %v", err)
+	}
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := callToolAsync(session, ctx, "workflow.cancel-wf", map[string]any{
+		"input": map[string]any{},
+	})
+	waitForStart(t, started)
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("CallTool error = %v, want context.Canceled", err)
 	}
 }
 
@@ -333,7 +420,7 @@ func TestExposeAgent_Success(t *testing.T) {
 
 	result := callTool(t, session, "agent.assistant", map[string]any{
 		"messages": []map[string]any{
-			{"role": "user", "content": "Hi"},
+			{"content": "Hi"},
 		},
 	})
 	if result.IsError {
@@ -342,6 +429,26 @@ func TestExposeAgent_Success(t *testing.T) {
 	text := contentText(result)
 	if !strings.Contains(text, "Hello from agent") {
 		t.Fatalf("expected agent response, got %q", text)
+	}
+}
+
+func TestExposeAgent_StructuredOutputHasTextFallback(t *testing.T) {
+	srv := newTestServer(t)
+	model := testkit.NewModel(testkit.StructuredOutput(json.RawMessage(`{"answer":42}`)))
+	agent := mustAgent(t, model, "structured", "")
+	must(t, srv.ExposeAgent(agent))
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+
+	result := callTool(t, session, "agent.structured", map[string]any{
+		"messages": []map[string]any{{"content": "answer"}},
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", contentText(result))
+	}
+	if got := contentText(result); got != `{"answer":42}` {
+		t.Fatalf("text content = %q, want structured JSON", got)
 	}
 }
 
@@ -400,7 +507,7 @@ func TestExposeAgent_ProviderFailure(t *testing.T) {
 
 	result := callTool(t, session, "agent.broken", map[string]any{
 		"messages": []map[string]any{
-			{"role": "user", "content": "Hi"},
+			{"content": "Hi"},
 		},
 	})
 	if !result.IsError {
@@ -445,6 +552,45 @@ func TestExposeWorkflow_Success(t *testing.T) {
 	must(t, json.Unmarshal(json.RawMessage(contentText(result)), &output))
 	if output.Sum != 7 {
 		t.Fatalf("expected sum=7, got %d", output.Sum)
+	}
+}
+
+func TestExposeWorkflow_InvalidArguments(t *testing.T) {
+	srv := newTestServer(t)
+	wf := mustWorkflow(t, "validated")
+	must(t, srv.ExposeWorkflow(wf))
+	must(t, srv.ExposeWorkflowResume(wf))
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+
+	runResult := callTool(t, session, "workflow.validated", map[string]any{"unknown": true})
+	if !runResult.IsError {
+		t.Fatal("expected IsError=true for unknown workflow argument")
+	}
+	resumeResult := callTool(t, session, "workflow.validated.resume", map[string]any{})
+	if !resumeResult.IsError {
+		t.Fatal("expected IsError=true for missing resume run_id")
+	}
+}
+
+func TestExposeWorkflow_NonJSONOutputIsTextOnly(t *testing.T) {
+	srv := newTestServer(t)
+	wf := mustRawOutputWorkflow(t, "raw-workflow")
+	must(t, srv.ExposeWorkflow(wf))
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+
+	result := callTool(t, session, "workflow.raw-workflow", map[string]any{"input": map[string]any{}})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", contentText(result))
+	}
+	if result.StructuredContent != nil {
+		t.Fatalf("StructuredContent = %v, want nil for non-JSON output", result.StructuredContent)
+	}
+	if got := contentText(result); got != "not-json" {
+		t.Fatalf("text content = %q, want %q", got, "not-json")
 	}
 }
 
@@ -503,6 +649,37 @@ func TestExposeWorkflowResume_WithoutExposeWorkflow(t *testing.T) {
 	}
 }
 
+func TestExposeWorkflowResume_RequiresAuthorizer(t *testing.T) {
+	srv := mcp.NewServer(mcp.ServerConfig{
+		Implementation: &mcpsdk.Implementation{Name: "test-server", Version: "test"},
+	})
+	wf := mustWorkflow(t, "authorize")
+	must(t, srv.ExposeWorkflow(wf))
+	err := srv.ExposeWorkflowResume(wf)
+	if err == nil || !strings.Contains(err.Error(), "AuthorizeWorkflowResume is required") {
+		t.Fatalf("ExposeWorkflowResume error = %v", err)
+	}
+}
+
+func TestExposeWorkflowResume_AuthorizationDenied(t *testing.T) {
+	srv := mcp.NewServer(mcp.ServerConfig{
+		Implementation: &mcpsdk.Implementation{Name: "test-server", Version: "test"},
+		AuthorizeWorkflowResume: func(context.Context, lebro.RunID) error {
+			return errors.New("denied")
+		},
+	})
+	wf := mustWorkflow(t, "denied")
+	must(t, srv.ExposeWorkflow(wf))
+	must(t, srv.ExposeWorkflowResume(wf))
+
+	session, cleanup := connectServer(t, srv)
+	defer cleanup()
+	result := callTool(t, session, "workflow.denied.resume", map[string]any{"run_id": "run-1"})
+	if !result.IsError || contentText(result) != "lebro/mcp: workflow resume not authorized" {
+		t.Fatalf("resume result = %#v", result)
+	}
+}
+
 func TestExposeWorkflow_NilWorkflow(t *testing.T) {
 	srv := newTestServer(t)
 	err := srv.ExposeWorkflow(nil)
@@ -541,6 +718,18 @@ func TestServer_NilImplementation(t *testing.T) {
 		}
 	}()
 	mcp.NewServer(mcp.ServerConfig{})
+}
+
+func TestServer_NegativePageSizePanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for negative PageSize")
+		}
+	}()
+	mcp.NewServer(mcp.ServerConfig{
+		Implementation: &mcpsdk.Implementation{Name: "test", Version: "test"},
+		PageSize:       -1,
+	})
 }
 
 func TestConnect_ReturnsSession(t *testing.T) {
@@ -688,6 +877,53 @@ func mustWorkflow(t *testing.T, id string) *lebro.LinearWorkflow {
 	return wf
 }
 
+func mustCancelWorkflow(t *testing.T, id string, started chan struct{}) *lebro.LinearWorkflow {
+	t.Helper()
+	wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+		Definition: lebro.WorkflowDefinition{
+			ID:          lebro.WorkflowID(id),
+			Name:        id,
+			Description: "A test workflow that blocks on context cancellation",
+		},
+		Steps: []lebro.Step{
+			{
+				Definition: lebro.StepDefinition{
+					ID:          "block",
+					Name:        "Block",
+					InputSchema: json.RawMessage(`{"type":"object"}`),
+				},
+				Handler: lebro.StepHandlerFunc(func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+					close(started)
+					<-ctx.Done()
+					return nil, ctx.Err()
+				}),
+			},
+		},
+		SchemaCompiler: lebrojsonschema.NewCompiler(),
+	})
+	if err != nil {
+		t.Fatalf("NewLinearWorkflow: %v", err)
+	}
+	return wf
+}
+
+func mustRawOutputWorkflow(t *testing.T, id string) *lebro.LinearWorkflow {
+	t.Helper()
+	wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+		Definition: lebro.WorkflowDefinition{ID: lebro.WorkflowID(id), Name: id},
+		Steps: []lebro.Step{{
+			Definition: lebro.StepDefinition{ID: "raw", Name: "Raw"},
+			Handler: lebro.StepHandlerFunc(func(context.Context, json.RawMessage) (json.RawMessage, error) {
+				return json.RawMessage("not-json"), nil
+			}),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewLinearWorkflow: %v", err)
+	}
+	return wf
+}
+
 func contentText(result *mcpsdk.CallToolResult) string {
 	for _, c := range result.Content {
 		if tc, ok := c.(*mcpsdk.TextContent); ok {
@@ -697,8 +933,28 @@ func contentText(result *mcpsdk.CallToolResult) string {
 	return ""
 }
 
+func callToolAsync(session *mcpsdk.ClientSession, ctx context.Context, name string, arguments map[string]any) <-chan error {
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := session.CallTool(ctx, &mcpsdk.CallToolParams{Name: name, Arguments: arguments})
+		errCh <- err
+	}()
+	return errCh
+}
+
+func waitForStart(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("execution did not start")
+	}
+}
+
 // cancelCheckTool blocks until context cancellation then returns cancelled.
-type cancelCheckTool struct{}
+type cancelCheckTool struct {
+	started chan struct{}
+}
 
 func (cancelCheckTool) Definition() lebro.ToolDefinition {
 	return lebro.ToolDefinition{
@@ -708,9 +964,35 @@ func (cancelCheckTool) Definition() lebro.ToolDefinition {
 	}
 }
 
-func (cancelCheckTool) Execute(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+func (t *cancelCheckTool) Execute(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	close(t.started)
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+type cancellationModel struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+type deadlineTool struct{}
+
+func (deadlineTool) Definition() lebro.ToolDefinition {
+	return lebro.ToolDefinition{
+		ID:          "deadline",
+		Description: "Returns a deadline error",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+}
+
+func (deadlineTool) Execute(context.Context, json.RawMessage) (json.RawMessage, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func (m *cancellationModel) Generate(ctx context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	m.once.Do(func() { close(m.started) })
+	<-ctx.Done()
+	return lebro.ModelResponse{}, ctx.Err()
 }
 
 // noSchemaTestTool has no InputSchema or OutputSchema.
@@ -725,6 +1007,21 @@ func (noSchemaTestTool) Definition() lebro.ToolDefinition {
 
 func (noSchemaTestTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(map[string]string{"ok": "true"})
+}
+
+// rawOutputTool has no output schema and deliberately returns non-JSON bytes.
+type rawOutputTool struct{}
+
+func (rawOutputTool) Definition() lebro.ToolDefinition {
+	return lebro.ToolDefinition{
+		ID:          "raw_output",
+		Description: "Returns unchecked raw output",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}
+}
+
+func (rawOutputTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage("not-json"), nil
 }
 
 // nonObjectSchemaTestTool has a non-object input schema that should be rejected.

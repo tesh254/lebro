@@ -71,7 +71,9 @@ func toolResultToMCP(result lebro.ToolExecutionResult) (*mcpsdk.CallToolResult, 
 	case lebro.ToolExecutionSucceeded:
 		mcpResult := &mcpsdk.CallToolResult{}
 		if len(result.Output) > 0 {
-			mcpResult.StructuredContent = json.RawMessage(result.Output)
+			if json.Valid(result.Output) {
+				mcpResult.StructuredContent = json.RawMessage(result.Output)
+			}
 			mcpResult.Content = []mcpsdk.Content{
 				&mcpsdk.TextContent{Text: string(result.Output)},
 			}
@@ -82,13 +84,18 @@ func toolResultToMCP(result lebro.ToolExecutionResult) (*mcpsdk.CallToolResult, 
 		}
 		return mcpResult, nil
 	case lebro.ToolExecutionCancelled:
-		return nil, result.Err
+		if errors.Is(result.Err, context.DeadlineExceeded) {
+			return nil, context.DeadlineExceeded
+		}
+		return nil, context.Canceled
 	case lebro.ToolExecutionNotFound:
-		return nil, fmt.Errorf("lebro/mcp: tool %q: %w", result.ToolID, result.Err)
+		return nil, fmt.Errorf("lebro/mcp: tool unavailable")
+	case lebro.ToolExecutionInvalidInput:
+		return toolError("invalid tool arguments"), nil
+	case lebro.ToolExecutionInvalidOutput:
+		return toolError("tool returned invalid output"), nil
 	default:
-		mcpResult := &mcpsdk.CallToolResult{}
-		mcpResult.SetError(result.Err)
-		return mcpResult, nil
+		return toolError("tool execution failed"), nil
 	}
 }
 
