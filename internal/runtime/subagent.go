@@ -87,7 +87,6 @@ func subagentErrorSentinel(kind SubagentErrorKind) error {
 	case SubagentErrorCancelled:
 		return ErrSubagentCancelled
 	default:
-	default:
 		return ErrSubagentRunFailed
 	}
 }

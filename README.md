@@ -16,7 +16,7 @@ using `lebro.Message`, `lebro.NewToolRegistry`, and `lebro.NewMemoryStore`.
 
 ```
 lebro/                   public API façade and module documentation
-internal/runtime/        model, tools, schema, workflow, storage, and vector runtime
+internal/runtime/        model, tools, schema, workflow, storage, vector, and RAG runtime
 jsonschema/              optional JSON Schema compiler implementation
 internal/testkit/        deterministic provider fixtures and contract suites for tests
 examples/                runnable feature-focused examples
@@ -484,6 +484,130 @@ Three adapters ship:
 All adapters pass the shared `VectorContractSuite`. PostgreSQL vector tests
 are gated by `LEBRO_POSTGRES_TEST_DSN` and require the pgvector extension.
 The pgvector adapter uses `github.com/pgvector/pgvector-go` (pure Go, no CGO).
+
+## Retrieval-augmented generation
+
+Retrieval is assembled from four provider-neutral contracts — `Chunker`,
+`EmbeddingModel`, `Retriever`, and the existing `VectorStore` — and is exposed
+to an agent as an ordinary schema-backed `Tool`. Nothing in the agent loop
+references RAG types, so the core runtime stays usable with no RAG or vector
+dependency, and no hidden retrieval behavior is added to any agent.
+
+```go
+chunker, _ := lebro.NewCharacterChunker(lebro.CharacterChunkerConfig{Size: 1000, Overlap: 200})
+embeddings, _ := openai.NewEmbedder(openai.EmbedderConfig{
+    APIKey:    os.Getenv("OPENAI_API_KEY"),
+    Model:     "text-embedding-3-small",
+    Dimension: 1536,
+})
+store := lebro.NewMemoryVectorStore()
+
+indexer, _ := lebro.NewIndexer(lebro.IndexerConfig{
+    Chunker:    chunker,
+    Embeddings: embeddings,
+    Store:      store,
+    Index:      "handbook",
+})
+indexer.EnsureIndex(ctx)
+indexer.Ingest(ctx, lebro.Document{
+    ID:       "refunds",
+    Content:  policyText,
+    Source:   "policies/refunds.md",
+    Metadata: json.RawMessage(`{"visibility":"public"}`),
+})
+```
+
+`Ingest` chunks the document, embeds the chunks in batches, and upserts them
+with their provenance. Chunk IDs are `"<DocumentID>#<Index>"`, so re-ingesting
+an unchanged document replaces its records instead of duplicating them. A
+document that shrinks leaves surplus trailing chunks behind; delete the previous
+`IndexResult.ChunkIDs` that no longer appear.
+
+Retrieval takes natural language — the retriever embeds the query itself, so
+neither the caller nor the model handles vectors:
+
+```go
+retriever, _ := lebro.NewVectorRetriever(lebro.VectorRetrieverConfig{
+    Embeddings: embeddings,
+    Store:      store,
+    Index:      "handbook",
+    TopK:       5,
+    Filter: lebro.VectorMetadataFilter{
+        Match: map[string]json.RawMessage{"visibility": json.RawMessage(`"public"`)},
+    },
+})
+
+hits, _ := retriever.Retrieve(ctx, lebro.RetrievalQuery{Query: "refund window"})
+for _, hit := range hits {
+    fmt.Printf("%s (%s) score=%.3f\n", hit.DocumentID, hit.Source, hit.Score)
+}
+```
+
+Every hit carries stable source metadata — `DocumentID`, `Source`, and `Index` —
+recorded at ingestion under the reserved metadata keys `document_id`, `source`,
+and `chunk_index`. A document whose own metadata uses one of those keys is
+rejected rather than silently overwritten, so reported provenance is always the
+provenance the indexer wrote.
+
+`NewRetrievalTool` exposes a `Retriever` as a `Tool`, which an agent selects
+through ordinary model tool-calling inside the existing bounded loop:
+
+```go
+tool, _ := lebro.NewRetrievalTool(lebro.RetrievalToolConfig{
+    ID:          "search_handbook",
+    Retriever:   retriever,
+    Description: "Search the customer handbook for relevant passages.",
+    TopK:        3,
+    MaxTopK:     5,
+})
+
+registry, _ := lebro.NewToolRegistry(lebrojsonschema.NewCompiler())
+registry.Register(tool)
+
+agent, _ := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{
+        ID:    "support",
+        Tools: []lebro.ToolID{"search_handbook"},
+    },
+    Model: model,
+    Tools: registry,
+})
+```
+
+The tool's input schema accepts only `query` and an optional `top_k`, with
+`additionalProperties: false`. Retrieval **scope is configuration, not a model's
+choice**: the metadata filter is fixed at construction and is not model-settable,
+a model-supplied `top_k` is clamped to `MaxTopK`, and a caller filter that names
+an enforced key loses to the configured value. A model therefore chooses what to
+search for but not what it is allowed to read. An empty result set is a success
+with an empty `chunks` array rather than an error, so a model never branches on
+response shape.
+
+`CharacterChunker` measures `Size` and `Overlap` in runes, so a multi-byte
+character is never split across chunks. It is deliberately the simple initial
+strategy: it assumes nothing about language, markup, or sentence structure.
+
+Stage failures are normalized as `*RAGError` naming the stage that failed, with
+the underlying provider or store error preserved:
+
+| Sentinel | Stage |
+|---|---|
+| `ErrRAGInvalidDocument` | Document failed the ingestion contract |
+| `ErrRAGChunking` | Chunker rejected the document or emitted an invalid chunk |
+| `ErrRAGEmbedding` | Embedding call failed, or returned a wrong count or dimension |
+| `ErrRAGIndexing` | Vector store rejected the records |
+| `ErrRAGRetrieval` | Query was invalid, or the search failed |
+
+All are `errors.Is`-compatible, and `errors.As` reaches the wrapped
+`*ModelError` or `ErrVector*` sentinel behind a stage failure, so one retry
+policy can cover embedding calls and chat calls alike.
+
+The `openai` package's `NewEmbedder` implements `EmbeddingModel` against any
+OpenAI-compatible `/embeddings` endpoint, reusing the chat adapter's error
+classification. It reorders the response by each item's declared index rather
+than trusting wire order, and verifies the returned count and every vector's
+width, so a provider that drops or truncates an item fails loudly instead of
+writing a misaligned index.
 
 ## Typed linear workflow execution
 
@@ -982,6 +1106,14 @@ and emits text deltas in real time, then collects the final result:
 
 ```sh
 go run ./examples/streaming
+```
+
+The rag-retrieval example chunks and indexes documents, retrieves them by
+semantic query under a metadata filter, and lets an agent use retrieval as an
+ordinary tool in the bounded loop:
+
+```sh
+go run ./examples/rag-retrieval
 ```
 
 ## Development
