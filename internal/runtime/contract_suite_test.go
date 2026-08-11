@@ -32,3 +32,10 @@ func TestMemoryStorePassesStorageContract(t *testing.T) {
 		return lebro.NewMemoryStore()
 	})
 }
+
+func TestMemoryVectorStorePassesContract(t *testing.T) {
+	testkit.VectorContractSuite(t, func(t *testing.T) lebro.VectorStore {
+		t.Helper()
+		return lebro.NewMemoryVectorStore()
+	})
+}

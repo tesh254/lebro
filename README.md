@@ -16,9 +16,9 @@ using `lebro.Message`, `lebro.NewToolRegistry`, and `lebro.NewMemoryStore`.
 
 ```
 lebro/                   public API façade and module documentation
-internal/runtime/        model, tools, schema, workflow, and storage runtime
+internal/runtime/        model, tools, schema, workflow, storage, and vector runtime
 jsonschema/              optional JSON Schema compiler implementation
-internal/testkit/        deterministic provider fixtures for tests
+internal/testkit/        deterministic provider fixtures and contract suites for tests
 examples/                runnable feature-focused examples
 docs/                    installation and release guides
 ```
@@ -449,6 +449,41 @@ the database in its prior state. Required indexes:
 The adapter passes the shared storage contract suite. Set
 `LEBRO_POSTGRES_TEST_DSN` to run the PostgreSQL tests against a disposable
 database.
+
+## Vector storage
+
+Vector storage is optional and separate from the core `Store` interface. A
+provider-neutral `VectorStore` provides index management, embedding
+upsert/delete, and cosine-similarity search with metadata filtering. Agent
+and workflow packages never reference vector types, so the core runtime
+remains usable with no vector dependency.
+
+```go
+store := lebro.NewMemoryVectorStore()
+store.CreateIndex(ctx, "documents", 128)
+store.Upsert(ctx, []lebro.EmbeddingRecord{
+    {ID: "doc-1", Index: "documents", Vector: embedding, Metadata: json.RawMessage(`{"source":"api"}`)},
+})
+results, _ := store.Search(ctx, lebro.SimilarityQuery{
+    Vector: query,
+    Index:  "documents",
+    Filter: lebro.VectorMetadataFilter{Match: map[string]json.RawMessage{"source": json.RawMessage(`"api"`)}},
+    TopK:   10,
+    MinScore: 0.7,
+})
+```
+
+Three adapters ship:
+
+| Adapter | Backend | Search | Migrations |
+|---------|---------|--------|------------|
+| `MemoryVectorStore` | In-process | Brute-force cosine | No-op |
+| `SQLiteVectorStore` | SQLite (JSON TEXT) | Brute-force cosine | `vector_schema_migrations` table |
+| `PostgresVectorStore` | PostgreSQL + pgvector | `<=>` operator | `vector_schema_migrations` table |
+
+All adapters pass the shared `VectorContractSuite`. PostgreSQL vector tests
+are gated by `LEBRO_POSTGRES_TEST_DSN` and require the pgvector extension.
+The pgvector adapter uses `github.com/pgvector/pgvector-go` (pure Go, no CGO).
 
 ## Typed linear workflow execution
 

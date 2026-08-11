@@ -6,6 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/pgvector/pgvector-go v0.4.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	go.uber.org/goleak v1.3.0
 	modernc.org/sqlite v1.56.0

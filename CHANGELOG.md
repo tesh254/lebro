@@ -6,6 +6,27 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Provider-neutral vector storage contracts and initial adapters. A new
+  `VectorStore` interface provides index management, embedding upsert/delete,
+  and cosine-similarity search with metadata filtering and score thresholds.
+  The interface is intentionally separate from `Store` so agent and workflow
+  packages remain usable with no vector dependency. New types:
+  `EmbeddingRecord`, `VectorMetadataFilter`, `SimilarityQuery`,
+  `SimilarityResult`. New errors: `ErrVectorNotFound`,
+  `ErrVectorAlreadyExists`, `ErrVectorInvalidDimension`,
+  `ErrVectorInvalidInput` (all `errors.Is`-compatible). A shared
+  `VectorContractSuite` runs adapter-neutral tests covering index lifecycle,
+  round-trips, dimension validation, delete semantics, similarity ordering,
+  metadata filtering, score thresholds, defensive copies, invalid input, and
+  context cancellation. Three adapters ship: `MemoryVectorStore` (brute-force
+  cosine, for tests and local development), `SQLiteVectorStore` (vectors as
+  JSON TEXT, brute-force in Go, separate schema migrations via
+  `vector_schema_migrations` table), and `PostgresVectorStore` (pgvector
+  extension, cosine distance via `<=>` operator, separate schema migrations).
+  PostgreSQL vector tests are gated by `LEBRO_POSTGRES_TEST_DSN`. New
+  dependency: `github.com/pgvector/pgvector-go` (pure Go, no CGO). A runnable
+  example is in `examples/vector-search`.
+
 - Bounded parallel fan-out and join for linear workflows. A `StepDefinition`
   may declare a `FanOut` with `Branches` (each with a `Name`, optional
   `InputMapper`, and ordered `Steps`), `MaxParallel` (bounds active branches),

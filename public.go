@@ -116,6 +116,15 @@ type (
 	SQLiteStore                = runtime.SQLiteStore
 	PostgresStore              = runtime.PostgresStore
 	PostgresStoreOptions       = runtime.PostgresStoreOptions
+	MemoryVectorStore          = runtime.MemoryVectorStore
+	SQLiteVectorStore          = runtime.SQLiteVectorStore
+	PostgresVectorStore        = runtime.PostgresVectorStore
+	PostgresVectorStoreOptions = runtime.PostgresVectorStoreOptions
+	VectorStore                = runtime.VectorStore
+	EmbeddingRecord            = runtime.EmbeddingRecord
+	VectorMetadataFilter       = runtime.VectorMetadataFilter
+	SimilarityQuery            = runtime.SimilarityQuery
+	SimilarityResult           = runtime.SimilarityResult
 	RunEvent                   = runtime.RunEvent
 	RunEventType               = runtime.RunEventType
 	RunListener                = runtime.RunListener
@@ -270,6 +279,11 @@ var (
 	ErrWorkflowFanOutBranchFailed      = runtime.ErrWorkflowFanOutBranchFailed
 	ErrWorkflowFanOutInputMapperFailed = runtime.ErrWorkflowFanOutInputMapperFailed
 	ErrWorkflowInvalidFanOutInput      = runtime.ErrWorkflowInvalidFanOutInput
+
+	ErrVectorNotFound         = runtime.ErrVectorNotFound
+	ErrVectorAlreadyExists    = runtime.ErrVectorAlreadyExists
+	ErrVectorInvalidDimension = runtime.ErrVectorInvalidDimension
+	ErrVectorInvalidInput     = runtime.ErrVectorInvalidInput
 )
 
 // DefaultRetryable reports whether a handler error is eligible for retry
@@ -315,6 +329,23 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) { return runtime.NewSQLite
 // returns the store. Call Migrate once to install the schema.
 func NewPostgresStore(dsn string, opts PostgresStoreOptions) (*PostgresStore, error) {
 	return runtime.NewPostgresStore(dsn, opts)
+}
+
+// NewMemoryVectorStore creates an empty in-memory vector store for tests and
+// local development.
+func NewMemoryVectorStore() *MemoryVectorStore { return runtime.NewMemoryVectorStore() }
+
+// NewSQLiteVectorStore opens (or creates) a file-backed SQLite vector store at
+// the given DSN. Call Migrate once to install the vector schema.
+func NewSQLiteVectorStore(dsn string) (*SQLiteVectorStore, error) {
+	return runtime.NewSQLiteVectorStore(dsn)
+}
+
+// NewPostgresVectorStore opens a PostgreSQL connection pool at the given DSN
+// and returns a vector store. Call Migrate once to install the vector schema.
+// Requires the pgvector extension on the target database.
+func NewPostgresVectorStore(dsn string, opts PostgresVectorStoreOptions) (*PostgresVectorStore, error) {
+	return runtime.NewPostgresVectorStore(dsn, opts)
 }
 
 func NewAgent(config AgentConfig) (*Agent, error) {

@@ -86,3 +86,10 @@ with deterministic joined output; no network or API key required):
 ```sh
 go run ./examples/workflow-fanout-join
 ```
+
+Run the vector search example (in-memory vector store with metadata-filtered
+similarity search; no network or API key required):
+
+```sh
+go run ./examples/vector-search
+```
