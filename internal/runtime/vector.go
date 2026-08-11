@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -164,6 +165,9 @@ func validateSimilarityQuery(query SimilarityQuery) error {
 	if query.TopK <= 0 {
 		return fmt.Errorf("%w: TopK must be positive", ErrVectorInvalidInput)
 	}
+	if query.MinScore < 0 || query.MinScore > 1 || isNaN(query.MinScore) {
+		return fmt.Errorf("%w: MinScore must be in [0, 1]", ErrVectorInvalidInput)
+	}
 	return nil
 }
 
@@ -189,8 +193,9 @@ func metadataMatches(recordMetadata json.RawMessage, filter VectorMetadataFilter
 	return true
 }
 
-// jsonEqual compares two RawMessage values by parsing and re-marshaling them
-// so that key ordering and whitespace differences do not cause false negatives.
+// jsonEqual compares two RawMessage values by parsing with UseNumber so large
+// integers retain exact precision, then re-marshaling so key ordering and
+// whitespace differences do not cause false negatives.
 func jsonEqual(a, b json.RawMessage) bool {
 	if len(a) == 0 && len(b) == 0 {
 		return true
@@ -198,17 +203,35 @@ func jsonEqual(a, b json.RawMessage) bool {
 	if len(a) == 0 || len(b) == 0 {
 		return false
 	}
-	var va, vb any
-	if err := json.Unmarshal(a, &va); err != nil {
+	va, err := decodeJSONNumber(a)
+	if err != nil {
 		return false
 	}
-	if err := json.Unmarshal(b, &vb); err != nil {
+	vb, err := decodeJSONNumber(b)
+	if err != nil {
 		return false
 	}
 	na, _ := json.Marshal(va)
 	nb, _ := json.Marshal(vb)
 	return string(na) == string(nb)
 }
+
+// decodeJSONNumber unmarshals raw JSON into an any using UseNumber so large
+// integers are preserved as json.Number instead of losing precision through
+// float64.
+func decodeJSONNumber(raw json.RawMessage) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// isNaN reports whether f is a NaN value. math.IsNaN operates on float64, so
+// this helper bridges the float32 domain.
+func isNaN(f float32) bool { return f != f }
 
 // rankResults sorts similarity results by descending score and trims to TopK,
 // excluding results with a score below MinScore when MinScore > 0.

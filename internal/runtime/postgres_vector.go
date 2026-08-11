@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,14 +34,11 @@ type PostgresVectorStoreOptions struct {
 	ConnMaxIdleTime time.Duration
 }
 
-// postgresVectorMigrations installs the vector schema. The version is tracked
-// in vector_schema_migrations. Migrations must be append-only.
+// postgresVectorMigrations installs the vector schema. The last entry creates
+// the tracking table and is executed outside the migration transaction so a
+// fresh database does not abort the tx. Migrations must be append-only.
 var postgresVectorMigrations = []string{
 	`CREATE EXTENSION IF NOT EXISTS vector`,
-	`CREATE TABLE IF NOT EXISTS vector_schema_migrations (
-		version    INTEGER PRIMARY KEY,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`,
 	`CREATE TABLE IF NOT EXISTS vector_indices (
 		name      TEXT PRIMARY KEY,
 		dimension INTEGER NOT NULL,
@@ -59,7 +55,21 @@ var postgresVectorMigrations = []string{
 		UNIQUE (index_name, id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_vector_records_index ON vector_records(index_name)`,
+	`CREATE TABLE IF NOT EXISTS vector_schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
 }
+
+// postgresVectorAdvisoryLockKey is a fixed 64-bit key for the
+// transaction-scoped advisory lock that serializes concurrent vector
+// migrations. It must differ from postgresAdvisoryLockKey so storage and
+// vector migrations can run concurrently without blocking each other.
+const postgresVectorAdvisoryLockKey int64 = 0x6c6562726f000002
+
+// postgresVectorSchemaVersionQuery reads the highest applied migration
+// version from the tracking table.
+const postgresVectorSchemaVersionQuery = `SELECT version FROM vector_schema_migrations ORDER BY version DESC LIMIT 1`
 
 // NewPostgresVectorStore opens a PostgreSQL connection pool at dsn and returns
 // a vector store. The DSN must be a libpq-style connection string. The
@@ -91,31 +101,50 @@ func NewPostgresVectorStore(dsn string, opts PostgresVectorStoreOptions) (*Postg
 func (s *PostgresVectorStore) Close() error { return s.db.Close() }
 
 // Migrate applies any pending vector schema migrations atomically. It is
-// idempotent. Requires the pgvector extension to be available.
+// idempotent. Requires the pgvector extension to be available. The tracking
+// table is created outside the migration transaction so a fresh database does
+// not abort the tx. Concurrent migrations are serialized via a
+// transaction-scoped advisory lock.
 func (s *PostgresVectorStore) Migrate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Ensure the vector_schema_migrations table exists so the first run can
+	// record its version. This is the last entry in postgresVectorMigrations
+	// and is executed outside the versioned transaction.
+	if _, err := s.db.ExecContext(ctx, postgresVectorMigrations[len(postgresVectorMigrations)-1]); err != nil {
+		return fmt.Errorf("lebro: postgres vector: ensure schema_migrations table: %w", err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("lebro: postgres vector: begin migration: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Acquire a transaction-scoped advisory lock so concurrent migrations
+	// serialize. The lock is released automatically on commit or rollback.
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", postgresVectorAdvisoryLockKey); err != nil {
+		return fmt.Errorf("lebro: postgres vector: acquire migration lock: %w", err)
+	}
+
 	var version int
-	row := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM vector_schema_migrations")
-	if err := row.Scan(&version); err != nil {
+	switch err := tx.QueryRowContext(ctx, postgresVectorSchemaVersionQuery).Scan(&version); {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
 		version = 0
+	default:
+		return fmt.Errorf("lebro: postgres vector: read schema version: %w", err)
 	}
-	if version > len(postgresVectorMigrations) {
-		return fmt.Errorf("lebro: postgres vector: schema version %d is newer than this build supports (max %d)", version, len(postgresVectorMigrations))
+	if version > len(postgresVectorMigrations)-1 {
+		return fmt.Errorf("lebro: postgres vector: database schema version %d is newer than this build supports (max %d)", version, len(postgresVectorMigrations)-1)
 	}
-	for i := version; i < len(postgresVectorMigrations); i++ {
+	for i := version; i < len(postgresVectorMigrations)-1; i++ {
 		if _, err := tx.ExecContext(ctx, postgresVectorMigrations[i]); err != nil {
-			return fmt.Errorf("lebro: postgres vector: migration %d failed: %w; database left unchanged", i+1, err)
+			return fmt.Errorf("lebro: postgres vector: migration %d (schema version %d) failed: %w; database left unchanged", i+1, i+1, err)
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO vector_schema_migrations (version) VALUES ($1)", i+1); err != nil {
-			return fmt.Errorf("lebro: postgres vector: record migration %d: %w", i+1, err)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO vector_schema_migrations (version) VALUES ($1)`, i+1); err != nil {
+			return fmt.Errorf("lebro: postgres vector: record schema version %d: %w", i+1, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -260,8 +289,9 @@ func (s *PostgresVectorStore) Search(ctx context.Context, query SimilarityQuery)
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, 1 - (vector <=> $1) AS score, metadata, content
 		 FROM vector_records WHERE index_name = $2
-		 ORDER BY vector <=> $1`,
-		vec, query.Index)
+		 ORDER BY vector <=> $1
+		 LIMIT $3`,
+		vec, query.Index, query.TopK)
 	if err != nil {
 		return nil, fmt.Errorf("lebro: postgres vector: query records: %w", err)
 	}
@@ -294,10 +324,8 @@ func (s *PostgresVectorStore) Search(ctx context.Context, query SimilarityQuery)
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("lebro: postgres vector: rows: %w", err)
 	}
-	// pgvector ORDER BY already sorts by distance; trim to TopK.
-	if query.TopK > 0 && query.TopK < len(results) {
-		results = results[:query.TopK]
-	}
+	// SQL LIMIT + ORDER BY already bounds and sorts results; MinScore and
+	// metadata filtering may reduce the count below TopK.
 	return results, nil
 }
 
@@ -310,7 +338,3 @@ func isPostgresUniqueViolation(err error) bool {
 	}
 	return pgErr.Code == "23505"
 }
-
-// pgvectorVectorToString converts a pgvector.Vector to a string representation
-// for debugging. Unused but kept for reference.
-var _ = func(v pgvector.Vector) string { return strings.TrimPrefix(v.String(), "[") }

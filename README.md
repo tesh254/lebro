@@ -450,8 +450,6 @@ The adapter passes the shared storage contract suite. Set
 `LEBRO_POSTGRES_TEST_DSN` to run the PostgreSQL tests against a disposable
 database.
 
-database.
-
 ## Vector storage
 
 Vector storage is optional and separate from the core `Store` interface. A

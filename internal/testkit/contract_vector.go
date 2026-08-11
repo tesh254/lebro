@@ -310,15 +310,24 @@ func vectorContractDefensiveCopies(t *testing.T, newStore VectorStoreFactory) {
 	if err := store.Upsert(ctx, []runtime.EmbeddingRecord{{ID: "r1", Index: "docs", Vector: vec, Metadata: meta}}); err != nil {
 		t.Fatal(err)
 	}
-	vec[0] = 999
+	// Mutate the caller's vector direction so a non-defensive copy would
+	// change the stored vector and thus the similarity score.
+	vec[0] = 0
+	vec[1] = 999
 	meta[0] = 'x'
 
 	results, err := store.Search(ctx, runtime.SimilarityQuery{Vector: []float32{1, 0}, Index: "docs", TopK: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	if results[0].Score < 0.99 {
+		t.Fatalf("defensive copy failed: score = %.4f, want ~1.0 (caller vector mutation visible in store)", results[0].Score)
+	}
 	if results[0].Metadata[0] == 'x' {
-		t.Fatal("defensive copy failed: caller mutation visible in store")
+		t.Fatal("defensive copy failed: caller metadata mutation visible in store")
 	}
 	results[0].Metadata[0] = 'y'
 	again, err := store.Search(ctx, runtime.SimilarityQuery{Vector: []float32{1, 0}, Index: "docs", TopK: 1})
@@ -326,7 +335,7 @@ func vectorContractDefensiveCopies(t *testing.T, newStore VectorStoreFactory) {
 		t.Fatal(err)
 	}
 	if again[0].Metadata[0] == 'y' {
-		t.Fatal("defensive copy failed: result mutation visible in store")
+		t.Fatal("defensive copy failed: result metadata mutation visible in store")
 	}
 }
 
@@ -352,6 +361,12 @@ func vectorContractInvalidInput(t *testing.T, newStore VectorStoreFactory) {
 	}
 	if _, err := store.Search(ctx, runtime.SimilarityQuery{Vector: []float32{1, 0}, Index: "", TopK: 1}); !errors.Is(err, runtime.ErrVectorInvalidInput) {
 		t.Fatalf("empty index error = %v, want ErrVectorInvalidInput", err)
+	}
+	if _, err := store.Search(ctx, runtime.SimilarityQuery{Vector: []float32{1, 0}, Index: "docs", TopK: 1, MinScore: -0.1}); !errors.Is(err, runtime.ErrVectorInvalidInput) {
+		t.Fatalf("negative MinScore error = %v, want ErrVectorInvalidInput", err)
+	}
+	if _, err := store.Search(ctx, runtime.SimilarityQuery{Vector: []float32{1, 0}, Index: "docs", TopK: 1, MinScore: 1.1}); !errors.Is(err, runtime.ErrVectorInvalidInput) {
+		t.Fatalf("MinScore > 1 error = %v, want ErrVectorInvalidInput", err)
 	}
 }
 

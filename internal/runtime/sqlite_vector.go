@@ -26,13 +26,10 @@ type SQLiteVectorStore struct {
 }
 
 // sqliteVectorMigrations installs the vector schema one statement at a time.
-// The version is tracked in vector_schema_migrations so it does not conflict
-// with PRAGMA user_version used by SQLiteStore. Migrations must be append-only.
+// The version is tracked in vector_schema_migrations (created outside the
+// migration transaction so a fresh database does not abort the tx). Migrations
+// must be append-only; never reorder or edit an applied step.
 var sqliteVectorMigrations = []string{
-	`CREATE TABLE IF NOT EXISTS vector_schema_migrations (
-		version    INTEGER PRIMARY KEY,
-		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-	)`,
 	`CREATE TABLE IF NOT EXISTS vector_indices (
 		name      TEXT PRIMARY KEY,
 		dimension INTEGER NOT NULL,
@@ -74,10 +71,18 @@ func NewSQLiteVectorStore(dsn string) (*SQLiteVectorStore, error) {
 func (s *SQLiteVectorStore) Close() error { return s.db.Close() }
 
 // Migrate applies any pending vector schema migrations atomically. It is
-// idempotent; a database already at the current version is a no-op.
+// idempotent; a database already at the current version is a no-op. The
+// tracking table is created outside the migration transaction so a fresh
+// database does not abort the tx with "no such table".
 func (s *SQLiteVectorStore) Migrate(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS vector_schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
+		return fmt.Errorf("lebro: sqlite vector: ensure schema_migrations table: %w", sqliteError(err))
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -86,10 +91,8 @@ func (s *SQLiteVectorStore) Migrate(ctx context.Context) error {
 	defer func() { _ = tx.Rollback() }()
 
 	var version int
-	row := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM vector_schema_migrations")
-	if err := row.Scan(&version); err != nil {
-		// Table might not exist yet — start from 0.
-		version = 0
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM vector_schema_migrations").Scan(&version); err != nil {
+		return fmt.Errorf("lebro: sqlite vector: read schema version: %w", err)
 	}
 	if version > len(sqliteVectorMigrations) {
 		return fmt.Errorf("lebro: sqlite vector: schema version %d is newer than this build supports (max %d)", version, len(sqliteVectorMigrations))
@@ -210,8 +213,13 @@ func (s *SQLiteVectorStore) Delete(ctx context.Context, index string, ids []stri
 	if index == "" {
 		return fmt.Errorf("%w: empty index name", ErrVectorInvalidInput)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("lebro: sqlite vector: begin delete: %w", sqliteError(err))
+	}
+	defer func() { _ = tx.Rollback() }()
 	var exists int
-	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM vector_indices WHERE name = ?", index).Scan(&exists)
+	err = tx.QueryRowContext(ctx, "SELECT 1 FROM vector_indices WHERE name = ?", index).Scan(&exists)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("%w: index %q", ErrVectorNotFound, index)
 	}
@@ -219,9 +227,12 @@ func (s *SQLiteVectorStore) Delete(ctx context.Context, index string, ids []stri
 		return fmt.Errorf("lebro: sqlite vector: lookup index: %w", sqliteError(err))
 	}
 	for _, id := range ids {
-		if _, err := s.db.ExecContext(ctx, "DELETE FROM vector_records WHERE index_name = ? AND id = ?", index, id); err != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM vector_records WHERE index_name = ? AND id = ?", index, id); err != nil {
 			return fmt.Errorf("lebro: sqlite vector: delete record %q: %w", id, sqliteError(err))
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("lebro: sqlite vector: commit delete: %w", sqliteError(err))
 	}
 	return nil
 }

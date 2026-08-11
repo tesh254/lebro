@@ -72,6 +72,9 @@ func (s *MemoryVectorStore) Upsert(ctx context.Context, records []EmbeddingRecor
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// First pass: validate every record and check dimension/index existence
+	// before mutating any state, so a failure on record N does not leave
+	// records 1..N-1 already committed (matching SQLite/Postgres atomicity).
 	for _, record := range records {
 		if err := validateVectorRecord(record); err != nil {
 			return err
@@ -83,6 +86,10 @@ func (s *MemoryVectorStore) Upsert(ctx context.Context, records []EmbeddingRecor
 		if len(record.Vector) != idx.dimension {
 			return fmt.Errorf("%w: record %q has dimension %d, index %q expects %d", ErrVectorInvalidDimension, record.ID, len(record.Vector), record.Index, idx.dimension)
 		}
+	}
+	// Second pass: mutate now that every record is known to be valid.
+	for _, record := range records {
+		idx := s.indices[record.Index]
 		cloned := EmbeddingRecord{
 			ID:        record.ID,
 			Index:     record.Index,
@@ -145,6 +152,9 @@ func (s *MemoryVectorStore) Search(ctx context.Context, query SimilarityQuery) (
 	}
 	results := make([]SimilarityResult, 0, len(idx.order))
 	for _, id := range idx.order {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		record := idx.records[id]
 		if !metadataMatches(record.Metadata, query.Filter) {
 			continue
