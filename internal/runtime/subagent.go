@@ -87,7 +87,8 @@ func subagentErrorSentinel(kind SubagentErrorKind) error {
 	case SubagentErrorCancelled:
 		return ErrSubagentCancelled
 	default:
-		return errors.New("lebro: subagent failure")
+	default:
+		return ErrSubagentRunFailed
 	}
 }
 
