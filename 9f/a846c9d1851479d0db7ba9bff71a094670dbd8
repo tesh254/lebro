@@ -1,0 +1,48 @@
+evals/compare.go
+  s_3b47fbdf580b2c::t_a32f06d1669255 11-14,122,131-139
+evals/experiment.go
+  s_3b47fbdf580b2c::t_f9fad6a20a28d5 9,174,185,193-195,332-334,386-388,450-453
+evals/model_scorer_test.go
+  s_3b47fbdf580b2c::t_059efccf5272f2 7
+  s_3b47fbdf580b2c::t_75abe5a6ec2ec9 305-308,322-366
+  s_3b47fbdf580b2c::t_de7063f57d5469 8-9,16
+  s_3b47fbdf580b2c::t_ecbcb19d50eda1 281-302
+evals/scorer.go
+  s_3b47fbdf580b2c::t_3f6599efa8d18b 7,160-163,224-227,296-299,356-359,409-414,444-447,455-458
+evals/model_scorer.go
+  s_3b47fbdf580b2c::t_9c02777cdc3d88 7,70-75,104-106,112-114,130-134
+evals/store_test.go
+  s_3b47fbdf580b2c::t_560b9f45bf821f 261-320
+evals/store.go
+  s_3b47fbdf580b2c::t_bcbdd72f985387 23-24,72-74,96-100
+evals/experiment_test.go
+  s_3b47fbdf580b2c::t_ed09a7096e9bae 482-645
+evals/errors.go
+  s_3b47fbdf580b2c::t_7819aa22c81bff 18
+  s_3b47fbdf580b2c::t_67e0e5a3b1d034 3-17,19-23
+evals/dataset_test.go
+  s_3b47fbdf580b2c::t_98671af7f3254e 201-205,216-253
+evals/scorer_test.go
+  s_3b47fbdf580b2c::t_a66fa0ed599d77 250-264,283-288,290
+  s_3b47fbdf580b2c::t_8274b362c87058 7
+  s_3b47fbdf580b2c::t_364033c5c80e7f 334-395
+  s_3b47fbdf580b2c::t_9f3c0e6fab636a 278-282,289,291
+evals/compare_test.go
+  s_3b47fbdf580b2c::t_fd8406f01d51e5 113-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9fa846c9d1851479d0db7ba9bff71a094670dbd8",
+  "prompts": {},
+  "sessions": {
+    "s_3b47fbdf580b2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a228f54-bf9e-4224-8663-4a49a1b259d5",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
