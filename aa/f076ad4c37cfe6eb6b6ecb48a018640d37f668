@@ -1,0 +1,52 @@
+examples/studio/main.go
+  s_d2bdb3fe98fc08::t_02a6692ee74b6b 154-158
+  s_d2bdb3fe98fc08::t_9a4145df813824 20
+examples/README.md
+  s_d2bdb3fe98fc08::t_4c2c8184ae083b 130-137
+studio/start.go
+  s_d2bdb3fe98fc08::t_daec454197bab2 1-52
+CHANGELOG.md
+  s_d2bdb3fe98fc08::t_d892a5f94b06fa 9-30
+studio/main_test.go
+  s_d2bdb3fe98fc08::t_1974c74aac992c 1-20
+studio/assets.go
+  s_d2bdb3fe98fc08::t_3b386bebb2053b 1-79
+studio/doc.go
+  s_d2bdb3fe98fc08::t_0c7101f75ca1cc 1-45
+studio/server_test.go
+  s_d2bdb3fe98fc08::t_a8133fef2f4944 1-313
+examples/studio/main_test.go
+  s_d2bdb3fe98fc08::t_38a949e9a526a3 1-46
+studio/server.go
+  s_d2bdb3fe98fc08::t_d049fcb07f7a1c 1-11,13-150,152-156,159-160
+  s_d2bdb3fe98fc08::t_4c4cbe4103b863 151
+  s_d2bdb3fe98fc08::t_34bb736a63bf59 157-158
+  s_d2bdb3fe98fc08::t_793edf4e5c8df5 12
+.gitignore
+  s_d2bdb3fe98fc08::t_4126e96bcd1388 7-14
+studio/traces.go
+  s_d2bdb3fe98fc08::t_6b40ef2d7a8822 65-68,76-93
+  s_d2bdb3fe98fc08::t_e25603083e962b 1-64,69-75,94-140
+studio/traces_test.go
+  s_d2bdb3fe98fc08::t_3dd2948c7aef85 1-58,60-113
+  s_d2bdb3fe98fc08::t_4680a74a2ba652 59
+README.md
+  s_d2bdb3fe98fc08::t_cfc296e74bc86b 1287-1344
+  s_d2bdb3fe98fc08::t_a201edd9a02947 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "aaf076ad4c37cfe6eb6b6ecb48a018640d37f668",
+  "prompts": {},
+  "sessions": {
+    "s_d2bdb3fe98fc08": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8e9446eb-2235-43df-a5fd-4fe0107eb2b9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
