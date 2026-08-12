@@ -1111,6 +1111,15 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: run %q %w: %s", input.RunID, ErrNotSuspended, run.Status)}
 	}
 
+	// Resume re-authorizes the run against the caller identity on the resume
+	// context. A suspended run may be resumed by a different caller than the one
+	// that started it, so the policy must gate the resumed execution rather than
+	// trusting the original authorization. A denial fails the run without
+	// executing any remaining step.
+	if derr := authorize(ctx, w.policy, ActionWorkflowRun, Resource{Kind: ResourceKindWorkflow, ID: string(w.definition.ID)}); derr != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorUnauthorized, Err: derr}
+	}
+
 	_, envelope, err := w.loadSuspendSnapshot(ctx, input.RunID)
 	if err != nil {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: err}

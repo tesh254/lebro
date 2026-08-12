@@ -127,6 +127,67 @@ func TestAgentToolCallDeniedByPolicy(t *testing.T) {
 	}
 }
 
+// denyAfterFirstPolicy allows the first authorization and denies every one
+// after it, so a workflow can start (and suspend) under one caller yet be denied
+// on resume.
+type denyAfterFirstPolicy struct {
+	calls int
+}
+
+func (p *denyAfterFirstPolicy) Authorize(_ context.Context, _ Identity, _ Action, _ Resource) Decision {
+	p.calls++
+	if p.calls == 1 {
+		return Allow()
+	}
+	return Deny("resumed under a denied identity")
+}
+
+func TestWorkflowResumeDeniedByPolicy(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	suspendHandler := StepHandlerFunc(func(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		return nil, &SuspendError{Signal: SuspendSignal{
+			StepID:   "await",
+			Contract: json.RawMessage(`{"approved":true}`),
+		}}
+	})
+	policy := &denyAfterFirstPolicy{}
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{
+		Definition:     WorkflowDefinition{ID: "resume-wf"},
+		SchemaCompiler: contractCompiler(),
+		Store:          store,
+		Policy:         policy,
+		Steps: []Step{
+			{Definition: StepDefinition{ID: "await", SuspendSchema: json.RawMessage(`{"const":{"approved":true}}`)}, Handler: suspendHandler},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	suspended, err := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`"start"`)})
+	if err != nil {
+		t.Fatalf("initial run returned error: %v", err)
+	}
+	if suspended.Status != RunStatusSuspended {
+		t.Fatalf("status = %q, want suspended", suspended.Status)
+	}
+
+	_, resumeErr := wf.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: json.RawMessage(`{"approved":true}`)})
+	if resumeErr == nil {
+		t.Fatal("expected resume to be denied")
+	}
+	if !errors.Is(resumeErr, ErrWorkflowUnauthorized) || !errors.Is(resumeErr, ErrPolicyDenied) {
+		t.Fatalf("resume denial must match ErrWorkflowUnauthorized and ErrPolicyDenied: %v", resumeErr)
+	}
+}
+
 func TestWorkflowRunDeniedByPolicy(t *testing.T) {
 	t.Parallel()
 

@@ -100,6 +100,45 @@ func TestPolicyStoreDeniesWriteBeforeDelegating(t *testing.T) {
 	}
 }
 
+// threadDenyPolicy denies writes to one specific thread ID and allows the rest,
+// so a mixed-thread batch that touches the denied thread must be rejected.
+type threadDenyPolicy struct {
+	denyThread string
+}
+
+func (p *threadDenyPolicy) Authorize(_ context.Context, _ Identity, _ Action, resource Resource) Decision {
+	if resource.ID == p.denyThread {
+		return Deny("blocked thread")
+	}
+	return Allow()
+}
+
+func TestPolicyStoreAppendMessagesAuthorizesEveryThreadInBatch(t *testing.T) {
+	inner := NewMemoryStore()
+	guarded, err := NewPolicyStore(inner, &threadDenyPolicy{denyThread: "t2"})
+	if err != nil {
+		t.Fatalf("NewPolicyStore: %v", err)
+	}
+
+	// The first record targets an allowed thread; a later record targets the
+	// denied thread. The whole batch must be rejected, not just the first record.
+	err = guarded.Messages().AppendMessages(context.Background(), []MessageRecord{
+		{ID: "m1", ThreadID: "t1"},
+		{ID: "m2", ThreadID: "t2"},
+	})
+	if !errors.Is(err, ErrPolicyDenied) {
+		t.Fatalf("mixed-thread batch touching a denied thread must be denied: %v", err)
+	}
+	// The denied batch must not have reached the store.
+	page, listErr := inner.Messages().ListMessages(context.Background(), "t1", PageRequest{})
+	if listErr != nil && !errors.Is(listErr, ErrNotFound) {
+		t.Fatalf("list t1: %v", listErr)
+	}
+	if len(page.Records) != 0 {
+		t.Fatalf("denied batch leaked %d messages into the store", len(page.Records))
+	}
+}
+
 func TestPolicyStoreTransactionRepositoriesAreGuarded(t *testing.T) {
 	guarded := newGuardedStore(t, &actionPolicy{deny: ActionStorageWrite})
 

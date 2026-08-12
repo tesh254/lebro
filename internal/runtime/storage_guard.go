@@ -105,7 +105,12 @@ type guardedThreadRepository struct {
 }
 
 func (r *guardedThreadRepository) CreateThread(ctx context.Context, record ThreadRecord) error {
-	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindThread, ID: string(record.ID), Tenant: record.Namespace}); err != nil {
+	// The Tenant is intentionally not taken from record.Namespace: it is
+	// caller-supplied and unverified, so asserting it as the authorized scope
+	// would let a caller pass the check with a namespace it does not own.
+	// Tenant-scoped enforcement for a known ID needs a scope-aware repository
+	// read, which is deferred; the guard authorizes the operation by ID only.
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindThread, ID: string(record.ID)}); err != nil {
 		return err
 	}
 	return r.inner.CreateThread(ctx, record)
@@ -119,7 +124,13 @@ func (r *guardedThreadRepository) GetThread(ctx context.Context, id ThreadID) (T
 }
 
 func (r *guardedThreadRepository) UpdateThread(ctx context.Context, record ThreadRecord) error {
-	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindThread, ID: string(record.ID), Tenant: record.Namespace}); err != nil {
+	// Authorize by ID only, not by record.Namespace: the namespace on the
+	// incoming record is caller-supplied and may differ from the stored thread's
+	// namespace, so trusting it would let a caller who knows another tenant's
+	// thread ID pass this check with its own namespace and then overwrite the
+	// stored scope. Verifying against the existing scope needs a scope-aware
+	// repository read, which is deferred.
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindThread, ID: string(record.ID)}); err != nil {
 		return err
 	}
 	return r.inner.UpdateThread(ctx, record)
@@ -131,12 +142,19 @@ type guardedMessageRepository struct {
 }
 
 func (r *guardedMessageRepository) AppendMessages(ctx context.Context, records []MessageRecord) error {
-	id := ""
-	if len(records) > 0 {
-		id = string(records[0].ThreadID)
-	}
-	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindMessage, ID: id}); err != nil {
-		return err
+	// A batch may target more than one thread. Authorize every distinct thread
+	// it touches, in first-seen order, so a policy that permits one thread but
+	// denies another in the same batch is not bypassed by only checking the
+	// first record.
+	seen := make(map[ThreadID]struct{}, len(records))
+	for _, record := range records {
+		if _, ok := seen[record.ThreadID]; ok {
+			continue
+		}
+		seen[record.ThreadID] = struct{}{}
+		if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindMessage, ID: string(record.ThreadID)}); err != nil {
+			return err
+		}
 	}
 	return r.inner.AppendMessages(ctx, records)
 }

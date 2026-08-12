@@ -352,7 +352,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 
 	emitter.emit(runID, 0, "", RunEventStarted)
 
-	if err := a.authorizeRun(ctx); err != nil {
+	if err := a.authorizeRun(runCtx); err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
 		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
 	}
@@ -607,7 +607,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	runID := a.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
 
-	if authErr := a.authorizeRun(ctx); authErr != nil {
+	if authErr := a.authorizeRun(runCtx); authErr != nil {
 		cancel()
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, authErr)
 		return nil, authErr
