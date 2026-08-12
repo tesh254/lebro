@@ -38,6 +38,7 @@ type FeedbackRecord struct {
 	ID        string            `json:"id,omitempty"`
 	RunID     lebro.RunID       `json:"run_id"`
 	TraceID   TraceID           `json:"trace_id,omitempty"`
+	RunSpanID SpanID            `json:"run_span_id,omitempty"`
 	SpanID    SpanID            `json:"span_id,omitempty"`
 	Kind      FeedbackKind      `json:"kind"`
 	Score     float64           `json:"score"`

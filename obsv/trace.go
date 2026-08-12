@@ -100,9 +100,12 @@ type SpanEvent struct {
 // Start and End bracket the operation; End is zero on a span that has not
 // ended. Duration is the runtime-reported elapsed time for the operation, which
 // is authoritative even when a fixed Clock makes End equal Start. ParentSpanID
-// is empty on the root span of a trace. Usage is populated on model spans and
-// aggregated onto run spans. Err is the Go error the run reported, retained for
-// in-process exporters; Error is its message, which is what a backend receives.
+// is empty on the root span of a trace. RunSpanID is the SpanID of the run root
+// span this span belongs to; it uniquely identifies one run occurrence within a
+// trace, which RunID alone cannot do when nested primitives reuse the same
+// RunID. Usage is populated on model spans and aggregated onto run spans. Err is
+// the Go error the run reported, retained for in-process exporters; Error is its
+// message, which is what a backend receives.
 //
 // A Span is a value: exporters receive a copy and own the Attributes and Events
 // maps and slices reachable from it, so retaining a span past the export call
@@ -114,6 +117,7 @@ type Span struct {
 	Kind         SpanKind          `json:"kind"`
 	Name         string            `json:"name"`
 	RunID        lebro.RunID       `json:"run_id,omitempty"`
+	RunSpanID    SpanID            `json:"run_span_id,omitempty"`
 	StepID       lebro.StepID      `json:"step_id,omitempty"`
 	Step         int               `json:"step,omitempty"`
 	Start        time.Time         `json:"start"`

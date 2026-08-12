@@ -122,10 +122,10 @@ type Observer struct {
 	// synchronous exports on the emitting goroutine; queue is nil.
 	synchronous bool
 
-	// traces maps a run to its trace so RecordFeedback can correlate a record
-	// from a RunID alone. Bounded by traceMemoryLimit.
+	// traces maps a run to its trace and run root span so RecordFeedback can
+	// correlate a record from a RunID alone. Bounded by traceMemoryLimit.
 	traceMu sync.Mutex
-	traces  map[lebro.RunID]TraceID
+	traces  map[lebro.RunID]runTraceRef
 	traceLR []lebro.RunID
 
 	stats struct {
@@ -187,7 +187,7 @@ func New(config Config) (*Observer, error) {
 		batchSize:   config.BatchSize,
 		timeout:     timeout,
 		synchronous: config.QueueSize < 0,
-		traces:      make(map[lebro.RunID]TraceID),
+		traces:      make(map[lebro.RunID]runTraceRef),
 		done:        make(chan struct{}),
 	}
 
@@ -229,7 +229,7 @@ func (o *Observer) OnRunEvent(event lebro.RunEvent) {
 // mapping, and hands the span to the queue.
 func (o *Observer) onSpanEnd(span Span) {
 	if span.Kind == SpanKindRun {
-		o.rememberTrace(span.RunID, span.TraceID)
+		o.rememberTrace(span.RunID, span.TraceID, span.SpanID)
 	}
 
 	filtered := o.filter(span)
@@ -370,8 +370,14 @@ func (o *Observer) RecordFeedback(ctx context.Context, record FeedbackRecord) er
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = o.clock.Now()
 	}
-	if record.TraceID == "" {
-		record.TraceID = o.traceFor(record.RunID)
+	if record.TraceID == "" || record.RunSpanID == "" {
+		ref := o.traceFor(record.RunID)
+		if record.TraceID == "" {
+			record.TraceID = ref.traceID
+		}
+		if record.RunSpanID == "" {
+			record.RunSpanID = ref.runSpanID
+		}
 	}
 	record.Metadata = cloneAttributes(record.Metadata)
 
@@ -479,9 +485,16 @@ func (o *Observer) exportContextFrom(parent context.Context) (context.Context, c
 	return context.WithTimeout(parent, o.timeout)
 }
 
-// rememberTrace records a run's trace for later feedback correlation, evicting
-// the oldest entry once the bound is reached.
-func (o *Observer) rememberTrace(runID lebro.RunID, traceID TraceID) {
+// runTraceRef records the trace and run root span for a finished run, so
+// RecordFeedback can correlate a record from a RunID alone.
+type runTraceRef struct {
+	traceID   TraceID
+	runSpanID SpanID
+}
+
+// rememberTrace records a run's trace and root span for later feedback
+// correlation, evicting the oldest entry once the bound is reached.
+func (o *Observer) rememberTrace(runID lebro.RunID, traceID TraceID, runSpanID SpanID) {
 	if runID == "" || traceID == "" {
 		return
 	}
@@ -495,11 +508,11 @@ func (o *Observer) rememberTrace(runID lebro.RunID, traceID TraceID) {
 		o.traceLR = o.traceLR[1:]
 		delete(o.traces, oldest)
 	}
-	o.traces[runID] = traceID
+	o.traces[runID] = runTraceRef{traceID: traceID, runSpanID: runSpanID}
 	o.traceLR = append(o.traceLR, runID)
 }
 
-func (o *Observer) traceFor(runID lebro.RunID) TraceID {
+func (o *Observer) traceFor(runID lebro.RunID) runTraceRef {
 	o.traceMu.Lock()
 	defer o.traceMu.Unlock()
 	return o.traces[runID]

@@ -118,6 +118,16 @@ type stepKey struct {
 	pos  int
 }
 
+// stepSlot identifies one step slot within a run's in-flight state. For
+// non-fan-out steps the branch is empty and the slot is unique by position. For
+// fan-out branch steps the branch name disambiguates concurrent branches that
+// share the same step position, preventing one branch's step span from
+// overwriting another's.
+type stepSlot struct {
+	pos    int
+	branch string
+}
+
 // runTrace holds the in-flight spans for a single run.
 type runTrace struct {
 	key     runKey
@@ -130,11 +140,12 @@ type runTrace struct {
 	// tools maps an open tool span by tool-call ID. A step may request several
 	// tool calls, and the runtime may execute them in any order.
 	tools map[string]*Span
-	// steps maps an open step span by step position, which is unique within a
-	// run even when two steps share a declared StepID.
-	steps map[int]*Span
-	// attempts maps an open retry-attempt span by step position.
-	attempts map[int]*Span
+	// steps maps an open step span by step slot, which is unique within a run
+	// even when two steps share a declared StepID, and disambiguates fan-out
+	// branches that share the same step position.
+	steps map[stepSlot]*Span
+	// attempts maps an open retry-attempt span by step slot.
+	attempts map[stepSlot]*Span
 	// modelAttempts is the open provider-attempt span for the current model
 	// call.
 	modelAttempt *Span
@@ -241,6 +252,7 @@ func (t *Tracer) runFor(event lebro.RunEvent) *runTrace {
 		Kind:         SpanKindRun,
 		Name:         "run",
 		RunID:        event.RunID,
+		RunSpanID:    spanID,
 		Start:        event.Timestamp,
 		Status:       SpanStatusUnset,
 	}
@@ -250,8 +262,8 @@ func (t *Tracer) runFor(event lebro.RunEvent) *runTrace {
 		rootID:   spanID,
 		root:     root,
 		tools:    make(map[string]*Span),
-		steps:    make(map[int]*Span),
-		attempts: make(map[int]*Span),
+		steps:    make(map[stepSlot]*Span),
+		attempts: make(map[stepSlot]*Span),
 	}
 	t.runs[key] = run
 	return run
@@ -276,9 +288,11 @@ func (t *Tracer) locateParent(event lebro.RunEvent) (TraceID, SpanID) {
 }
 
 // parentFor returns the span a step-scoped operation should attach to: the
-// enclosing step span when the run has one open, otherwise the run span.
-func (run *runTrace) parentFor(step int) SpanID {
-	if span, ok := run.steps[step]; ok {
+// enclosing step span when the run has one open, otherwise the run span. The
+// branch parameter disambiguates fan-out branch steps that share a step
+// position.
+func (run *runTrace) parentFor(step int, branch string) SpanID {
+	if span, ok := run.steps[stepSlot{pos: step, branch: branch}]; ok {
 		return span.SpanID
 	}
 	return run.rootID
@@ -292,6 +306,7 @@ func (t *Tracer) newSpan(run *runTrace, event lebro.RunEvent, kind SpanKind, nam
 		Kind:         kind,
 		Name:         name,
 		RunID:        event.RunID,
+		RunSpanID:    run.rootID,
 		StepID:       event.StepID,
 		Step:         event.Step,
 		Start:        event.Timestamp,
@@ -306,10 +321,19 @@ func (t *Tracer) newSpan(run *runTrace, event lebro.RunEvent, kind SpanKind, nam
 func (t *Tracer) openStep(run *runTrace, event lebro.RunEvent) {
 	span := t.newSpan(run, event, SpanKindStep, stepName(event.StepID), run.rootID)
 	span.setAttr(AttrStepPosition, strconv.Itoa(event.Step))
-	run.steps[event.Step] = span
+	slot := stepSlot{pos: event.Step, branch: event.Branch}
+	run.steps[slot] = span
 	// Record the step span so a nested run launched from it can parent to it.
 	// The nested run reports this step by RunID, StepID, and position, so the
 	// anchor is keyed the way the child will address it.
+	if event.Branch != "" {
+		// Fan-out branches share the same step key (same RunID, StepID, and
+		// position). Overwriting would attach a later branch's nested run to
+		// the wrong step span. Preserve the first branch's anchor — it is an
+		// unambiguous parent for all branches' nested runs.
+		t.recordAnchorIfAbsent(event, run.traceID, span.SpanID)
+		return
+	}
 	key := stepKey{run: event.RunID, step: event.StepID, pos: event.Step}
 	if _, exists := t.stepTraces[key]; !exists {
 		t.anchorOrder = append(t.anchorOrder, key)
@@ -327,7 +351,8 @@ func (t *Tracer) pruneAnchors() {
 }
 
 func (t *Tracer) closeStep(run *runTrace, event lebro.RunEvent) {
-	span, ok := run.steps[event.Step]
+	slot := stepSlot{pos: event.Step, branch: event.Branch}
+	span, ok := run.steps[slot]
 	if !ok {
 		// A step can finish without a started event when input validation
 		// rejects it before any attempt runs. Synthesize the span so the
@@ -335,7 +360,7 @@ func (t *Tracer) closeStep(run *runTrace, event lebro.RunEvent) {
 		span = t.newSpan(run, event, SpanKindStep, stepName(event.StepID), run.rootID)
 		span.setAttr(AttrStepPosition, strconv.Itoa(event.Step))
 	}
-	delete(run.steps, event.Step)
+	delete(run.steps, slot)
 	// A step's own span is no longer a valid parent once it has ended, but the
 	// mapping is left in place: a nested run's events may arrive after its
 	// launching step finished, and parenting to the ended step span is still
@@ -344,25 +369,25 @@ func (t *Tracer) closeStep(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) openStepAttempt(run *runTrace, event lebro.RunEvent) {
-	span := t.newSpan(run, event, SpanKindStepAttempt, fmt.Sprintf("%s attempt %d", stepName(event.StepID), event.Attempt), run.parentFor(event.Step))
+	span := t.newSpan(run, event, SpanKindStepAttempt, fmt.Sprintf("%s attempt %d", stepName(event.StepID), event.Attempt), run.parentFor(event.Step, event.Branch))
 	span.setAttr(AttrAttempt, strconv.Itoa(event.Attempt))
 	if event.Delay > 0 {
 		span.setAttr(AttrAttemptDelay, event.Delay.String())
 	}
-	run.attempts[event.Step] = span
+	run.attempts[stepSlot{pos: event.Step, branch: event.Branch}] = span
 }
 
 func (t *Tracer) closeStepAttempt(run *runTrace, event lebro.RunEvent) {
-	span, ok := run.attempts[event.Step]
+	span, ok := run.attempts[stepSlot{pos: event.Step, branch: event.Branch}]
 	if !ok {
 		return
 	}
-	delete(run.attempts, event.Step)
+	delete(run.attempts, stepSlot{pos: event.Step, branch: event.Branch})
 	t.end(span, event, statusForError(event.Error))
 }
 
 func (t *Tracer) openModel(run *runTrace, event lebro.RunEvent) {
-	run.model = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event.Step))
+	run.model = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event.Step, event.Branch))
 	run.deltas = 0
 	run.dropped = 0
 }
@@ -370,7 +395,7 @@ func (t *Tracer) openModel(run *runTrace, event lebro.RunEvent) {
 func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 	span := run.model
 	if span == nil {
-		span = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event.Step))
+		span = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event.Step, event.Branch))
 	}
 	run.model = nil
 	span.Usage = event.Usage
@@ -391,7 +416,7 @@ func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) openModelAttempt(run *runTrace, event lebro.RunEvent) {
-	parent := run.parentFor(event.Step)
+	parent := run.parentFor(event.Step, event.Branch)
 	if run.model != nil {
 		parent = run.model.SpanID
 	}
@@ -414,7 +439,7 @@ func (t *Tracer) closeModelAttempt(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) openTool(run *runTrace, event lebro.RunEvent) {
-	span := t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event.Step))
+	span := t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event.Step, event.Branch))
 	span.setAttr(AttrToolID, string(event.ToolID))
 	if event.ToolCallID != "" {
 		span.setAttr(AttrToolCallID, event.ToolCallID)
@@ -426,6 +451,14 @@ func (t *Tracer) openTool(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) recordAnchor(event lebro.RunEvent, traceID TraceID, spanID SpanID) {
+	if event.Branch != "" {
+		// Fan-out branches share the same step key. Overwriting the anchor
+		// would attach a later branch's subagent to the wrong tool span.
+		// Preserve the existing anchor — the outer step span is an unambiguous
+		// parent for all branches' nested runs.
+		t.recordAnchorIfAbsent(event, traceID, spanID)
+		return
+	}
 	key := stepKey{run: event.RunID, step: event.StepID, pos: event.Step}
 	if _, exists := t.stepTraces[key]; !exists {
 		t.anchorOrder = append(t.anchorOrder, key)
@@ -433,10 +466,23 @@ func (t *Tracer) recordAnchor(event lebro.RunEvent, traceID TraceID, spanID Span
 	t.stepTraces[key] = stepAnchor{trace: traceID, span: spanID}
 }
 
+// recordAnchorIfAbsent records a step anchor only when no anchor exists for the
+// key. It is used for fan-out branch steps and tools, where concurrent branches
+// share the same step key and overwriting would attach a later branch's nested
+// run to the wrong span.
+func (t *Tracer) recordAnchorIfAbsent(event lebro.RunEvent, traceID TraceID, spanID SpanID) {
+	key := stepKey{run: event.RunID, step: event.StepID, pos: event.Step}
+	if _, exists := t.stepTraces[key]; exists {
+		return
+	}
+	t.anchorOrder = append(t.anchorOrder, key)
+	t.stepTraces[key] = stepAnchor{trace: traceID, span: spanID}
+}
+
 func (t *Tracer) closeTool(run *runTrace, event lebro.RunEvent) {
 	span, ok := run.tools[event.ToolCallID]
 	if !ok {
-		span = t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event.Step))
+		span = t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event.Step, event.Branch))
 		span.setAttr(AttrToolID, string(event.ToolID))
 		if event.ToolCallID != "" {
 			span.setAttr(AttrToolCallID, event.ToolCallID)
@@ -505,7 +551,7 @@ func (t *Tracer) recordBranch(run *runTrace, event lebro.RunEvent) {
 		branch = event.DeltaText
 	}
 	target := run.root
-	if span, ok := run.steps[event.Step]; ok {
+	if span, ok := run.steps[stepSlot{pos: event.Step, branch: event.Branch}]; ok {
 		target = span
 		span.setAttr(AttrBranch, branch)
 	}
