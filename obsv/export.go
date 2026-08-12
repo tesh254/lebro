@@ -4,11 +4,11 @@ import "context"
 
 // SpanExporter delivers ended spans to a backend.
 //
-// The Observer calls an exporter on its own goroutine, never on the goroutine
-// running the agent, and treats every outcome as non-fatal: a returned error is
-// reported to the ErrorHandler and a panic is recovered. An exporter therefore
-// cannot change a run's result, but it can still delay its own queue, so a slow
-// backend should buffer internally rather than blocking here.
+// In queued mode, the Observer calls an exporter on its own goroutine,
+// never on the goroutine running the agent. QueueSize < 0 deliberately
+// invokes export synchronously on the emitting goroutine. Every outcome is
+// non-fatal: a returned error is reported to ErrorHandler and a panic is
+// recovered, but a synchronous exporter can still delay the run.
 //
 // The spans slice and everything reachable from it is owned by the exporter: the
 // Observer built it from copies and does not read it again. Retaining it is
