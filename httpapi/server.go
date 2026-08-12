@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -186,7 +187,7 @@ func (s *Server) buildRouter() http.Handler {
 	// a typed JSON body there keeps every response on this server shaped the
 	// same way, rather than mixing in net/http's plain-text 404.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if allowed, ok := methodsByPath[matchedPath(methodsByPath, r.URL.Path)]; ok {
+		if allowed, ok := methodsByPath[matchedPath(methodsByPath, r.URL.EscapedPath())]; ok {
 			sort.Strings(allowed)
 			w.Header().Set("Allow", strings.Join(allowed, ", "))
 			writeError(w, r, ErrorCodeMethodNotAllowed)
@@ -210,16 +211,25 @@ func (s *Server) buildRouter() http.Handler {
 // wrong-method request to a real path from a request to a path that does not
 // exist; the mux itself does the real routing.
 //
-// Matching must agree with the mux, or the classification is worse than none:
-// "/health/" is not a path the mux serves, so reporting 405 there would tell a
-// client that GET is not allowed on a route whose only method is GET. Trailing
-// and interior empty segments are therefore significant and are compared rather
-// than trimmed, so only a path the mux could route on some method is classified
-// as a method mismatch. Everything else stays a 404.
+// path must be the escaped path (url.URL.EscapedPath), because that is what the
+// mux splits on. Passing the decoded url.URL.Path instead would disagree with
+// the mux wherever a segment contains an escaped separator: an agent whose ID
+// is "team/assistant" is addressed as "/agents/team%2Fassistant/runs", which the
+// mux routes as three segments while the decoded form has four. The classifier
+// would then find no template and report 404 for a path the mux serves on
+// another method.
+//
+// Matching must agree with the mux in the other direction too, or the
+// classification is worse than none: "/health/" is not a path the mux serves,
+// so reporting 405 there would tell a client that GET is not allowed on a route
+// whose only method is GET. Trailing and interior empty segments are therefore
+// significant and are compared rather than trimmed.
 //
 // A template matches when it has the same segments and every non-wildcard
 // segment is equal. Wildcards match any single non-empty segment, mirroring
-// net/http's "{id}".
+// net/http's "{id}". Literal segments are compared after unescaping so a client
+// that percent-encodes an ordinary character — "/agents/%61lpha/runs" — is
+// still recognized, matching how the mux resolves them.
 func matchedPath(templates map[string][]string, path string) string {
 	// Strip only the leading empty segment produced by the mandatory "/"
 	// prefix; every later empty segment is a real, distinguishing part of the
@@ -239,7 +249,7 @@ func matchedPath(templates map[string][]string, path string) string {
 				}
 				continue
 			}
-			if segment != segments[i] {
+			if segment != unescapeSegment(segments[i]) {
 				matched = false
 				break
 			}
@@ -249,6 +259,18 @@ func matchedPath(templates map[string][]string, path string) string {
 		}
 	}
 	return ""
+}
+
+// unescapeSegment decodes one percent-encoded path segment, returning it
+// unchanged when it is not valid encoding. A malformed segment cannot match a
+// literal template segment anyway, so refusing to fail on it keeps the
+// classifier total.
+func unescapeSegment(segment string) string {
+	decoded, err := url.PathUnescape(segment)
+	if err != nil {
+		return segment
+	}
+	return decoded
 }
 
 // handlerForRoute returns the handler for one table entry. The switch is on

@@ -344,6 +344,61 @@ func TestUnroutablePathsAreNotReportedAsMethodMismatch(t *testing.T) {
 	}
 }
 
+// A path segment containing an escaped separator must classify the same way as
+// any other. An agent whose ID contains a slash is addressed with %2F, which
+// the mux keeps within one segment; classifying against the decoded path would
+// split it into two and find no route, reporting 404 for a path the server
+// demonstrably serves on another method.
+//
+// The first subtest pins that premise: if POST stops returning 200 the 405
+// assertion below would be vacuous, because there would be no route to mismatch
+// against.
+func TestEncodedPathSeparatorsClassifyLikeTheMux(t *testing.T) {
+	newServer := func(t *testing.T) http.Handler {
+		t.Helper()
+		server := httpapi.NewServer(httpapi.ServerConfig{})
+		must(t, server.ExposeAgent(newAgent(t, "team/assistant",
+			&scriptedModel{responses: []lebro.ModelResponse{textResponse("ok")}})))
+		return server.Handler()
+	}
+
+	t.Run("the encoded path is routable", func(t *testing.T) {
+		recorder := doJSON(t, newServer(t), http.MethodPost, "/agents/team%2Fassistant/runs", httpapi.RunRequest{})
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body)
+		}
+	})
+
+	t.Run("wrong method on the encoded path", func(t *testing.T) {
+		recorder := doJSON(t, newServer(t), http.MethodGet, "/agents/team%2Fassistant/runs", nil)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusMethodNotAllowed, recorder.Body)
+		}
+		assertErrorCode(t, recorder, httpapi.ErrorCodeMethodNotAllowed)
+		if allow := recorder.Header().Get("Allow"); !strings.Contains(allow, http.MethodPost) {
+			t.Fatalf("Allow = %q, want it to include %q", allow, http.MethodPost)
+		}
+	})
+
+	// An ordinary character the client chose to percent-encode must resolve to
+	// the same route, matching how the mux unescapes literal segments.
+	//
+	// The method has to be one the route does not serve. A correct method never
+	// reaches the catch-all — the mux resolves "/%61gents" to the real GET
+	// handler and answers 200 — so a matching-method probe would pass whether or
+	// not the classifier unescapes anything.
+	t.Run("percent-encoded literal segment", func(t *testing.T) {
+		server := httpapi.NewServer(httpapi.ServerConfig{})
+		must(t, server.ExposeAgent(newAgent(t, "alpha", &scriptedModel{})))
+
+		recorder := doJSON(t, server.Handler(), http.MethodPut, "/%61gents", nil)
+		if recorder.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusMethodNotAllowed, recorder.Body)
+		}
+		assertErrorCode(t, recorder, httpapi.ErrorCodeMethodNotAllowed)
+	})
+}
+
 // HEAD is served for every GET route, so the surface the router exposes equals
 // the surface the document describes.
 func TestHeadIsServedForGetRoutes(t *testing.T) {
