@@ -6,6 +6,24 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Human approval gates for protected workflow steps. A new `ApprovalGate`,
+  built with `NewApprovalGate`, wraps a protected `StepHandler` (typically a
+  `ToolStep`) in two generated steps: a request step that suspends the run with
+  a typed `ApprovalRequest` (action, resource, reason, expiry, and the reviewed
+  arguments) and a guard step that resumes only with a validated
+  `ApprovalDecision` and invokes the protected handler solely on approval. The
+  gate reuses the existing durable suspend/resume machinery unchanged — the
+  request is the suspend payload and the decision is the validated resume input
+  — so a pending approval survives a process restart, and reject, approve,
+  timeout, and invalid-decision outcomes are all recorded through the existing
+  run events. Expiry is enforced deterministically at resume by comparing the
+  decision against the request's TTL-derived `ExpiresAt` (a zero TTL never
+  expires), so no background timer is introduced. A denial fails the run with
+  `ErrApprovalRejected`, a late decision with `ErrApprovalExpired`, and an
+  unusable decision with `ErrApprovalInvalidDecision`. The public surface adds
+  `ApprovalGate`, `NewApprovalGate`, `ApprovalRequest`, `ApprovalDecision`,
+  `ApprovalRequirement`, and the three sentinels; no new module dependency is
+  introduced.
 - Durable schedules and recurring workflow runs. A new `Scheduler` fires
   persisted schedules whose next fire time has arrived, reusing
   `LinearWorkflow.Run` for each execution, so recurring work survives a process
