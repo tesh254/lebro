@@ -1119,6 +1119,90 @@ Run the HTTP server example (no network or API key required):
 go run ./examples/http-server
 ```
 
+## Typed Go client
+
+`httpapi.Client` calls a lebro HTTP API with the same result and stream
+contracts the in-process primitives use, so moving an agent out of process
+changes how a call is constructed rather than how its answer is read. It ships
+in the same package as the server and decodes the same wire types, so the
+client's contract cannot drift from the server's.
+
+```go
+client, err := httpapi.NewClient(httpapi.ClientConfig{
+    BaseURL: "https://api.example.com",
+    Header: func(r *http.Request) {
+        r.Header.Set("Authorization", "Bearer "+token)
+    },
+})
+
+result, err := client.Run(ctx, "assistant", httpapi.RunRequest{
+    Messages: []httpapi.MessageInput{{Content: "hello"}},
+}, httpapi.WithThread("thread-1"))
+```
+
+Streamed runs mirror `lebro.StreamRun` — the same `Events`, `Cancel`, `Wait`,
+and `Drain` — so remote and local streaming read identically:
+
+```go
+stream, err := client.RunStream(ctx, "assistant", request)
+if err != nil {
+    return err
+}
+defer stream.Cancel()
+
+for event := range stream.Events {
+    fmt.Print(event.Text)
+}
+result, err := stream.Wait()
+```
+
+`Cancel` closes the connection, which the server observes as a disconnect and
+turns into a cancelled run; it also releases the reader goroutine when a caller
+abandons the stream without draining it. The terminal event is consumed by the
+stream and surfaces through `Wait`, so it cannot be mistaken for another delta
+or missed by breaking out of the loop early. A stream that ends without one
+reports `ErrStreamIncomplete` rather than an empty success — a dropped
+connection and a failed run are different facts.
+
+Failures arrive as `*APIError` carrying the server's `ErrorCode` and unwrapping
+to the lebro sentinel that classifies it, so error handling does not change when
+an agent moves behind HTTP:
+
+```go
+_, err := client.Run(ctx, "assistant", request)
+
+if errors.Is(err, lebro.ErrAgentToolFailure) { /* same check as a local run */ }
+
+var apiErr *httpapi.APIError
+if errors.As(err, &apiErr) {
+    log.Printf("code=%s status=%d", apiErr.Code, apiErr.StatusCode)
+}
+```
+
+A run the caller's context ended reports the context error it observed, so an
+elapsed deadline matches `context.DeadlineExceeded` and an explicit cancel
+matches `context.Canceled` — the same distinction the in-process runtime makes.
+
+A code maps to a sentinel only where every runtime error producing it shares
+one. `invalid_input` and `invalid_output` are raised by both agent and workflow
+failures, so they carry the code alone rather than a sentinel that would be
+wrong half the time; the same applies to `invalid_request`,
+`method_not_allowed`, and `internal_error`, which have no runtime counterpart.
+Branch on `APIError.Code` for those.
+
+`ContractVersion` names the wire contract both sides speak and is published in
+the generated document as `info.x-lebro-contract-version`.
+`Client.CheckCompatibility` compares major versions and reports
+`ErrIncompatibleContract` on a mismatch. It is never called automatically, so a
+run does not pay for a round trip it did not ask for; call it once at startup
+when the server's version is not otherwise pinned.
+
+Run the client example (no network or API key required):
+
+```sh
+go run ./examples/http-client
+```
+
 ## Examples
 
 Runnable examples live in [examples](examples/README.md), one directory per

@@ -14,6 +14,23 @@ import (
 // translated into an older, lossy subset.
 const openAPIVersion = "3.1.0"
 
+// ContractVersion is the version of the wire contract this package serves and
+// the Client speaks. It is semantic: the major component changes when a client
+// built against an older version can no longer read a response — a field
+// removed or retyped, a route withdrawn, an error code repurposed — and the
+// minor component changes for additions an older client ignores safely.
+//
+// It is deliberately separate from ServerConfig.Version, which names the
+// application's own API version and is chosen by the application. Two
+// deployments of different applications share this contract; they do not share
+// their versions.
+const ContractVersion = "1.0.0"
+
+// contractVersionExtension is the OpenAPI info extension carrying
+// ContractVersion. It is an "x-" extension because the contract version is not
+// the document's own version field, which belongs to the application.
+const contractVersionExtension = "x-lebro-contract-version"
+
 // OpenAPI returns the OpenAPI 3.1 document describing every route this server
 // serves. It is generated from the same route table that builds the router, so
 // the document cannot omit a served route or describe one that is absent.
@@ -40,8 +57,9 @@ func (s *Server) OpenAPI() ([]byte, error) {
 
 func (s *Server) openAPIInfo() map[string]any {
 	info := map[string]any{
-		"title":   s.config.Title,
-		"version": s.config.Version,
+		"title":                  s.config.Title,
+		"version":                s.config.Version,
+		contractVersionExtension: ContractVersion,
 	}
 	if s.config.Description != "" {
 		info["description"] = s.config.Description

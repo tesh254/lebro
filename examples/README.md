@@ -118,6 +118,15 @@ loopback port, so no fixed port and no API key are required):
 go run ./examples/http-server
 ```
 
+Run the HTTP client example (calls that API with the typed client: a complete
+run, a streamed run the caller cancels mid-flight, a workflow round trip, typed
+error handling, and the contract-version handshake; the API is served
+in-process through `httptest`, so no network or API key is required):
+
+```sh
+go run ./examples/http-client
+```
+
 Run the supervised delegation example (a supervisor agent selects a named
 subagent and delegates a focused task to it; no network or API key required):
 
