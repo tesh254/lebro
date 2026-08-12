@@ -210,13 +210,23 @@ func (s *Server) buildRouter() http.Handler {
 // wrong-method request to a real path from a request to a path that does not
 // exist; the mux itself does the real routing.
 //
-// A template matches when it has the same number of segments and every
-// non-wildcard segment is equal. Wildcards match any single non-empty segment,
-// which mirrors how net/http's "{id}" behaves.
+// Matching must agree with the mux, or the classification is worse than none:
+// "/health/" is not a path the mux serves, so reporting 405 there would tell a
+// client that GET is not allowed on a route whose only method is GET. Trailing
+// and interior empty segments are therefore significant and are compared rather
+// than trimmed, so only a path the mux could route on some method is classified
+// as a method mismatch. Everything else stays a 404.
+//
+// A template matches when it has the same segments and every non-wildcard
+// segment is equal. Wildcards match any single non-empty segment, mirroring
+// net/http's "{id}".
 func matchedPath(templates map[string][]string, path string) string {
-	segments := strings.Split(strings.Trim(path, "/"), "/")
+	// Strip only the leading empty segment produced by the mandatory "/"
+	// prefix; every later empty segment is a real, distinguishing part of the
+	// request path.
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	for template := range templates {
-		candidate := strings.Split(strings.Trim(template, "/"), "/")
+		candidate := strings.Split(strings.TrimPrefix(template, "/"), "/")
 		if len(candidate) != len(segments) {
 			continue
 		}

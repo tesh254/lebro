@@ -252,7 +252,7 @@ func TestOpenAPISanitizesWorkflowSchemaNames(t *testing.T) {
 	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "billing.invoice/sync")))
 	document := generateDocument(t, server)
 
-	name := "WorkflowRunRequest_billing_x2einvoice_x2fsync"
+	name := "WorkflowRunRequest_billing_x00002einvoice_x00002fsync"
 	if _, ok := document.Components.Schemas[name]; !ok {
 		t.Fatalf("sanitized schema %q missing; schemas = %v", name, schemaNames(document))
 	}
@@ -283,6 +283,84 @@ func TestOpenAPIWorkflowSchemaNamesDoNotCollide(t *testing.T) {
 	if found != 3 {
 		t.Fatalf("per-workflow schemas = %d, want 3 distinct: %v", found, schemaNames(document))
 	}
+}
+
+// The escape must be fixed-width, not just present. A variable-width "_x%x" is
+// ambiguous whenever an escape is followed by a hex digit: "a.b" ('.' is 0x2e,
+// then a literal 'b') and "a\u2eb" both render as "a_x2eb", so one workflow's
+// schema silently overwrites the other's.
+func TestOpenAPIWorkflowSchemaNamesSurviveHexAdjacency(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "a.b")))
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "a˫")))
+	document := generateDocument(t, server)
+
+	found := 0
+	for _, name := range schemaNames(document) {
+		if strings.HasPrefix(name, "WorkflowRunRequest_a") {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Fatalf("per-workflow schemas = %d, want 2 distinct for IDs that differ only across an escape boundary: %v",
+			found, schemaNames(document))
+	}
+}
+
+// The workflow body is one operation covering every exposed workflow ID, so
+// "required" must hold for all of them. A server mixing a schema-ful workflow
+// with a schema-less one must not tell clients running the schema-less one that
+// a body is mandatory, because the handler accepts an omitted body there.
+func TestOpenAPIWorkflowBodyRequiredAccountsForMixedRegistrations(t *testing.T) {
+	requiredFor := func(t *testing.T, expose func(*httpapi.Server)) bool {
+		t.Helper()
+		server := httpapi.NewServer(httpapi.ServerConfig{})
+		expose(server)
+		encoded, err := server.OpenAPI()
+		must(t, err)
+		var raw struct {
+			Paths map[string]map[string]struct {
+				RequestBody *struct {
+					Required bool `json:"required"`
+				} `json:"requestBody"`
+			} `json:"paths"`
+		}
+		must(t, json.Unmarshal(encoded, &raw))
+		body := raw.Paths["/workflows/{id}/runs"]["post"].RequestBody
+		if body == nil {
+			t.Fatal("workflow run documents no request body")
+		}
+		return body.Required
+	}
+
+	t.Run("every workflow requires input", func(t *testing.T) {
+		got := requiredFor(t, func(s *httpapi.Server) {
+			must(t, s.ExposeWorkflow(newEchoWorkflow(t, "alpha")))
+			must(t, s.ExposeWorkflow(newEchoWorkflow(t, "beta")))
+		})
+		if !got {
+			t.Fatal("body documented optional though every workflow rejects an omitted body")
+		}
+	})
+
+	t.Run("mixed registrations", func(t *testing.T) {
+		got := requiredFor(t, func(s *httpapi.Server) {
+			must(t, s.ExposeWorkflow(newEchoWorkflow(t, "alpha")))
+			must(t, s.ExposeWorkflow(newPermissiveWorkflow(t, "loose")))
+		})
+		if got {
+			t.Fatal("body documented required though the schema-less workflow accepts an omitted body")
+		}
+	})
+
+	t.Run("no workflow requires input", func(t *testing.T) {
+		got := requiredFor(t, func(s *httpapi.Server) {
+			must(t, s.ExposeWorkflow(newPermissiveWorkflow(t, "loose")))
+		})
+		if got {
+			t.Fatal("body documented required though no workflow declares an input schema")
+		}
+	})
 }
 
 // The workflow request body must combine per-workflow schemas with anyOf.

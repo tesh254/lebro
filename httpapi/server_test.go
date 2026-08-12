@@ -302,6 +302,48 @@ func TestWrongMethodOnExistingRouteReturnsMethodNotAllowed(t *testing.T) {
 	}
 }
 
+// A path the mux cannot route is a 404, not a 405. The method-mismatch
+// classification must agree with the mux: "/health/" is not a served path, so
+// answering 405 there would tell a client GET is not allowed on a route whose
+// only method is GET — worse than the plain 404 it replaced.
+func TestUnroutablePathsAreNotReportedAsMethodMismatch(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{Store: lebro.NewMemoryStore()})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", &scriptedModel{})))
+	handler := server.Handler()
+
+	// Trailing-slash variants reach the catch-all and must be reported as
+	// absent.
+	for _, target := range []string{
+		"/health/",
+		"/agents/assistant/runs/",
+		"/threads/t-1/",
+	} {
+		t.Run(target, func(t *testing.T) {
+			recorder := doJSON(t, handler, http.MethodGet, target, nil)
+			if recorder.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("%s reported 405, but it is not a path the router serves on any method", target)
+			}
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusNotFound, recorder.Body)
+			}
+			assertErrorCode(t, recorder, httpapi.ErrorCodeNotFound)
+		})
+	}
+
+	// Doubled slashes never reach a handler at all: net/http cleans the path
+	// and redirects first. Asserting 404 for these would be asserting mux
+	// behavior this package does not control; what matters is only that they
+	// are not misreported as a method mismatch.
+	for _, target := range []string{"/agents//runs", "/threads//messages"} {
+		t.Run(target, func(t *testing.T) {
+			recorder := doJSON(t, handler, http.MethodGet, target, nil)
+			if recorder.Code == http.StatusMethodNotAllowed {
+				t.Fatalf("%s reported 405, but it is not a path the router serves on any method", target)
+			}
+		})
+	}
+}
+
 // HEAD is served for every GET route, so the surface the router exposes equals
 // the surface the document describes.
 func TestHeadIsServedForGetRoutes(t *testing.T) {

@@ -222,6 +222,9 @@ func TestStreamTerminalEventCarriesRunTotalUsage(t *testing.T) {
 
 	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
 	events := readSSE(t, recorder.Body)
+	if len(events) == 0 {
+		t.Fatal("no events emitted")
+	}
 
 	final := events[len(events)-1]
 	if final.name != "run_succeeded" {

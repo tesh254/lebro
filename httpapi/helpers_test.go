@@ -115,6 +115,26 @@ func newEchoWorkflow(t *testing.T, id string) *lebro.LinearWorkflow {
 	}))
 }
 
+// newPermissiveWorkflow builds a single-step workflow with no declared input
+// schema, so it accepts any input including none at all.
+func newPermissiveWorkflow(t *testing.T, id string) *lebro.LinearWorkflow {
+	t.Helper()
+	return mustValue(lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+		Definition: lebro.WorkflowDefinition{ID: lebro.WorkflowID(id), Name: id},
+		Steps: []lebro.Step{
+			{
+				Definition: lebro.StepDefinition{ID: "passthrough"},
+				Handler: lebro.StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
+					if len(input) == 0 {
+						return json.RawMessage(`{"received":null}`), nil
+					}
+					return input, nil
+				}),
+			},
+		},
+	}))
+}
+
 // doJSON issues a request against a handler and returns the recorded response.
 func doJSON(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
 	t.Helper()

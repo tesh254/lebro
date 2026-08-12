@@ -99,20 +99,34 @@ func (s *Server) openAPIOperation(r route) map[string]any {
 }
 
 // requestBodyRequired reports whether an operation's request body may be
-// omitted. An agent run accepts an empty body — an agent whose instructions
-// drive the first turn needs no seed messages — but a workflow whose first step
-// declares a required input rejects an omitted body with 400, so documenting it
-// as optional would publish a contract the server does not honor.
+// omitted.
+//
+// An agent run accepts an empty body — an agent whose instructions drive the
+// first turn needs no seed messages — so its body is always optional.
+//
+// The workflow run body is one operation covering every exposed workflow ID, so
+// "required" has to hold for all of them. A workflow whose first step declares
+// a required input rejects an omitted body with 400, but a schema-less workflow
+// accepts one. Marking the body required whenever *any* workflow has a schema
+// would misreport the schema-less ones; marking it optional whenever any lacks
+// a schema would misreport the others. The body is therefore required only when
+// every exposed workflow demands one, which is the strongest claim true of all
+// of them. Per-workflow precision lives in the anyOf branches, where each
+// schema states its own "required" list.
 func (s *Server) requestBodyRequired(r route) bool {
 	if r.requestBody != schemaNameWorkflowRunRequest {
 		return false
 	}
-	for _, summary := range s.workflowSummaries() {
-		if len(summary.InputSchema) > 0 {
-			return true
+	summaries := s.workflowSummaries()
+	if len(summaries) == 0 {
+		return false
+	}
+	for _, summary := range summaries {
+		if len(summary.InputSchema) == 0 {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // operationDescription augments a route's static description with what is
@@ -278,12 +292,18 @@ func workflowRequestSchema(summary WorkflowSummary) map[string]any {
 // Characters outside the OpenAPI component-name character set are escaped so a
 // workflow ID containing a dot or slash cannot produce an unreferenceable name.
 //
-// The encoding is reversible, which matters: replacing every unsafe rune with a
-// single "_" would map the distinct IDs "billing.sync" and "billing_sync" onto
-// one component name, and the second workflow registered would silently
-// overwrite the first's schema — publishing the wrong validation contract for
-// one of them. Escaping as "_xHH" (with a literal underscore escaped too) keeps
-// distinct IDs distinct.
+// The encoding must be injective, because two IDs sharing a component name mean
+// the second workflow registered silently overwrites the first's schema and one
+// of them is published with the wrong validation contract. Two properties get
+// that:
+//
+// Every unsafe rune is escaped rather than replaced, so "billing.sync" and
+// "billing_sync" stay distinct — a single "_" substitution would merge them.
+//
+// The escape is fixed-width. A variable-width "_x%x" is ambiguous whenever an
+// escape is followed by a hex digit: "a.b" and "a\u2eb" both render as
+// "a_x2eb", because the parser cannot tell where the code point ends. Six hex
+// digits cover every valid rune (max U+10FFFF) with no delimiter needed.
 func workflowSchemaName(id string) string {
 	var b strings.Builder
 	b.WriteString("WorkflowRunRequest_")
@@ -292,9 +312,7 @@ func workflowSchemaName(id string) string {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
 			b.WriteRune(r)
 		default:
-			// %x keeps the escape within the component-name character set for
-			// every rune, including multi-byte ones.
-			fmt.Fprintf(&b, "_x%x", r)
+			fmt.Fprintf(&b, "_x%06x", r)
 		}
 	}
 	return b.String()
