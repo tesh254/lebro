@@ -1,0 +1,53 @@
+internal/runtime/cron.go
+  s_836db516870927::t_67f8c739091064 131-133,135-138
+internal/runtime/sqlite_storage.go
+  s_836db516870927::t_d10210198623fa 812
+  s_836db516870927::t_87ec377e6af924 819
+  s_836db516870927::t_6df2519eedda45 769-788,790,792
+internal/runtime/scheduler_test.go
+  s_836db516870927::t_440d4422f08a63 299-301
+  s_836db516870927::t_1ceafdc6fd9ee3 504-506
+  s_836db516870927::t_bc50f19b08bf39 431-446
+  s_836db516870927::t_f3d9113efa4b36 347-430,447-493
+internal/runtime/postgres_contract_test.go
+  s_836db516870927::t_04020dbc723d7d 34
+public.go
+  s_836db516870927::t_0ce81708463572 19
+  s_836db516870927::t_bf49d31a9459cb 252
+  s_836db516870927::t_e4b42d4d21458e 331
+internal/runtime/schedule.go
+  s_836db516870927::t_4f63cb245b3163 82-87
+  s_836db516870927::t_ed256a1ddde267 80-81
+internal/runtime/postgres_storage.go
+  s_836db516870927::t_d76fe81a931e1f 794
+  s_836db516870927::t_bd2532c4094910 805
+  s_836db516870927::t_9a3f7f79d01e3b 153
+internal/runtime/postgres_storage_test.go
+  s_836db516870927::t_04020dbc723d7d 44,203,356
+internal/runtime/scheduler.go
+  s_836db516870927::t_1471d2a672cb3a 202-204,206,208,211-223,225-226,241,248,257,264-273,286-294,299-301,305,308-312,324
+  s_836db516870927::t_ee74dbf9e49663 454-467
+  s_836db516870927::t_5f3212ba0a0320 335,342-346,348-352,361-362,367-372,374,376,387-391,394-398
+internal/runtime/types.go
+  s_836db516870927::t_5e5b8b558f5c0d 17-19
+  s_836db516870927::t_4f63cb245b3163 12-16
+internal/runtime/memory_storage.go
+  s_836db516870927::t_c128fcf53df8d7 589-591,593-594
+  s_836db516870927::t_d76982ae526630 613,617
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "790ceeafbb309b78b1d7de52311b1320b441477c",
+  "prompts": {},
+  "sessions": {
+    "s_836db516870927": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f9107fbd-bb7c-4de7-9d0b-5b7459712d91",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
