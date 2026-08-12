@@ -24,7 +24,7 @@ type LogExporter interface {
 }
 
 // MetricExporter delivers usage and latency metrics to a backend. The same
-// ownership and isolation rules as SpanExporter apply.
+// Exporters receive owned records and failures are isolated, but Observer.RecordFeedback invokes this exporter synchronously.
 type MetricExporter interface {
 	ExportMetrics(ctx context.Context, metrics []Metric) error
 }
