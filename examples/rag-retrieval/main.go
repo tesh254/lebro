@@ -124,15 +124,20 @@ func main() {
 	}
 }
 
-// truncate shortens text to at most limit runes. It counts runes rather than
-// bytes so a multi-byte character is never cut in half — the same rune-safety
-// property the chunker guarantees.
+// truncate shortens text to at most limit runes, ellipsis included, so the
+// printed width really is bounded by limit. It counts runes rather than bytes so
+// a multi-byte character is never cut in half — the same rune-safety property
+// the chunker guarantees.
 func truncate(text string, limit int) string {
 	runes := []rune(text)
 	if len(runes) <= limit {
 		return text
 	}
-	return string(runes[:limit]) + "..."
+	const ellipsis = "..."
+	if limit <= len(ellipsis) {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-len(ellipsis)]) + ellipsis
 }
 
 // localEmbedder is a deterministic EmbeddingModel used so the example needs no

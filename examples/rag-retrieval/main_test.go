@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/tesh254/lebro"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
@@ -161,5 +162,35 @@ func TestAgentGroundsAnswerInRetrieval(t *testing.T) {
 	}
 	if !sawToolResult {
 		t.Fatal("transcript has no retrieved handbook content")
+	}
+}
+
+func TestTruncateBoundsRuneWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  string
+		limit int
+		want  string
+	}{
+		{name: "shorter than limit", text: "short", limit: 10, want: "short"},
+		{name: "exactly the limit", text: "abcde", limit: 5, want: "abcde"},
+		{name: "longer than limit", text: "abcdefghij", limit: 6, want: "abc..."},
+		{name: "multi-byte stays intact", text: "日本語のテキスト", limit: 6, want: "日本語..."},
+		{name: "limit at ellipsis width", text: "abcdef", limit: 3, want: "abc"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := truncate(test.text, test.limit)
+			if got != test.want {
+				t.Fatalf("truncate(%q, %d) = %q, want %q", test.text, test.limit, got, test.want)
+			}
+			// The advertised bound is on runes, ellipsis included.
+			if n := len([]rune(got)); n > test.limit {
+				t.Fatalf("truncate(%q, %d) returned %d runes, want at most %d", test.text, test.limit, n, test.limit)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("truncate(%q, %d) = %q is not valid UTF-8", test.text, test.limit, got)
+			}
+		})
 	}
 }

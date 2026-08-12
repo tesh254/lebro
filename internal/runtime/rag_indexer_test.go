@@ -549,8 +549,20 @@ type failingChunker struct{ err error }
 func (c failingChunker) Chunk(context.Context, Document) ([]Chunk, error) { return nil, c.err }
 
 // bufferReusingEmbedder returns the same backing slice on every call, refilled
-// with the call number. Real providers are free to do this, and the indexer must
-// not depend on the slice staying valid after Embed returns.
+// per call. Real providers are free to do this, and the indexer must not depend
+// on the slice staying valid after Embed returns.
+//
+// Each call sets a single distinct coordinate, so the per-call vectors are basis
+// vectors: mutually orthogonal, scoring 1 against their own batch and 0 against
+// any other. Filling every coordinate with the call number instead would make
+// the vectors collinear, and cosine similarity would score them all 1 — so the
+// test would pass whether or not the indexer copies.
+func (e *bufferReusingEmbedder) vectorFor(call int) []float32 {
+	vector := make([]float32, e.dimension)
+	vector[call%e.dimension] = 1
+	return vector
+}
+
 type bufferReusingEmbedder struct {
 	dimension int
 	buffer    []float32
@@ -564,8 +576,13 @@ func (e *bufferReusingEmbedder) Embed(_ context.Context, inputs []string) ([][]f
 	if e.buffer == nil {
 		e.buffer = make([]float32, e.dimension)
 	}
+	copy(e.buffer, e.vectorFor(e.calls))
+	// Zero the coordinates this call does not own, so the buffer holds exactly
+	// one basis vector rather than accumulating every previous call's.
 	for i := range e.buffer {
-		e.buffer[i] = float32(e.calls)
+		if i != e.calls%e.dimension {
+			e.buffer[i] = 0
+		}
 	}
 	vectors := make([][]float32, len(inputs))
 	for i := range inputs {
@@ -609,12 +626,14 @@ func TestIndexerCopiesProviderVectors(t *testing.T) {
 		t.Fatalf("Embed calls = %d, want 3", embedder.calls)
 	}
 
-	// Each chunk must retain the vector from its own batch. Without a copy all
-	// three would hold the final call's values.
-	for chunkIndex, want := range []float32{1, 2, 3} {
+	// Each chunk must retain the vector from its own batch. Chunk i was embedded
+	// by call i+1, and the per-call vectors are orthogonal, so querying with one
+	// call's vector matches only the chunk that kept it. Without the copy every
+	// record aliases the final call's buffer, so chunks 0 and 1 score 0 here.
+	for chunkIndex := range 3 {
 		id := ChunkID("doc-1", chunkIndex)
 		hits, err := store.Search(ctx, SimilarityQuery{
-			Vector: []float32{want, want, want, want, want, want, want, want},
+			Vector: embedder.vectorFor(chunkIndex + 1),
 			Index:  "docs",
 			TopK:   10,
 		})
@@ -623,13 +642,12 @@ func TestIndexerCopiesProviderVectors(t *testing.T) {
 		}
 		var found bool
 		for _, hit := range hits {
-			if hit.ID == id {
-				found = true
-				// A cosine score of 1 means the stored vector is parallel to the
-				// batch fill it should have kept.
-				if hit.Score < 0.999 {
-					t.Fatalf("chunk %s score against its own batch vector = %f, want ~1", id, hit.Score)
-				}
+			if hit.ID != id {
+				continue
+			}
+			found = true
+			if hit.Score < 0.999 {
+				t.Fatalf("chunk %s score against its own batch vector = %f, want ~1; the record did not keep its own embedding", id, hit.Score)
 			}
 		}
 		if !found {
