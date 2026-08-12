@@ -6,6 +6,7 @@ import (
 	"runtime/debug"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -170,6 +171,7 @@ type Experiment struct {
 	metadata    map[string]string
 	clock       lebro.Clock
 	ids         ExperimentIDSource
+	runSeq      atomic.Uint64
 }
 
 // New validates the configuration and returns an Experiment. It rejects an
@@ -180,7 +182,7 @@ func New(config ExperimentConfig) (*Experiment, error) {
 	if err := config.Dataset.Validate(); err != nil {
 		return nil, err
 	}
-	if config.Target == nil {
+	if isNilInterface(config.Target) {
 		return nil, ErrNoTarget
 	}
 	if len(config.Scorers) == 0 {
@@ -188,7 +190,9 @@ func New(config ExperimentConfig) (*Experiment, error) {
 	}
 	seen := make(map[string]struct{}, len(config.Scorers))
 	for i, scorer := range config.Scorers {
-		if scorer == nil {
+		// A typed-nil scorer is non-nil as an interface, so it would pass a plain
+		// nil check and panic on the Name() call below.
+		if isNilInterface(scorer) {
 			return nil, fmt.Errorf("%w: scorer %d is nil", ErrInvalidScorer, i)
 		}
 		name := scorer.Name()
@@ -325,7 +329,9 @@ dispatch:
 // evaluateCase invokes the target and, when it produced an answer, every scorer.
 func (e *Experiment) evaluateCase(ctx context.Context, index int, testCase Case) CaseResult {
 	result := CaseResult{CaseID: testCase.ID, Index: index, StartedAt: e.clock.Now()}
-	output, err := e.target.Invoke(ctx, testCase)
+	// The case is copied because a target may retain or mutate what it is given,
+	// and the captured dataset is reused by every later run and every scorer.
+	output, err := e.target.Invoke(ctx, testCase.Clone())
 	result.Output = output
 	result.Status = output.Status
 	if err != nil {
@@ -377,9 +383,9 @@ func safeScore(ctx context.Context, scorer Scorer, testCase Case, output Output)
 	if err != nil {
 		return Score{}, &ScorerFailure{Scorer: name, CaseID: testCase.ID, Message: err.Error()}
 	}
-	if scored.Scorer == "" {
-		scored.Scorer = name
-	}
+	// The configured name always wins: a scorer that reported a different name
+	// would be silently dropped from its own aggregate.
+	scored.Scorer = name
 	scored.CaseID = testCase.ID
 	return scored, nil
 }
@@ -441,7 +447,10 @@ func (e *Experiment) newExperimentID(startedAt time.Time) ExperimentID {
 	if len(version) > 12 {
 		version = version[:12]
 	}
-	return ExperimentID(fmt.Sprintf("%s-%s-%d", e.dataset.ID, version, startedAt.UnixNano()))
+	// A monotonic sequence disambiguates repeated runs: a fixed or coarse clock
+	// would otherwise hand two runs the same ID and silently overwrite history.
+	sequence := e.runSeq.Add(1)
+	return ExperimentID(fmt.Sprintf("%s-%s-%d-%d", e.dataset.ID, version, startedAt.UnixNano(), sequence))
 }
 
 // systemClock reads the wall clock.

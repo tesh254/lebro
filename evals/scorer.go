@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -156,7 +157,10 @@ var _ Scorer = (*ExactMatch)(nil)
 func (s *ExactMatch) Name() string { return s.name }
 
 // Score compares the selected text to the case's Expected value.
-func (s *ExactMatch) Score(_ context.Context, testCase Case, output Output) (Score, error) {
+func (s *ExactMatch) Score(ctx context.Context, testCase Case, output Output) (Score, error) {
+	if err := ctx.Err(); err != nil {
+		return Score{}, err
+	}
 	actual := normalizeText(selectText(s.selector, output), s.ignoreCase, s.trimSpace)
 	expected := normalizeText(testCase.Expected, s.ignoreCase, s.trimSpace)
 	score := Score{Scorer: s.name, CaseID: testCase.ID}
@@ -217,7 +221,10 @@ func (s *Contains) Name() string { return s.name }
 // the case's Expected value when no substring was configured. A case with
 // neither is a scorer failure: there is nothing to look for, and scoring 1 for
 // "contains the empty string" would silently pass every output.
-func (s *Contains) Score(_ context.Context, testCase Case, output Output) (Score, error) {
+func (s *Contains) Score(ctx context.Context, testCase Case, output Output) (Score, error) {
+	if err := ctx.Err(); err != nil {
+		return Score{}, err
+	}
 	needle := s.substring
 	if needle == "" {
 		needle = testCase.Expected
@@ -286,7 +293,10 @@ var _ Scorer = (*Regexp)(nil)
 func (s *Regexp) Name() string { return s.name }
 
 // Score reports whether the selected text matches the pattern.
-func (s *Regexp) Score(_ context.Context, testCase Case, output Output) (Score, error) {
+func (s *Regexp) Score(ctx context.Context, testCase Case, output Output) (Score, error) {
+	if err := ctx.Err(); err != nil {
+		return Score{}, err
+	}
 	matched := s.pattern.MatchString(selectText(s.selector, output))
 	score := Score{Scorer: s.name, CaseID: testCase.ID}
 	if matched != s.negate {
@@ -343,7 +353,10 @@ func (s *JSONEquals) Name() string { return s.name }
 // Score compares canonicalized JSON. Unparseable JSON on either side is a
 // measured mismatch rather than a scorer failure: a target that emitted invalid
 // JSON is a result worth recording, not a broken measurement.
-func (s *JSONEquals) Score(_ context.Context, testCase Case, output Output) (Score, error) {
+func (s *JSONEquals) Score(ctx context.Context, testCase Case, output Output) (Score, error) {
+	if err := ctx.Err(); err != nil {
+		return Score{}, err
+	}
 	score := Score{Scorer: s.name, CaseID: testCase.ID}
 	actualRaw := selectText(s.selector, output)
 	actual, actualErr := canonicalJSON([]byte(actualRaw))
@@ -393,6 +406,12 @@ func NewNumericRange(config NumericRangeConfig) (*NumericRange, error) {
 	if config.Min == nil && config.Max == nil {
 		return nil, fmt.Errorf("%w: numeric range scorer requires a minimum or a maximum", ErrInvalidScorer)
 	}
+	if config.Min != nil && math.IsNaN(*config.Min) {
+		return nil, fmt.Errorf("%w: numeric range minimum must be a number", ErrInvalidScorer)
+	}
+	if config.Max != nil && math.IsNaN(*config.Max) {
+		return nil, fmt.Errorf("%w: numeric range maximum must be a number", ErrInvalidScorer)
+	}
 	if config.Min != nil && config.Max != nil && *config.Min > *config.Max {
 		return nil, fmt.Errorf("%w: numeric range minimum %v exceeds maximum %v",
 			ErrInvalidScorer, *config.Min, *config.Max)
@@ -422,12 +441,21 @@ func (s *NumericRange) Name() string { return s.name }
 
 // Score parses the selected text and checks it against the bounds. Text that is
 // not a number is a measured failure, not a scorer failure.
-func (s *NumericRange) Score(_ context.Context, testCase Case, output Output) (Score, error) {
+func (s *NumericRange) Score(ctx context.Context, testCase Case, output Output) (Score, error) {
+	if err := ctx.Err(); err != nil {
+		return Score{}, err
+	}
 	score := Score{Scorer: s.name, CaseID: testCase.ID}
 	raw := strings.TrimSpace(selectText(s.selector, output))
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
 		score.Reason = fmt.Sprintf("output %q is not a number", raw)
+		return score, nil
+	}
+	// NaN compares false against every bound, so without this it would satisfy
+	// any range. It is not a number in range; it is not a number at all.
+	if math.IsNaN(value) {
+		score.Reason = fmt.Sprintf("output %q is not a finite number", raw)
 		return score, nil
 	}
 	if s.min != nil && value < *s.min {

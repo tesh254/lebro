@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/tesh254/lebro"
@@ -66,9 +67,12 @@ type ModelScorerConfig struct {
 	// Payload data reaches the grader either way through the output, so this is
 	// about whether the question is needed to judge the answer.
 	IncludeInput bool
-	// Schema overrides the requested output schema. Nil selects
-	// ModelScorerSchema; pass a non-nil empty value to request no schema at all
-	// from a provider that rejects one.
+	// Schema requests a JSON output schema from the model. Nil (the default)
+	// requests none, so grading works against any lebro.Model — including the
+	// openai package's text-generation adapter, which rejects every request
+	// carrying an output schema — by asking for JSON in the prompt and decoding
+	// it from the message content. Set it to ModelScorerSchema, or a stricter
+	// schema, only for a provider known to support structured output.
 	Schema json.RawMessage
 }
 
@@ -97,11 +101,16 @@ type ModelScorer struct {
 // [0,1] — a threshold no score can reach would make every case fail for a reason
 // the record would not explain.
 func NewModelScorer(config ModelScorerConfig) (*ModelScorer, error) {
-	if config.Model == nil {
+	// A typed-nil Model is non-nil as an interface, so a plain nil check would
+	// miss it and the first Generate call would panic through the adapter.
+	if isNilInterface(config.Model) {
 		return nil, fmt.Errorf("%w: model scorer requires a model", ErrInvalidScorer)
 	}
 	if !validSelector(config.Selector) {
 		return nil, fmt.Errorf("%w: unknown selector %q", ErrInvalidScorer, config.Selector)
+	}
+	if math.IsNaN(config.Threshold) {
+		return nil, fmt.Errorf("%w: model scorer threshold must be a number", ErrInvalidScorer)
 	}
 	if config.Threshold < 0 || config.Threshold > 1 {
 		return nil, fmt.Errorf("%w: model scorer threshold %v is outside [0,1]", ErrInvalidScorer, config.Threshold)
@@ -118,10 +127,12 @@ func NewModelScorer(config ModelScorerConfig) (*ModelScorer, error) {
 	if threshold == 0 {
 		threshold = 0.5
 	}
+	// No schema by default: some adapters — the openai package's text-generation
+	// Model among them — reject any request carrying an output schema, and the
+	// default prompt already asks for plain JSON that decodeVerdict can read from
+	// the message content. A caller sets Schema explicitly for a provider known
+	// to support structured output.
 	schema := config.Schema
-	if schema == nil {
-		schema = ModelScorerSchema
-	}
 	return &ModelScorer{
 		name:      name,
 		model:     config.Model,

@@ -258,6 +258,66 @@ func TestMemoryRepositoryReturnsCallerOwnedCopies(t *testing.T) {
 	}
 }
 
+// TestMemoryRepositoryClearsStaleResultsOnReplace pins that re-saving a record
+// under a reused ID drops that ID's prior results. Without it, a second run
+// reusing the first run's experiment ID would have its results appended onto
+// the first run's, so CaseResultsByExperiment would return duplicate or stale
+// cases that never ran under the new record.
+func TestMemoryRepositoryClearsStaleResultsOnReplace(t *testing.T) {
+	repository := evals.NewMemoryRepository()
+	ctx := t.Context()
+	if err := repository.SaveExperiment(ctx, storedRecord("exp-1", "v1")); err != nil {
+		t.Fatalf("SaveExperiment() = %v", err)
+	}
+	if err := repository.AppendCaseResults(ctx, "exp-1", []evals.CaseResult{
+		{CaseID: "stale-a", Index: 0}, {CaseID: "stale-b", Index: 1},
+	}); err != nil {
+		t.Fatalf("AppendCaseResults() = %v", err)
+	}
+
+	// A second run reuses the ID.
+	if err := repository.SaveExperiment(ctx, storedRecord("exp-1", "v2")); err != nil {
+		t.Fatalf("SaveExperiment() = %v", err)
+	}
+	if err := repository.AppendCaseResults(ctx, "exp-1", []evals.CaseResult{{CaseID: "fresh", Index: 0}}); err != nil {
+		t.Fatalf("AppendCaseResults() = %v", err)
+	}
+
+	results, err := repository.CaseResultsByExperiment(ctx, "exp-1")
+	if err != nil {
+		t.Fatalf("CaseResultsByExperiment() = %v", err)
+	}
+	if len(results) != 1 || results[0].CaseID != "fresh" {
+		t.Fatalf("results = %+v, want only the second run's case", results)
+	}
+}
+
+// TestMemoryRepositoryRejectsResultsForUnsavedExperiment pins that
+// AppendCaseResults cannot create orphaned results ahead of SaveExperiment.
+// Without this, a caller mistakenly calling it before saving the record would
+// have those results silently adopted by any later experiment that reuses the
+// same ID.
+func TestMemoryRepositoryRejectsResultsForUnsavedExperiment(t *testing.T) {
+	repository := evals.NewMemoryRepository()
+	ctx := t.Context()
+	err := repository.AppendCaseResults(ctx, "never-saved", []evals.CaseResult{{CaseID: "a", Index: 0}})
+	if !errors.Is(err, evals.ErrNotFound) {
+		t.Fatalf("AppendCaseResults(unsaved ID) = %v, want ErrNotFound", err)
+	}
+
+	// A later experiment reusing the ID must not inherit the rejected write.
+	if err := repository.SaveExperiment(ctx, storedRecord("never-saved", "v1")); err != nil {
+		t.Fatalf("SaveExperiment() = %v", err)
+	}
+	results, err := repository.CaseResultsByExperiment(ctx, "never-saved")
+	if err != nil {
+		t.Fatalf("CaseResultsByExperiment() = %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("got %d results, want 0 — the rejected append must not have been adopted", len(results))
+	}
+}
+
 func TestMemoryRepositoryRejectsRecordWithoutID(t *testing.T) {
 	repository := evals.NewMemoryRepository()
 	if err := repository.SaveExperiment(t.Context(), evals.ExperimentRecord{DatasetID: "capitals"}); err == nil {

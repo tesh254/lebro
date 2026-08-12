@@ -479,6 +479,170 @@ func TestExperimentRejectsAlreadyCancelledContext(t *testing.T) {
 	}
 }
 
+// nilScorer is a *nilScorer whose only valid value in this test is nil — used
+// to construct a typed-nil Scorer interface value, which is non-nil under a
+// plain `== nil` comparison.
+type nilScorer struct{}
+
+func (s *nilScorer) Name() string { return "nil-scorer" }
+func (s *nilScorer) Score(context.Context, evals.Case, evals.Output) (evals.Score, error) {
+	panic("typed-nil scorer must never be scored")
+}
+
+// nilTarget is the same trick for Target.
+type nilTarget struct{}
+
+func (t *nilTarget) Name() string { return "nil-target" }
+func (t *nilTarget) Invoke(context.Context, evals.Case) (evals.Output, error) {
+	panic("typed-nil target must never be invoked")
+}
+
+// TestNewRejectsTypedNilScorer pins that a typed-nil Scorer pointer is caught at
+// construction rather than reaching scorer.Name() during Run, where it would
+// panic instead of returning ErrInvalidScorer.
+func TestNewRejectsTypedNilScorer(t *testing.T) {
+	var scorer *nilScorer
+	_, err := evals.New(evals.ExperimentConfig{
+		Dataset: answerDataset(),
+		Target:  answerTarget{},
+		Scorers: []evals.Scorer{scorer},
+	})
+	if !errors.Is(err, evals.ErrInvalidScorer) {
+		t.Fatalf("New(typed-nil scorer) = %v, want ErrInvalidScorer", err)
+	}
+}
+
+// TestNewRejectsTypedNilTarget covers the same defect for Target.
+func TestNewRejectsTypedNilTarget(t *testing.T) {
+	valid, err := evals.NewExactMatch(evals.ExactMatchConfig{})
+	if err != nil {
+		t.Fatalf("NewExactMatch() = %v", err)
+	}
+	var target *nilTarget
+	_, err = evals.New(evals.ExperimentConfig{
+		Dataset: answerDataset(),
+		Target:  target,
+		Scorers: []evals.Scorer{valid},
+	})
+	if !errors.Is(err, evals.ErrNoTarget) {
+		t.Fatalf("New(typed-nil target) = %v, want ErrNoTarget", err)
+	}
+}
+
+// TestExperimentStampsConfiguredScorerNameRegardlessOfReport pins that a scorer
+// reporting a different Score.Scorer than its own Name() does not fall out of
+// its own aggregate. Without this, a scorer with a bug in its own labeling — or
+// one that forwards a Score built by another scorer — would silently vanish
+// from ExperimentRecord.Scorers instead of being counted under the name it was
+// configured with.
+func TestExperimentStampsConfiguredScorerNameRegardlessOfReport(t *testing.T) {
+	mislabeled := evals.ScorerFunc{
+		ScorerName: "configured",
+		Fn: func(context.Context, evals.Case, evals.Output) (evals.Score, error) {
+			return evals.Score{Scorer: "something-else", Value: 1, Passed: true}, nil
+		},
+	}
+	experiment, err := evals.New(evals.ExperimentConfig{
+		Dataset: answerDataset(),
+		Target:  answerTarget{answers: map[evals.CaseID]string{"france": "Paris", "japan": "Tokyo", "peru": "Lima"}},
+		Scorers: []evals.Scorer{mislabeled},
+	})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	record, results, err := experiment.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	for _, result := range results {
+		if len(result.Scores) != 1 || result.Scores[0].Scorer != "configured" {
+			t.Fatalf("case %q score = %+v, want it labeled with the configured name", result.CaseID, result.Scores)
+		}
+	}
+	aggregate, ok := record.Aggregate("configured")
+	if !ok || aggregate.Scored != 3 {
+		t.Fatalf("aggregate for the configured name = (%+v, found=%v), want 3 scored", aggregate, ok)
+	}
+	if _, ok := record.Aggregate("something-else"); ok {
+		t.Fatal("an aggregate exists under the scorer's self-reported name, which was never configured")
+	}
+}
+
+// TestExperimentIsolatesCaseAcrossRuns pins that a target cannot corrupt the
+// dataset an Experiment captured at construction: because AgentTarget and
+// WorkflowTarget already copy the metadata they hand off, this test uses a raw
+// TargetFunc to exercise a caller-written target that does not, and checks the
+// experiment's own defense — cloning the case before Invoke — independently of
+// any target's cooperation. Without it, a mutating target's second run would see
+// the first run's changes instead of the dataset as configured.
+func TestExperimentIsolatesCaseAcrossRuns(t *testing.T) {
+	dataset := evals.Dataset{ID: "mut", Cases: []evals.Case{
+		{ID: "a", Input: json.RawMessage(`{"n":1}`), Expected: "keep", Metadata: map[string]string{"k": "v"}},
+	}}
+	var seen []string
+	mutator := evals.TargetFunc{
+		TargetName: "mutator",
+		Fn: func(_ context.Context, c evals.Case) (evals.Output, error) {
+			seen = append(seen, string(c.Input)+"|"+c.Metadata["k"])
+			c.Input[3] = 'X'
+			c.Metadata["k"] = "mutated"
+			return evals.Output{Text: "keep", Status: lebro.RunStatusSucceeded}, nil
+		},
+	}
+	scorer, err := evals.NewExactMatch(evals.ExactMatchConfig{})
+	if err != nil {
+		t.Fatalf("NewExactMatch() = %v", err)
+	}
+	experiment, err := evals.New(evals.ExperimentConfig{Dataset: dataset, Target: mutator, Scorers: []evals.Scorer{scorer}})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+
+	if _, _, err := experiment.Run(context.Background()); err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if _, results, err := experiment.Run(context.Background()); err != nil {
+		t.Fatalf("Run() = %v", err)
+	} else if !results[0].Scores[0].Passed {
+		t.Fatalf("second run scored %+v, want the original case to still pass", results[0].Scores[0])
+	}
+	if len(seen) != 2 || seen[0] != seen[1] {
+		t.Fatalf("target saw across two runs: %v, want identical input each run", seen)
+	}
+}
+
+// TestExperimentDefaultIDsDoNotCollideAcrossRuns pins that repeated Run calls
+// under a fixed or coarse clock still get distinct default experiment IDs.
+// Without a sequence component, two runs completing within the same clock tick
+// would silently overwrite each other's stored record and results under one ID.
+func TestExperimentDefaultIDsDoNotCollideAcrossRuns(t *testing.T) {
+	scorer, err := evals.NewExactMatch(evals.ExactMatchConfig{})
+	if err != nil {
+		t.Fatalf("NewExactMatch() = %v", err)
+	}
+	fixed := time.Unix(1000, 0).UTC()
+	experiment, err := evals.New(evals.ExperimentConfig{
+		Dataset: answerDataset(),
+		Target:  answerTarget{answers: map[evals.CaseID]string{"france": "Paris"}},
+		Scorers: []evals.Scorer{scorer},
+		Clock:   lebro.NewFixedClock(fixed),
+	})
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	first, _, err := experiment.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	second, _, err := experiment.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("two runs under a fixed clock produced the same ID %q", first.ID)
+	}
+}
+
 func TestNewRejectsInvalidConfig(t *testing.T) {
 	valid, err := evals.NewExactMatch(evals.ExactMatchConfig{})
 	if err != nil {

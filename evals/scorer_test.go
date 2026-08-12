@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/tesh254/lebro/evals"
@@ -246,6 +247,21 @@ func TestJSONEquals(t *testing.T) {
 			output:   evals.Output{Structured: json.RawMessage(`{"a":`)},
 			want:     false,
 		},
+		{
+			// canonicalJSON must decode the whole input, not just its first
+			// top-level value, or trailing garbage after a matching value would
+			// score a pass.
+			name:     "trailing garbage after a matching value is a measured mismatch",
+			expected: `{"a":1}`,
+			output:   evals.Output{Structured: json.RawMessage(`{"a":1} {"b":2}`)},
+			want:     false,
+		},
+		{
+			name:     "empty output against a non-empty expectation is a measured mismatch",
+			expected: `{"a":1}`,
+			output:   evals.Output{Structured: json.RawMessage(``)},
+			want:     false,
+		},
 	}
 
 	for _, test := range tests {
@@ -257,6 +273,22 @@ func TestJSONEquals(t *testing.T) {
 			assertScore(t, score, test.want)
 		})
 	}
+}
+
+// TestJSONEqualsRejectsEmptyOnBothSides pins that empty is never valid JSON, even
+// when it appears on both sides: a case with no Expected value paired with a
+// target that produced no output is a measured mismatch rather than a vacuous
+// pass, because neither side actually asserted anything comparable.
+func TestJSONEqualsRejectsEmptyOnBothSides(t *testing.T) {
+	scorer, err := evals.NewJSONEquals(evals.JSONEqualsConfig{})
+	if err != nil {
+		t.Fatalf("NewJSONEquals() = %v", err)
+	}
+	score, err := scorer.Score(context.Background(), evals.Case{ID: "c1", Expected: ""}, evals.Output{})
+	if err != nil {
+		t.Fatalf("Score() = %v, want a measured mismatch rather than an error", err)
+	}
+	assertScore(t, score, false)
 }
 
 func TestNumericRange(t *testing.T) {
@@ -298,6 +330,68 @@ func TestNumericRangeRejectsInvalidConfig(t *testing.T) {
 	min, max := 10.0, 1.0
 	if _, err := evals.NewNumericRange(evals.NumericRangeConfig{Min: &min, Max: &max}); !errors.Is(err, evals.ErrInvalidScorer) {
 		t.Fatalf("NewNumericRange(inverted) = %v, want ErrInvalidScorer", err)
+	}
+	nan := math.NaN()
+	if _, err := evals.NewNumericRange(evals.NumericRangeConfig{Min: &nan}); !errors.Is(err, evals.ErrInvalidScorer) {
+		t.Fatalf("NewNumericRange(NaN min) = %v, want ErrInvalidScorer", err)
+	}
+	if _, err := evals.NewNumericRange(evals.NumericRangeConfig{Max: &nan}); !errors.Is(err, evals.ErrInvalidScorer) {
+		t.Fatalf("NewNumericRange(NaN max) = %v, want ErrInvalidScorer", err)
+	}
+}
+
+// TestNumericRangeRejectsNaNValue pins that NaN compares false against every
+// bound — a naive min/max check would let it satisfy any range, including one
+// with no upper bound at all.
+func TestNumericRangeRejectsNaNValue(t *testing.T) {
+	min := 0.0
+	scorer, err := evals.NewNumericRange(evals.NumericRangeConfig{Min: &min})
+	if err != nil {
+		t.Fatalf("NewNumericRange() = %v", err)
+	}
+	score, err := scorer.Score(context.Background(), evals.Case{ID: "c1"}, evals.Output{Text: "NaN"})
+	if err != nil {
+		t.Fatalf("Score() = %v, want a measured mismatch rather than an error", err)
+	}
+	assertScore(t, score, false)
+}
+
+// TestScorersHonorCancelledContext pins that every built-in scorer checks the
+// context before judging: a scorer's own Scorer-interface contract commits to
+// honoring cancellation, and a pre-cancelled context reaching Score should not
+// silently produce a verdict.
+func TestScorersHonorCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	testCase := evals.Case{ID: "c1", Expected: "x"}
+	output := evals.Output{Text: "x", Structured: json.RawMessage(`"x"`)}
+
+	exact, err := evals.NewExactMatch(evals.ExactMatchConfig{})
+	if err != nil {
+		t.Fatalf("NewExactMatch() = %v", err)
+	}
+	contains, err := evals.NewContains(evals.ContainsConfig{Substring: "x"})
+	if err != nil {
+		t.Fatalf("NewContains() = %v", err)
+	}
+	pattern, err := evals.NewRegexp(evals.RegexpConfig{Pattern: "x"})
+	if err != nil {
+		t.Fatalf("NewRegexp() = %v", err)
+	}
+	jsonEquals, err := evals.NewJSONEquals(evals.JSONEqualsConfig{Selector: evals.SelectStructured})
+	if err != nil {
+		t.Fatalf("NewJSONEquals() = %v", err)
+	}
+	min := 0.0
+	numeric, err := evals.NewNumericRange(evals.NumericRangeConfig{Min: &min})
+	if err != nil {
+		t.Fatalf("NewNumericRange() = %v", err)
+	}
+
+	for _, scorer := range []evals.Scorer{exact, contains, pattern, jsonEquals, numeric} {
+		if _, err := scorer.Score(ctx, testCase, output); !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s.Score(cancelled ctx) = %v, want context.Canceled", scorer.Name(), err)
+		}
 	}
 }
 

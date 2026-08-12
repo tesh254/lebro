@@ -20,7 +20,8 @@ type Repository interface {
 	// same ID.
 	SaveExperiment(ctx context.Context, record ExperimentRecord) error
 	// AppendCaseResults stores case results for an experiment. It may be called
-	// more than once for one experiment.
+	// more than once for one experiment, and reports ErrNotFound when the
+	// experiment has not been saved, so SaveExperiment must come first.
 	AppendCaseResults(ctx context.Context, id ExperimentID, results []CaseResult) error
 	// GetExperiment returns one record. It reports ErrNotFound when the ID is
 	// unknown.
@@ -68,6 +69,9 @@ func (r *MemoryRepository) SaveExperiment(_ context.Context, record ExperimentRe
 	}
 	if index, exists := r.byID[record.ID]; exists {
 		r.experiments[index] = record.Clone()
+		// Drop the prior run's results. Keeping them would let the next
+		// AppendCaseResults append to stale cases and report duplicates.
+		delete(r.results, record.ID)
 		return nil
 	}
 	r.byID[record.ID] = len(r.experiments)
@@ -89,6 +93,11 @@ func (r *MemoryRepository) AppendCaseResults(_ context.Context, id ExperimentID,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Results for an unknown experiment would be orphaned until some later
+	// SaveExperiment reused the ID and silently adopted them.
+	if _, exists := r.byID[id]; !exists {
+		return fmt.Errorf("%w: experiment %q", ErrNotFound, id)
+	}
 	if r.results == nil {
 		r.results = make(map[ExperimentID][]CaseResult)
 	}

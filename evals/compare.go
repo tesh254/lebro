@@ -8,9 +8,10 @@ import (
 // ScorerDelta is one scorer's change between two experiment runs.
 //
 // MeanDelta and PassRateDelta are candidate minus baseline, so a positive value
-// is an improvement for a scorer where higher is better. Present reports whether
-// both records carried this scorer: a scorer added or removed between runs yields
-// a delta of zero that must not be read as "no change".
+// is an improvement for a scorer where higher is better. They are zero unless
+// Present, because a scorer added or removed between runs was never compared;
+// read Present before reading a delta, and use BaselineScored and
+// CandidateScored to tell which side measured it.
 type ScorerDelta struct {
 	Scorer            string  `json:"scorer"`
 	BaselineMean      float64 `json:"baseline_mean"`
@@ -118,18 +119,24 @@ func compareAggregates(baseline, candidate ExperimentRecord) []ScorerDelta {
 	for _, name := range names {
 		baseAggregate, inBaseline := baseline.Aggregate(name)
 		candidateAggregate, inCandidate := candidate.Aggregate(name)
-		deltas = append(deltas, ScorerDelta{
+		delta := ScorerDelta{
 			Scorer:            name,
 			BaselineMean:      baseAggregate.Mean,
 			CandidateMean:     candidateAggregate.Mean,
-			MeanDelta:         candidateAggregate.Mean - baseAggregate.Mean,
 			BaselinePassRate:  baseAggregate.PassRate,
 			CandidatePassRate: candidateAggregate.PassRate,
-			PassRateDelta:     candidateAggregate.PassRate - baseAggregate.PassRate,
 			BaselineScored:    baseAggregate.Scored,
 			CandidateScored:   candidateAggregate.Scored,
 			Present:           inBaseline && inCandidate,
-		})
+		}
+		// Only a scorer measured on both sides has a delta. Subtracting a missing
+		// side's zero aggregate would report the whole of the present side's score
+		// as a quality change, when nothing was compared at all.
+		if delta.Present {
+			delta.MeanDelta = candidateAggregate.Mean - baseAggregate.Mean
+			delta.PassRateDelta = candidateAggregate.PassRate - baseAggregate.PassRate
+		}
+		deltas = append(deltas, delta)
 	}
 	return deltas
 }

@@ -1,6 +1,26 @@
 package evals
 
-import "errors"
+import (
+	"errors"
+	"reflect"
+)
+
+// isNilInterface reports whether an interface value holds a nil pointer, map,
+// slice, func, channel, or interface. A typed nil is non-nil as an interface, so
+// `value == nil` misses it and the first method call panics; construction-time
+// validation checks for both.
+func isNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
 
 var (
 	// ErrInvalidDataset is returned when a dataset cannot be evaluated: it has

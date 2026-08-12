@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"sort"
@@ -154,7 +155,7 @@ func (d Dataset) Version() DatasetVersion {
 		} else {
 			writeHashField(hash, "input", string(testCase.Input))
 		}
-		writeHashField(hash, "messages", strconvMessages(testCase.Messages))
+		writeHashField(hash, "messages", encodeMessages(testCase.Messages))
 		writeHashField(hash, "expected", testCase.Expected)
 		for _, key := range sortedKeys(testCase.Metadata) {
 			writeHashField(hash, "meta:"+key, testCase.Metadata[key])
@@ -170,14 +171,25 @@ func writeHashField(hash interface{ Write([]byte) (int, error) }, name, value st
 	_, _ = fmt.Fprintf(hash, "%d:%s=%d:%s;", len(name), name, len(value), value)
 }
 
-// strconvMessages renders messages as canonical JSON for hashing. Messages
-// marshal deterministically because Message has a fixed field order and
-// ModelToolCalls is already canonically encoded.
-func strconvMessages(messages []lebro.Message) string {
+// encodeMessages renders messages as canonical JSON for hashing. Message has a
+// fixed field order and ModelToolCalls is already canonically encoded, but a
+// structured-output payload is opaque JSON, so it is canonicalized first —
+// otherwise reordering its object keys would change the dataset's version and
+// block comparison of two runs over equivalent cases.
+func encodeMessages(messages []lebro.Message) string {
 	if len(messages) == 0 {
 		return ""
 	}
-	encoded, err := json.Marshal(messages)
+	normalized := make([]lebro.Message, len(messages))
+	for i, message := range messages {
+		if structured := message.StructuredOutput; structured != "" {
+			if canonical, err := canonicalJSON(structured.Raw()); err == nil {
+				message.StructuredOutput = lebro.ModelStructuredOutput(canonical)
+			}
+		}
+		normalized[i] = message
+	}
+	encoded, err := json.Marshal(normalized)
 	if err != nil {
 		// Message marshalling only fails on invalid structured output, which
 		// Validate rejects; fall back to a stable non-empty marker.
@@ -218,13 +230,18 @@ func cloneRawJSON(value json.RawMessage) json.RawMessage {
 // are left unescaped so canonical bytes stay faithful to the source.
 func canonicalJSON(data []byte) ([]byte, error) {
 	if len(data) == 0 {
-		return nil, nil
+		return nil, errors.New("value is empty")
 	}
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
 		return nil, err
+	}
+	// Reject trailing content so a value followed by garbage, or two top-level
+	// values, is an error rather than a silent match on the first one.
+	if decoder.More() {
+		return nil, errors.New("value has more than one top-level JSON value")
 	}
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)

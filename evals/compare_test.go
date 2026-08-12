@@ -110,6 +110,16 @@ func TestCompareMarksAddedAndRemovedScorers(t *testing.T) {
 	if byName["added"].Present {
 		t.Fatal("a candidate-only scorer reports Present true")
 	}
+	// A scorer measured on only one side must report a zero delta. Subtracting
+	// the missing side's zero-valued aggregate would otherwise report the whole
+	// of the present side's mean or pass rate as a quality change, when nothing
+	// was actually compared.
+	if got := byName["removed"]; got.MeanDelta != 0 || got.PassRateDelta != 0 {
+		t.Fatalf("baseline-only scorer deltas = (%v, %v), want (0, 0)", got.MeanDelta, got.PassRateDelta)
+	}
+	if got := byName["added"]; got.MeanDelta != 0 || got.PassRateDelta != 0 {
+		t.Fatalf("candidate-only scorer deltas = (%v, %v), want (0, 0)", got.MeanDelta, got.PassRateDelta)
+	}
 	if !byName["exact_match"].Present {
 		t.Fatal("a shared scorer reports Present false")
 	}

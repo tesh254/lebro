@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/evals"
+	"github.com/tesh254/lebro/openai"
 )
 
 // graderModel is a lebro.Model that returns a scripted reply and records the
@@ -73,13 +77,13 @@ func TestModelScorerReadsStructuredVerdict(t *testing.T) {
 		t.Fatalf("usage metadata = %v, want the grader's token counts", score.Metadata)
 	}
 
-	// The request goes out through the existing model protocol with the schema
-	// attached, so a provider that supports structured output enforces the shape.
+	// The request goes out through the existing model protocol. No schema is
+	// attached by default, so grading works against an adapter that rejects one.
 	if model.seen().Model != "grader-1" {
 		t.Fatalf("request Model = %q, want grader-1", model.seen().Model)
 	}
-	if model.seen().OutputSchema == nil || len(model.seen().OutputSchema.Schema) == 0 {
-		t.Fatal("request carries no output schema")
+	if model.seen().OutputSchema != nil {
+		t.Fatal("request carries an output schema despite no Schema being configured")
 	}
 	if len(model.seen().Messages) != 2 || model.seen().Messages[0].Role != lebro.RoleSystem {
 		t.Fatalf("request messages = %+v, want a system prompt and a user payload", model.seen().Messages)
@@ -274,11 +278,34 @@ func TestModelScorerRejectsInvalidConfig(t *testing.T) {
 	if _, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: model, Selector: "elsewhere"}); !errors.Is(err, evals.ErrInvalidScorer) {
 		t.Fatalf("NewModelScorer(bad selector) = %v, want ErrInvalidScorer", err)
 	}
+	if _, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: model, Threshold: math.NaN()}); !errors.Is(err, evals.ErrInvalidScorer) {
+		t.Fatalf("NewModelScorer(NaN threshold) = %v, want ErrInvalidScorer", err)
+	}
 }
 
-// TestModelScorerHonorsCustomSchemaOptOut covers the documented escape hatch for a
-// provider that rejects an output schema.
-func TestModelScorerHonorsCustomSchemaOptOut(t *testing.T) {
+// nilModel is a *nilModel whose only valid value here is nil, used to construct
+// a typed-nil lebro.Model — non-nil under a plain `== nil` comparison, so
+// NewModelScorer must detect it structurally instead.
+type nilModel struct{}
+
+func (m *nilModel) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
+	panic("typed-nil model must never be called")
+}
+
+// TestModelScorerRejectsTypedNilModel pins that a typed-nil Model is caught at
+// construction rather than reaching Generate during Score, where it would panic
+// through whatever adapter it was supposed to be.
+func TestModelScorerRejectsTypedNilModel(t *testing.T) {
+	var model *nilModel
+	if _, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: model}); !errors.Is(err, evals.ErrInvalidScorer) {
+		t.Fatalf("NewModelScorer(typed-nil model) = %v, want ErrInvalidScorer", err)
+	}
+}
+
+// TestModelScorerDefaultsToNoSchema pins that an empty Schema — the default —
+// requests no output schema, which is what lets grading work against any
+// lebro.Model, including one that rejects a request carrying a schema at all.
+func TestModelScorerDefaultsToNoSchema(t *testing.T) {
 	model := &graderModel{content: `{"score":1}`}
 	scorer, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: model, Schema: json.RawMessage{}})
 	if err != nil {
@@ -289,6 +316,54 @@ func TestModelScorerHonorsCustomSchemaOptOut(t *testing.T) {
 	}
 	if model.seen().OutputSchema != nil {
 		t.Fatal("request carries an output schema despite an explicit empty schema")
+	}
+}
+
+// TestModelScorerCanOptIntoSchema covers the opt-in path for a provider known to
+// support structured output.
+func TestModelScorerCanOptIntoSchema(t *testing.T) {
+	model := &graderModel{structured: `{"score":1}`}
+	scorer, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: model, Schema: evals.ModelScorerSchema})
+	if err != nil {
+		t.Fatalf("NewModelScorer() = %v", err)
+	}
+	if _, err := scorer.Score(context.Background(), evals.Case{ID: "c1"}, evals.Output{Text: "answer"}); err != nil {
+		t.Fatalf("Score() = %v", err)
+	}
+	if model.seen().OutputSchema == nil || len(model.seen().OutputSchema.Schema) == 0 {
+		t.Fatal("request carries no output schema despite an explicit Schema")
+	}
+}
+
+// TestModelScorerGradesThroughTextGenerationAdapter is an end-to-end check
+// against the module's one shipped Model implementation that rejects any
+// request carrying an output schema. It is the exact scenario the default of no
+// schema exists for: without it, every grading call through this adapter would
+// fail with an invalid-request error before a verdict was ever produced.
+func TestModelScorerGradesThroughTextGenerationAdapter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o-mini",
+			"choices": [{"index": 0, "message": {"role": "assistant", "content": "{\"score\":1,\"passed\":true}"}, "finish_reason": "stop"}]
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := openai.New(openai.Config{APIKey: "test-key", BaseURL: server.URL, Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatalf("openai.New() = %v", err)
+	}
+	scorer, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: model})
+	if err != nil {
+		t.Fatalf("NewModelScorer() = %v", err)
+	}
+	score, err := scorer.Score(context.Background(), evals.Case{ID: "c1"}, evals.Output{Text: "Paris"})
+	if err != nil {
+		t.Fatalf("Score() = %v, want grading to succeed through the text-generation adapter", err)
+	}
+	if !score.Passed {
+		t.Fatalf("Passed = false, want true")
 	}
 }
 

@@ -198,8 +198,11 @@ func TestDatasetVersionIgnoresDescriptiveFields(t *testing.T) {
 	}
 }
 
-// TestDatasetVersionFieldBoundaries covers the length-prefix in the hash: two
-// datasets whose concatenated field bytes are identical must still differ.
+// TestDatasetVersionFieldBoundaries covers the length-prefix in the hash. Without
+// it, writeHashField's "name=value;" records for case ID "ab" and input `"c"`
+// concatenate to the same bytes as case ID "a" and input `b"c"` — both render as
+// `case=ab;input="c";` if the lengths aren't encoded — so two datasets whose
+// field values shift across that boundary must still produce different digests.
 func TestDatasetVersionFieldBoundaries(t *testing.T) {
 	left := evals.Dataset{ID: "qa", Cases: []evals.Case{
 		{ID: "ab", Input: json.RawMessage(`"c"`)},
@@ -209,6 +212,45 @@ func TestDatasetVersionFieldBoundaries(t *testing.T) {
 	}}
 	if left.Version() == right.Version() {
 		t.Fatal("datasets with shifted field boundaries share a version")
+	}
+
+	// A field value containing the field separator itself must not let the
+	// decoder misread where one field ends and the next begins.
+	withSeparator := evals.Dataset{ID: "qa", Cases: []evals.Case{
+		{ID: "a", Expected: "x;input=0:;"},
+	}}
+	withoutSeparator := evals.Dataset{ID: "qa", Cases: []evals.Case{
+		{ID: "a", Expected: "x"},
+	}}
+	if withSeparator.Version() == withoutSeparator.Version() {
+		t.Fatal("a field value containing the separator collided with a shorter value")
+	}
+}
+
+// TestDatasetVersionCanonicalizesStructuredOutput pins that a structured-output
+// payload on a message is hashed by its canonical bytes: reordering its object
+// keys must not change the dataset's version, or every equivalent re-encoding of
+// a stored message would look like a different dataset.
+func TestDatasetVersionCanonicalizesStructuredOutput(t *testing.T) {
+	build := func(raw string) evals.Dataset {
+		return evals.Dataset{ID: "qa", Cases: []evals.Case{{
+			ID: "a",
+			Messages: []lebro.Message{{
+				Role:             lebro.RoleAssistant,
+				Content:          "answer",
+				StructuredOutput: lebro.NewModelStructuredOutput(json.RawMessage(raw)),
+			}},
+		}}}
+	}
+	ordered := build(`{"a":1,"b":2}`)
+	reordered := build(`{"b":2,"a":1}`)
+	if ordered.Version() != reordered.Version() {
+		t.Fatalf("version changed with structured-output key order: %q vs %q", ordered.Version(), reordered.Version())
+	}
+
+	changed := build(`{"a":1,"b":99}`)
+	if ordered.Version() == changed.Version() {
+		t.Fatal("version unchanged after a structured-output value changed")
 	}
 }
 
