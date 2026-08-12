@@ -100,6 +100,22 @@ func TestPolicyStoreDeniesWriteBeforeDelegating(t *testing.T) {
 	}
 }
 
+func TestPolicyStoreDeniesScheduleWrite(t *testing.T) {
+	inner := NewMemoryStore()
+	guarded, err := NewPolicyStore(inner, &actionPolicy{deny: ActionStorageWrite})
+	if err != nil {
+		t.Fatalf("NewPolicyStore: %v", err)
+	}
+	now := time.Unix(0, 0).UTC()
+	writeErr := guarded.Schedules().SaveSchedule(context.Background(), ScheduleRecord{ID: "s1", WorkflowID: "w1", Spec: "0 * * * *", CreatedAt: now, UpdatedAt: now})
+	if !errors.Is(writeErr, ErrPolicyDenied) {
+		t.Fatalf("expected schedule write denial: %v", writeErr)
+	}
+	if _, err := inner.Schedules().GetSchedule(context.Background(), "s1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("denied schedule write must not reach the store, got %v", err)
+	}
+}
+
 // threadDenyPolicy denies writes to one specific thread ID and allows the rest,
 // so a mixed-thread batch that touches the denied thread must be rejected.
 type threadDenyPolicy struct {

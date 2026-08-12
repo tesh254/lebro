@@ -151,6 +151,8 @@ type Repositories interface {
 	Messages() MessageRepository
 	WorkflowRuns() WorkflowRunRepository
 	WorkflowSnapshots() WorkflowSnapshotRepository
+	Schedules() ScheduleRepository
+	ScheduleExecutions() ScheduleExecutionRepository
 }
 
 // Store owns transaction boundaries and migration execution. Adapters own the

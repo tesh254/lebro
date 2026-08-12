@@ -15,6 +15,7 @@ type (
 	ThreadID   string
 	ToolID     string
 	WorkflowID string
+	ScheduleID string
 )
 
 // ErrMessageStructuredOutputInvalidJSON is returned by Message.Validate when

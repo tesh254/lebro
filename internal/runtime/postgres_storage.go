@@ -124,6 +124,32 @@ var postgresSchemaMigrations = []string{
 	`ALTER TABLE workflow_snapshots ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS path TEXT`,
 	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS fan_out TEXT`,
+	`CREATE TABLE schedules (
+		id           TEXT PRIMARY KEY,
+		workflow_id  TEXT NOT NULL,
+		spec         TEXT NOT NULL,
+		paused       BOOLEAN NOT NULL DEFAULT FALSE,
+		concurrency  TEXT NOT NULL DEFAULT '',
+		input        TEXT,
+		metadata     TEXT,
+		next_fire_at TIMESTAMPTZ,
+		last_fire_at TIMESTAMPTZ,
+		created_at   TIMESTAMPTZ NOT NULL,
+		updated_at   TIMESTAMPTZ NOT NULL
+	)`,
+	`CREATE TABLE schedule_executions (
+		id            TEXT NOT NULL,
+		schedule_id   TEXT NOT NULL REFERENCES schedules(id) ON DELETE CASCADE,
+		seq           BIGSERIAL,
+		run_id        TEXT,
+		status        TEXT NOT NULL,
+		scheduled_for TIMESTAMPTZ NOT NULL,
+		started_at    TIMESTAMPTZ NOT NULL,
+		finished_at   TIMESTAMPTZ,
+		error         TEXT NOT NULL DEFAULT '',
+		UNIQUE (schedule_id, id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule_seq ON schedule_executions(schedule_id, seq)`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -238,6 +264,10 @@ func (s *PostgresStore) WorkflowRuns() WorkflowRunRepository { return &postgresR
 func (s *PostgresStore) WorkflowSnapshots() WorkflowSnapshotRepository {
 	return &postgresRepositories{q: s.db}
 }
+func (s *PostgresStore) Schedules() ScheduleRepository { return &postgresRepositories{q: s.db} }
+func (s *PostgresStore) ScheduleExecutions() ScheduleExecutionRepository {
+	return &postgresRepositories{q: s.db}
+}
 
 type postgresRepositories struct {
 	q sqlQueryer
@@ -247,6 +277,10 @@ func (r *postgresRepositories) Threads() ThreadRepository                     { 
 func (r *postgresRepositories) Messages() MessageRepository                   { return r }
 func (r *postgresRepositories) WorkflowRuns() WorkflowRunRepository           { return r }
 func (r *postgresRepositories) WorkflowSnapshots() WorkflowSnapshotRepository { return r }
+func (r *postgresRepositories) Schedules() ScheduleRepository                 { return r }
+func (r *postgresRepositories) ScheduleExecutions() ScheduleExecutionRepository {
+	return r
+}
 
 func (r *postgresRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -636,6 +670,174 @@ func (r *postgresRepositories) ListWorkflowSnapshots(ctx context.Context, id Run
 	return scanSnapshotPagePG(rows, offset, limit)
 }
 
+func (r *postgresRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v.ID == "" || v.WorkflowID == "" {
+		return errors.New("lebro: schedule and workflow IDs are required")
+	}
+	if v.Spec == "" {
+		return errors.New("lebro: schedule spec is required")
+	}
+	for name, value := range map[string]json.RawMessage{"input": v.Input, "metadata": v.Metadata} {
+		if err := validateJSON(value); err != nil {
+			return fmt.Errorf("lebro: schedule %s: %w", name, err)
+		}
+	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: schedule: %w", err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO UPDATE SET
+			workflow_id  = EXCLUDED.workflow_id,
+			spec         = EXCLUDED.spec,
+			paused       = EXCLUDED.paused,
+			concurrency  = EXCLUDED.concurrency,
+			input        = EXCLUDED.input,
+			metadata     = EXCLUDED.metadata,
+			next_fire_at = EXCLUDED.next_fire_at,
+			last_fire_at = EXCLUDED.last_fire_at,
+			created_at   = EXCLUDED.created_at,
+			updated_at   = EXCLUDED.updated_at`,
+		v.ID, v.WorkflowID, v.Spec, v.Paused, string(v.Concurrency), postgresJSON(v.Input), postgresJSON(v.Metadata),
+		postgresNullableTime(v.NextFireAt), postgresNullableTime(v.LastFireAt), v.CreatedAt.UTC(), v.UpdatedAt.UTC()); err != nil {
+		return fmt.Errorf("lebro: save schedule %q: %w", v.ID, postgresError(err))
+	}
+	return nil
+}
+
+func (r *postgresRepositories) GetSchedule(ctx context.Context, id ScheduleID) (ScheduleRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return ScheduleRecord{}, err
+	}
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules WHERE id = $1`, id)
+	record, err := scanSchedulePG(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ScheduleRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ScheduleRecord{}, fmt.Errorf("lebro: get schedule %q: %w", id, postgresError(err))
+	}
+	return record, nil
+}
+
+func (r *postgresRepositories) ListSchedules(ctx context.Context, filter ScheduleFilter, p PageRequest) (Page[ScheduleRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ScheduleRecord]{}, err
+	}
+	offset, limit, err := sqlPageBounds(p)
+	if err != nil {
+		return Page[ScheduleRecord]{}, err
+	}
+	query := `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules`
+	args := []any{}
+	param := 1
+	where := []string{}
+	if filter.WorkflowID != "" {
+		where = append(where, fmt.Sprintf("workflow_id = $%d", param))
+		args = append(args, filter.WorkflowID)
+		param++
+	}
+	if filter.DueBy != nil {
+		where = append(where, "paused = FALSE", "next_fire_at IS NOT NULL", fmt.Sprintf("next_fire_at <= $%d", param))
+		args = append(args, filter.DueBy.UTC())
+		param++
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY created_at, id LIMIT $%d OFFSET $%d", param, param+1)
+	args = append(args, postgresFetchLimit(limit), offset)
+	rows, err := r.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return Page[ScheduleRecord]{}, fmt.Errorf("lebro: list schedules: %w", postgresError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	return scanSchedulePagePG(rows, offset, limit)
+}
+
+func (r *postgresRepositories) DeleteSchedule(ctx context.Context, id ScheduleID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	result, err := r.q.ExecContext(ctx, `DELETE FROM schedules WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("lebro: delete schedule %q: %w", id, postgresError(err))
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("lebro: delete schedule %q: %w", id, postgresError(err))
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *postgresRepositories) SaveScheduleExecution(ctx context.Context, v ScheduleExecutionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v.ID == "" || v.ScheduleID == "" {
+		return errors.New("lebro: schedule execution and schedule IDs are required")
+	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: schedule execution: %w", err)
+	}
+	if err := r.scheduleExists(ctx, v.ScheduleID); err != nil {
+		return err
+	}
+	var found string
+	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM schedule_executions WHERE schedule_id = $1 AND id = $2`, v.ScheduleID, v.ID).Scan(&found); {
+	case err == nil:
+		return errors.New("lebro: schedule execution already exists")
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("lebro: check schedule execution %q: %w", v.ID, postgresError(err))
+	}
+	var runID any
+	if v.RunID != "" {
+		runID = string(v.RunID)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		v.ID, v.ScheduleID, runID, string(v.Status), v.ScheduledFor.UTC(), v.StartedAt.UTC(), postgresNullableTime(v.FinishedAt), v.Error); err != nil {
+		return fmt.Errorf("lebro: save schedule execution %q: %w", v.ID, postgresError(err))
+	}
+	return nil
+}
+
+func (r *postgresRepositories) ListScheduleExecutions(ctx context.Context, id ScheduleID, p PageRequest) (Page[ScheduleExecutionRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	if err := r.scheduleExists(ctx, id); err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	offset, limit, err := sqlPageBounds(p)
+	if err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	rows, err := r.q.QueryContext(ctx, `SELECT id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error FROM schedule_executions WHERE schedule_id = $1 ORDER BY seq LIMIT $2 OFFSET $3`, id, postgresFetchLimit(limit), offset)
+	if err != nil {
+		return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: list schedule executions for schedule %q: %w", id, postgresError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	return scanScheduleExecutionPagePG(rows, offset, limit)
+}
+
+func (r *postgresRepositories) scheduleExists(ctx context.Context, id ScheduleID) error {
+	var found int
+	err := r.q.QueryRowContext(ctx, `SELECT 1 FROM schedules WHERE id = $1`, id).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lebro: postgres: %w", postgresError(err))
+	}
+	return nil
+}
+
 func (r *postgresRepositories) threadExists(ctx context.Context, id ThreadID) error {
 	var found int
 	err := r.q.QueryRowContext(ctx, `SELECT 1 FROM threads WHERE id = $1`, id).Scan(&found)
@@ -785,11 +987,95 @@ func scanSnapshotPagePG(rows *sql.Rows, offset, limit int) (Page[WorkflowSnapsho
 	return page, nil
 }
 
+func scanSchedulePG(row messagePageScanner) (ScheduleRecord, error) {
+	var record ScheduleRecord
+	var concurrency string
+	var input, metadata sql.NullString
+	var nextFireAt, lastFireAt sql.NullTime
+	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &record.Paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		return ScheduleRecord{}, err
+	}
+	record.Concurrency = ConcurrencyPolicy(concurrency)
+	record.Input = postgresRawJSON([]byte(input.String))
+	record.Metadata = postgresRawJSON([]byte(metadata.String))
+	if nextFireAt.Valid {
+		next := nextFireAt.Time.UTC()
+		record.NextFireAt = &next
+	}
+	if lastFireAt.Valid {
+		last := lastFireAt.Time.UTC()
+		record.LastFireAt = &last
+	}
+	record.CreatedAt = record.CreatedAt.UTC()
+	record.UpdatedAt = record.UpdatedAt.UTC()
+	return record, nil
+}
+
+func scanSchedulePagePG(rows *sql.Rows, offset, limit int) (Page[ScheduleRecord], error) {
+	var page Page[ScheduleRecord]
+	for rows.Next() && len(page.Records) <= limit {
+		record, err := scanSchedulePG(rows)
+		if err != nil {
+			return Page[ScheduleRecord]{}, fmt.Errorf("lebro: scan schedule: %w", postgresError(err))
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return Page[ScheduleRecord]{}, fmt.Errorf("lebro: list schedules: %w", postgresError(err))
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
+}
+
+func scanScheduleExecutionPagePG(rows *sql.Rows, offset, limit int) (Page[ScheduleExecutionRecord], error) {
+	var page Page[ScheduleExecutionRecord]
+	for rows.Next() && len(page.Records) <= limit {
+		var record ScheduleExecutionRecord
+		var runID sql.NullString
+		var status string
+		var finishedAt sql.NullTime
+		if err := rows.Scan(&record.ID, &record.ScheduleID, &runID, &status, &record.ScheduledFor, &record.StartedAt, &finishedAt, &record.Error); err != nil {
+			return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: scan schedule execution: %w", postgresError(err))
+		}
+		if runID.Valid {
+			record.RunID = RunID(runID.String)
+		}
+		record.Status = ScheduleExecStatus(status)
+		record.ScheduledFor = record.ScheduledFor.UTC()
+		record.StartedAt = record.StartedAt.UTC()
+		if finishedAt.Valid {
+			finished := finishedAt.Time.UTC()
+			record.FinishedAt = &finished
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: list schedule executions: %w", postgresError(err))
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
+}
+
 func postgresJSON(v json.RawMessage) any {
 	if len(v) == 0 {
 		return nil
 	}
 	return string(v)
+}
+
+// postgresNullableTime returns the UTC time for a non-nil pointer or nil so the
+// column is written as SQL NULL.
+func postgresNullableTime(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.UTC()
 }
 
 // postgresFetchLimit returns limit+1 without overflowing on very large

@@ -76,6 +76,16 @@ func (s *PolicyStore) WorkflowSnapshots() WorkflowSnapshotRepository {
 	return &guardedWorkflowSnapshotRepository{inner: s.store.WorkflowSnapshots(), policy: s.policy}
 }
 
+// Schedules returns a policy-guarded schedule repository.
+func (s *PolicyStore) Schedules() ScheduleRepository {
+	return &guardedScheduleRepository{inner: s.store.Schedules(), policy: s.policy}
+}
+
+// ScheduleExecutions returns a policy-guarded schedule-execution repository.
+func (s *PolicyStore) ScheduleExecutions() ScheduleExecutionRepository {
+	return &guardedScheduleExecutionRepository{inner: s.store.ScheduleExecutions(), policy: s.policy}
+}
+
 // guardedRepositories applies the store's policy to a transaction-scoped set of
 // repositories.
 type guardedRepositories struct {
@@ -97,6 +107,14 @@ func (r *guardedRepositories) WorkflowRuns() WorkflowRunRepository {
 
 func (r *guardedRepositories) WorkflowSnapshots() WorkflowSnapshotRepository {
 	return &guardedWorkflowSnapshotRepository{inner: r.repos.WorkflowSnapshots(), policy: r.policy}
+}
+
+func (r *guardedRepositories) Schedules() ScheduleRepository {
+	return &guardedScheduleRepository{inner: r.repos.Schedules(), policy: r.policy}
+}
+
+func (r *guardedRepositories) ScheduleExecutions() ScheduleExecutionRepository {
+	return &guardedScheduleExecutionRepository{inner: r.repos.ScheduleExecutions(), policy: r.policy}
 }
 
 type guardedThreadRepository struct {
@@ -209,4 +227,56 @@ func (r *guardedWorkflowSnapshotRepository) ListWorkflowSnapshots(ctx context.Co
 		return Page[WorkflowSnapshotRecord]{}, err
 	}
 	return r.inner.ListWorkflowSnapshots(ctx, id, page)
+}
+
+type guardedScheduleRepository struct {
+	inner  ScheduleRepository
+	policy Policy
+}
+
+func (r *guardedScheduleRepository) SaveSchedule(ctx context.Context, record ScheduleRecord) error {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindSchedule, ID: string(record.ID)}); err != nil {
+		return err
+	}
+	return r.inner.SaveSchedule(ctx, record)
+}
+
+func (r *guardedScheduleRepository) GetSchedule(ctx context.Context, id ScheduleID) (ScheduleRecord, error) {
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindSchedule, ID: string(id)}); err != nil {
+		return ScheduleRecord{}, err
+	}
+	return r.inner.GetSchedule(ctx, id)
+}
+
+func (r *guardedScheduleRepository) ListSchedules(ctx context.Context, filter ScheduleFilter, page PageRequest) (Page[ScheduleRecord], error) {
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindSchedule, ID: string(filter.WorkflowID)}); err != nil {
+		return Page[ScheduleRecord]{}, err
+	}
+	return r.inner.ListSchedules(ctx, filter, page)
+}
+
+func (r *guardedScheduleRepository) DeleteSchedule(ctx context.Context, id ScheduleID) error {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindSchedule, ID: string(id)}); err != nil {
+		return err
+	}
+	return r.inner.DeleteSchedule(ctx, id)
+}
+
+type guardedScheduleExecutionRepository struct {
+	inner  ScheduleExecutionRepository
+	policy Policy
+}
+
+func (r *guardedScheduleExecutionRepository) SaveScheduleExecution(ctx context.Context, record ScheduleExecutionRecord) error {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindSchedule, ID: string(record.ScheduleID)}); err != nil {
+		return err
+	}
+	return r.inner.SaveScheduleExecution(ctx, record)
+}
+
+func (r *guardedScheduleExecutionRepository) ListScheduleExecutions(ctx context.Context, id ScheduleID, page PageRequest) (Page[ScheduleExecutionRecord], error) {
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindSchedule, ID: string(id)}); err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	return r.inner.ListScheduleExecutions(ctx, id, page)
 }

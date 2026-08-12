@@ -150,3 +150,12 @@ stand-ins, so no network or API key is required):
 ```sh
 go run ./examples/evals-dataset
 ```
+
+Run the durable schedule example (persists a recurring schedule, reopens the
+store to simulate a restart, ticks a fresh scheduler so the overdue schedule
+fires, and prints the execution history; a fixed clock keeps it deterministic,
+so no network or API key is required):
+
+```sh
+go run ./examples/workflow-schedule
+```

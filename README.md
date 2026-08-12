@@ -885,6 +885,84 @@ Run the fan-out-join example (no network or API key required):
 go run ./examples/workflow-fanout-join
 ```
 
+## Durable schedules and recurring workflow runs
+
+A `Scheduler` fires persisted schedules whose next fire time has arrived,
+reusing `LinearWorkflow.Run` for each execution. Because due schedules are
+reloaded from the `Store` on every tick rather than kept in memory, a schedule
+persisted before a process restart resumes automatically — the acceptance test
+constructs a fresh scheduler over an existing store and the first tick fires the
+overdue schedule.
+
+A `ScheduleRecord` carries the cron or `@every` spec, the target `WorkflowID`,
+the run input, a `ConcurrencyPolicy`, and the persisted `NextFireAt`. Each fire
+appends a `ScheduleExecutionRecord` to durable history with a `succeeded`,
+`failed`, `skipped`, or `missed` status. `Scheduler.Tick(ctx, now)` is the
+deterministic core (drive it with a fixed `Clock` in tests); `Scheduler.Start` /
+`Scheduler.Stop` wrap it in a background loop for production.
+
+```go
+store, _ := lebro.NewSQLiteStore("lebro.db")
+defer store.Close()
+_ = store.Migrate(context.Background())
+
+// Register the workflow the schedule triggers.
+wf, _ := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
+    Definition: lebro.WorkflowDefinition{ID: "nightly-digest"},
+    Steps:      /* ... */,
+    Store:      store,
+})
+
+// Persist a schedule: every day at 02:00, skip if the prior run is still going.
+next, _ := lebro.ParseCronSpec("0 2 * * *")
+fire, _ := next.Next(time.Now().UTC())
+_ = store.Schedules().SaveSchedule(context.Background(), lebro.ScheduleRecord{
+    ID:          "digest-daily",
+    WorkflowID:  "nightly-digest",
+    Spec:        "0 2 * * *",
+    Concurrency: lebro.ConcurrencySkip,
+    NextFireAt:  &fire,
+    CreatedAt:   time.Now().UTC(),
+    UpdatedAt:   time.Now().UTC(),
+})
+
+scheduler, _ := lebro.NewScheduler(lebro.SchedulerConfig{
+    Store:    store,
+    Resolver: lebro.WorkflowMap{"nightly-digest": wf},
+})
+
+// Production: run a background loop that ticks every minute.
+_ = scheduler.Start(context.Background())
+defer scheduler.Stop()
+
+// Or drive it deterministically:
+result, _ := scheduler.Tick(context.Background(), time.Now().UTC())
+// result.Fired, result.Skipped, result.Missed, result.Executions.
+
+history, _ := store.ScheduleExecutions().ListScheduleExecutions(
+    context.Background(), "digest-daily", lebro.PageRequest{},
+)
+// history.Records[i].Status is succeeded / failed / skipped / missed.
+```
+
+`ParseCronSpec` accepts a five-field cron expression (`minute hour dom month
+dow`, with `*`, lists, ranges, and steps) or a fixed interval `@every 30m`; it
+is standard-library-only, so the core module gains no dependency. Under
+`ConcurrencySkip` a fire that arrives while a prior run of the same schedule is
+still in flight is recorded as `skipped` and the schedule still advances; under
+`ConcurrencyAllow` (the default) it runs regardless. When a schedule is overdue
+by more than one interval — for example after an outage — only the most recent
+occurrence runs and the earlier ones are recorded as `missed`, bounded by
+`SchedulerConfig.MaxCatchUp`. The `ScheduleRepository` and
+`ScheduleExecutionRepository` are part of the `Store` contract across the
+memory, SQLite, and PostgreSQL adapters and are enforced by `NewPolicyStore`.
+
+Run the schedule example (no network or API key required):
+
+```sh
+go run ./examples/workflow-schedule
+```
+
 ## Agent and tool workflow steps
 
 `lebro.NewAgentStep` adapts an `Agent` (or another `Workflow`) to a typed
