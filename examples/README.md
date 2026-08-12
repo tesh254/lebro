@@ -111,8 +111,8 @@ go run ./examples/mcp-client
 
 Run the HTTP server example (serves an agent, a workflow, and durable threads
 over HTTP, streams a run as Server-Sent Events, and prints the generated
-OpenAPI contract; the server runs in-process through `httptest`, so no port is
-opened and no API key is required):
+OpenAPI contract; the server runs in-process through `httptest` on an ephemeral
+loopback port, so no fixed port and no API key are required):
 
 ```sh
 go run ./examples/http-server

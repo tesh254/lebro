@@ -245,15 +245,167 @@ func TestOpenAPIEmbedsWorkflowInputSchema(t *testing.T) {
 }
 
 // A workflow ID containing characters outside the component-name set must not
-// produce an unreferenceable schema name.
+// produce an unreferenceable schema name, and the escaping must keep distinct
+// IDs distinct.
 func TestOpenAPISanitizesWorkflowSchemaNames(t *testing.T) {
 	server := httpapi.NewServer(httpapi.ServerConfig{})
 	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "billing.invoice/sync")))
 	document := generateDocument(t, server)
 
-	name := "WorkflowRunRequest_billing_invoice_sync"
+	name := "WorkflowRunRequest_billing_x2einvoice_x2fsync"
 	if _, ok := document.Components.Schemas[name]; !ok {
 		t.Fatalf("sanitized schema %q missing; schemas = %v", name, schemaNames(document))
+	}
+	for _, schema := range schemaNames(document) {
+		if strings.ContainsAny(schema, "./ ") {
+			t.Errorf("schema name %q contains a character outside the component-name set", schema)
+		}
+	}
+}
+
+// IDs that differ only in characters the sanitizer escapes must not collide.
+// A lossy sanitizer maps "billing.sync" and "billing_sync" onto one component
+// name, so the second workflow registered silently overwrites the first's
+// schema and one of them is published with the wrong validation contract.
+func TestOpenAPIWorkflowSchemaNamesDoNotCollide(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "billing.sync")))
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "billing_sync")))
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "billing-sync")))
+	document := generateDocument(t, server)
+
+	found := 0
+	for _, name := range schemaNames(document) {
+		if strings.HasPrefix(name, "WorkflowRunRequest_billing") {
+			found++
+		}
+	}
+	if found != 3 {
+		t.Fatalf("per-workflow schemas = %d, want 3 distinct: %v", found, schemaNames(document))
+	}
+}
+
+// The workflow request body must combine per-workflow schemas with anyOf.
+// oneOf requires an instance to match exactly one branch, so two workflows that
+// accept the same shape — or a schema-ful workflow alongside the permissive
+// generic body — would make every valid request match more than one branch and
+// be rejected by the contract that documents it. The path's {id} already
+// selects the workflow, so exclusivity is not the property to enforce.
+func TestOpenAPIWorkflowBodyUsesAnyOf(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "alpha")))
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "beta")))
+	document := generateDocument(t, server)
+
+	operation := document.Paths["/workflows/{id}/runs"]["post"]
+	if operation.RequestBody == nil {
+		t.Fatal("workflow run documents no request body")
+	}
+	schema := string(operation.RequestBody.Content["application/json"].Schema)
+	if strings.Contains(schema, `"oneOf"`) {
+		t.Fatalf("workflow body uses oneOf, which rejects requests matching two identical workflow schemas: %s", schema)
+	}
+	if !strings.Contains(schema, `"anyOf"`) {
+		t.Fatalf("workflow body schema = %s, want an anyOf over per-workflow variants", schema)
+	}
+
+	// The canonical request for one of these workflows must validate. Two
+	// workflows share a shape here, so this is exactly the case oneOf broke.
+	assertValidatesAgainstAnyBranch(t, document, schema, `{"input":{"value":"x"}}`)
+}
+
+// assertValidatesAgainstAnyBranch compiles each anyOf branch and requires the
+// instance to satisfy at least one, which is what an anyOf means.
+func assertValidatesAgainstAnyBranch(t *testing.T, document openAPIDocument, schema, instance string) {
+	t.Helper()
+	var combinator struct {
+		AnyOf []struct {
+			Ref string `json:"$ref"`
+		} `json:"anyOf"`
+	}
+	must(t, json.Unmarshal([]byte(schema), &combinator))
+	if len(combinator.AnyOf) == 0 {
+		t.Fatal("schema has no anyOf branches")
+	}
+
+	compiler := lebrojsonschema.NewCompiler()
+	for _, branch := range combinator.AnyOf {
+		name, ok := strings.CutPrefix(branch.Ref, "#/components/schemas/")
+		if !ok {
+			continue
+		}
+		compiled, err := compiler.Compile(document.Components.Schemas[name])
+		if err != nil {
+			continue
+		}
+		if compiled.Validate([]byte(instance)) == nil {
+			return
+		}
+	}
+	t.Fatalf("instance %s validates against no branch of %s", instance, schema)
+}
+
+// A workflow whose first step requires input rejects an omitted body with 400,
+// so documenting the body as optional would publish a contract the server does
+// not honor.
+func TestOpenAPIMarksWorkflowBodyRequired(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", &scriptedModel{})))
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "echo")))
+
+	encoded, err := server.OpenAPI()
+	must(t, err)
+	var raw struct {
+		Paths map[string]map[string]struct {
+			RequestBody *struct {
+				Required bool `json:"required"`
+			} `json:"requestBody"`
+		} `json:"paths"`
+	}
+	must(t, json.Unmarshal(encoded, &raw))
+
+	workflow := raw.Paths["/workflows/{id}/runs"]["post"]
+	if workflow.RequestBody == nil || !workflow.RequestBody.Required {
+		t.Fatal("workflow run body is documented as optional, but a required input rejects an omitted body")
+	}
+	// An agent run genuinely accepts an empty body, so it must stay optional.
+	agent := raw.Paths["/agents/{id}/runs"]["post"]
+	if agent.RequestBody == nil || agent.RequestBody.Required {
+		t.Fatal("agent run body is documented as required, but an empty body is accepted")
+	}
+}
+
+// The generated RunRequest schema must accept exactly what the handler accepts.
+// A schema that requires `content` or forbids null while the handler allows
+// both leaves a client's local validation rejecting requests the server serves.
+func TestOpenAPIRunRequestSchemaMatchesHandler(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", &scriptedModel{})))
+	document := generateDocument(t, server)
+
+	compiled, err := lebrojsonschema.NewCompiler().Compile(document.Components.Schemas["RunRequest"])
+	must(t, err)
+
+	// Every one of these is accepted by the handler, asserted by
+	// TestNullJSONFieldsAreHandled and TestAgentRunAcceptsEmptyBody.
+	for _, instance := range []string{
+		`{}`,
+		`{"messages":[]}`,
+		`{"messages":null}`,
+		`{"messages":[{}]}`,
+		`{"messages":[{"content":"hi"}]}`,
+		`{"messages":[{"content":"hi"}],"metadata":null}`,
+		`{"messages":[{"content":"hi"}],"metadata":{"k":"v"}}`,
+	} {
+		if err := compiled.Validate([]byte(instance)); err != nil {
+			t.Errorf("schema rejects %s, which the handler accepts: %v", instance, err)
+		}
+	}
+
+	// A role the client tried to set is still rejected, matching
+	// DisallowUnknownFields in the handler.
+	if compiled.Validate([]byte(`{"messages":[{"role":"system","content":"x"}]}`)) == nil {
+		t.Error("schema accepts a client-supplied role, which the handler rejects")
 	}
 }
 
@@ -415,5 +567,3 @@ func contentTypes[T any](content map[string]T) []string {
 	}
 	return types
 }
-
-var _ = lebro.RunStatusSucceeded

@@ -2,8 +2,8 @@
 // publishes the resulting contract as an OpenAPI 3.1 document.
 //
 // The package is optional: nothing in the root lebro module imports it, so an
-// application that does not serve HTTP never compiles it in. It depends only on
-// the standard library.
+// application that does not serve HTTP never compiles it in. It pulls in no
+// dependencies beyond the lebro module and the standard library.
 //
 // Only explicitly registered primitives are routable. NewServer returns a
 // server with no agents and no workflows; every primitive must be registered
@@ -57,7 +57,9 @@
 // RunEventType vocabulary the runtime already uses ("model_delta",
 // "run_succeeded", and so on), and its data is a JSON StreamEvent. The stream
 // always terminates with exactly one terminal event, so a client knows the run
-// ended rather than the connection dropping.
+// ended rather than the connection dropping. The terminal event carries the
+// run's total token usage, summed across every model call, so a multi-step tool
+// conversation reports what it actually cost.
 //
 // Cancellation is the client's to trigger: closing the connection cancels the
 // request context, which cancels the run, drains the provider stream, and

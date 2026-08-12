@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/tesh254/lebro"
@@ -163,14 +164,34 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // outermost.
 func (s *Server) buildRouter() http.Handler {
 	mux := http.NewServeMux()
+	// Index the methods each path serves so a request to a real path with the
+	// wrong method can be answered 405 rather than 404. Without this the
+	// mismatch falls through to the catch-all and tells the client the resource
+	// does not exist, which is both misleading and leaves ErrorCodeMethodNotAllowed
+	// unreachable.
+	methodsByPath := map[string][]string{}
 	for _, r := range routes() {
 		mux.Handle(r.pattern(), s.handlerForRoute(r))
+		methodsByPath[r.path] = append(methodsByPath[r.path], r.method)
+		// net/http answers HEAD from a GET pattern automatically. Registering
+		// it explicitly keeps the served surface equal to the documented one,
+		// which is what lets the route-coverage test mean something.
+		if r.method == http.MethodGet {
+			mux.Handle(http.MethodHead+" "+r.path, s.handlerForRoute(r))
+			methodsByPath[r.path] = append(methodsByPath[r.path], http.MethodHead)
+		}
 	}
 
 	// A request that matches no route at all reaches the root pattern. Serving
 	// a typed JSON body there keeps every response on this server shaped the
 	// same way, rather than mixing in net/http's plain-text 404.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if allowed, ok := methodsByPath[matchedPath(methodsByPath, r.URL.Path)]; ok {
+			sort.Strings(allowed)
+			w.Header().Set("Allow", strings.Join(allowed, ", "))
+			writeError(w, r, ErrorCodeMethodNotAllowed)
+			return
+		}
 		writeError(w, r, ErrorCodeNotFound)
 	})
 
@@ -182,6 +203,42 @@ func (s *Server) buildRouter() http.Handler {
 		handler = s.config.Middleware[i](handler)
 	}
 	return handler
+}
+
+// matchedPath returns the route template whose shape matches the concrete
+// request path, or "" when none does. It is used only to distinguish a
+// wrong-method request to a real path from a request to a path that does not
+// exist; the mux itself does the real routing.
+//
+// A template matches when it has the same number of segments and every
+// non-wildcard segment is equal. Wildcards match any single non-empty segment,
+// which mirrors how net/http's "{id}" behaves.
+func matchedPath(templates map[string][]string, path string) string {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for template := range templates {
+		candidate := strings.Split(strings.Trim(template, "/"), "/")
+		if len(candidate) != len(segments) {
+			continue
+		}
+		matched := true
+		for i, segment := range candidate {
+			if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
+				if segments[i] == "" {
+					matched = false
+					break
+				}
+				continue
+			}
+			if segment != segments[i] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return template
+		}
+	}
+	return ""
 }
 
 // handlerForRoute returns the handler for one table entry. The switch is on

@@ -75,15 +75,24 @@ func (s *Server) handleAgentStream(w http.ResponseWriter, r *http.Request) {
 	// Drain every delta before calling Wait. Wait blocks until the run
 	// goroutine finishes, and that goroutine cannot finish while it is blocked
 	// sending a delta, so returning early here would deadlock.
+	//
+	// Usage is accumulated across every model call so the terminal event can
+	// report the run's total. A provider reports usage per call, so a
+	// multi-step tool conversation would otherwise surface only the last call's
+	// figures on the delta that carried them.
+	var total lebro.ModelUsage
 	for delta := range run.Deltas {
+		accumulateUsage(&total, delta.Usage)
 		redacted := s.config.Redactor(delta)
-		if isZeroDelta(redacted) {
+		if !hasStreamableContent(redacted) {
 			continue
 		}
 		if !writeEvent(w, flusher, eventDelta, streamEventFromDelta(redacted)) {
-			// The connection is gone. Keep draining so the run goroutine can
-			// finish; the deferred Cancel unblocks the provider stream, so the
-			// remaining deltas arrive promptly rather than at model speed.
+			// The connection is gone, or a terminal failure event was written
+			// in place of this one. Either way the stream is over: keep
+			// draining so the run goroutine can finish. The deferred Cancel
+			// unblocks the provider stream, so the remaining deltas arrive
+			// promptly rather than at model speed.
 			run.Cancel()
 			for range run.Deltas {
 			}
@@ -93,16 +102,29 @@ func (s *Server) handleAgentStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, runErr := run.Wait()
-	writeTerminalEvent(w, flusher, result, runErr)
+	writeTerminalEvent(w, flusher, result, runErr, total)
+}
+
+// accumulateUsage adds one call's reported usage to the run total.
+func accumulateUsage(total *lebro.ModelUsage, usage lebro.ModelUsage) {
+	total.InputTokens += usage.InputTokens
+	total.OutputTokens += usage.OutputTokens
+	total.TotalTokens += usage.TotalTokens
 }
 
 // writeTerminalEvent writes the single event that closes the stream. A failed
 // or cancelled run carries its public error code, so a client sees the same
-// classification it would have received from the non-streaming route.
-func writeTerminalEvent(w http.ResponseWriter, flusher http.Flusher, result lebro.RunResult, runErr error) {
+// classification it would have received from the non-streaming route. Usage is
+// the run total accumulated from every model call, so a client that treats this
+// event as the one guaranteed end-of-run marker finds it there.
+func writeTerminalEvent(w http.ResponseWriter, flusher http.Flusher, result lebro.RunResult, runErr error, total lebro.ModelUsage) {
 	event := StreamEvent{
 		RunID:  string(result.ID),
 		Status: string(result.Status),
+	}
+	if total != (lebro.ModelUsage{}) {
+		usage := usageFromModel(total)
+		event.Usage = &usage
 	}
 
 	name := eventSucceeded
@@ -157,21 +179,35 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 	return event
 }
 
-// isZeroDelta reports whether a redactor suppressed a delta entirely. Err is
-// excluded from the comparison because a StreamDelta carrying only an error is
-// meaningful, and comparing an interface field would panic on an uncomparable
-// dynamic type.
-func isZeroDelta(delta lebro.StreamDelta) bool {
-	return delta.Text == "" &&
-		delta.ToolCall == nil &&
-		delta.StructuredOutput == "" &&
-		delta.FinishReason == "" &&
-		delta.Usage == (lebro.ModelUsage{}) &&
-		delta.Err == nil
+// hasStreamableContent reports whether a delta carries anything this wire
+// format can represent. It governs which deltas become model_delta events.
+//
+// Err is deliberately not counted as content. StreamEvent has no field for a
+// delta-level error, so an error-only delta — which is what a provider stream
+// produces when it aborts — would serialize to an event with nothing but a
+// type, immediately followed by the terminal event carrying the real
+// classification. Suppressing it here keeps the failure reported once, in the
+// terminal event, where a client already has to look for it.
+//
+// Redactor suppression rides on the same predicate: a redactor that returns the
+// zero delta produces no content and is skipped.
+func hasStreamableContent(delta lebro.StreamDelta) bool {
+	return delta.Text != "" ||
+		delta.ToolCall != nil ||
+		delta.StructuredOutput != "" ||
+		delta.FinishReason != "" ||
+		delta.Usage != (lebro.ModelUsage{})
 }
 
 // writeEvent writes one Server-Sent Event and flushes it. It reports false when
-// the write fails, which is how a client disconnect surfaces mid-stream.
+// the event could not be delivered — a failed write, which is how a client
+// disconnect surfaces mid-stream, or a payload that could not be marshalled.
+//
+// A false result always means the stream is finished: the caller must stop,
+// because either the connection is gone or a terminal failure event has already
+// been written in place of the requested one. Reporting true after substituting
+// a terminal event would let the loop continue and emit a second terminal
+// event, leaving the client with two contradictory endings.
 //
 // Data is emitted as a single line: the payload is compact JSON, which cannot
 // contain a raw newline, so no multi-line data framing is needed.
@@ -180,15 +216,22 @@ func writeEvent(w http.ResponseWriter, flusher http.Flusher, name string, event 
 	if err != nil {
 		// A payload that cannot be marshalled would otherwise abort the stream
 		// with no terminal event. Report it as an internal failure in the same
-		// envelope so the client still sees a well-formed event.
+		// envelope so the client still sees a well-formed ending, then stop.
 		body := errorBody(ErrorCodeInternal)
-		payload, err = json.Marshal(StreamEvent{Type: eventFailed, Error: &body})
-		if err != nil {
+		fallback, marshalErr := json.Marshal(StreamEvent{Type: eventFailed, Error: &body})
+		if marshalErr != nil {
 			return false
 		}
-		name = eventFailed
+		writeFrame(w, flusher, eventFailed, fallback)
+		return false
 	}
 
+	return writeFrame(w, flusher, name, payload)
+}
+
+// writeFrame writes one framed event and flushes it, reporting whether the
+// write succeeded.
+func writeFrame(w http.ResponseWriter, flusher http.Flusher, name string, payload []byte) bool {
 	var frame bytes.Buffer
 	fmt.Fprintf(&frame, "event: %s\ndata: %s\n\n", name, payload)
 	if _, err := w.Write(frame.Bytes()); err != nil {

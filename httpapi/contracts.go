@@ -150,8 +150,17 @@ type HealthResponse struct {
 // StreamEvent is one Server-Sent Event payload on the stream route. Type
 // mirrors the event name so a client that buffers data lines without reading
 // event names still sees the type. Text, ToolCall, and StructuredOutput carry a
-// model delta; RunID, Status, and Usage are populated on terminal events; Error
+// model delta; RunID and Status are populated on the terminal event; Error
 // carries the public error code for a failed or cancelled run.
+//
+// Usage appears on a delta when the provider reports per-call figures, and on
+// the terminal event as the run total across every model call. A client that
+// treats the terminal event as the single end-of-run marker therefore finds the
+// full accounting there without summing deltas itself.
+//
+// There is no field for a delta-level error: a provider stream that aborts is
+// reported once, through the terminal event's Error, rather than as an
+// otherwise-empty delta followed by the real classification.
 type StreamEvent struct {
 	Type             string          `json:"type"`
 	RunID            string          `json:"run_id,omitempty"`

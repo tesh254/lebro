@@ -124,9 +124,19 @@ func routes() []route {
 			queryParams: []param{threadQueryParam},
 			requestBody: schemaNameRunRequest,
 			streaming:   true,
+			// RunStream can fail before the stream opens — loading a thread's
+			// prior messages, resolving tools, or compiling a run-level output
+			// schema all happen during setup — and those failures are reported
+			// with a status because no bytes have been written yet. Once the
+			// stream is open a failure can only be a terminal event, which is
+			// why this list is shorter than the non-streaming route's.
 			errorCodes: []ErrorCode{
 				ErrorCodeInvalidRequest,
 				ErrorCodeNotFound,
+				ErrorCodeInvalidInput,
+				ErrorCodeInvalidOutput,
+				ErrorCodeProviderFailure,
+				ErrorCodeCancelled,
 				ErrorCodeInternal,
 			},
 		},

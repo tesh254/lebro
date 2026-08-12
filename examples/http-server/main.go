@@ -135,7 +135,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// httptest keeps the example runnable with no open port. Replace this with
+	// httptest binds an ephemeral loopback port, so the example needs no fixed
+	// port, no API key, and no network egress. Replace this with
 	// http.ListenAndServe(":8080", server.Handler()) to serve for real.
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()

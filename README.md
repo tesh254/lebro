@@ -1089,8 +1089,13 @@ message. Internal error text never reaches the response body.
 
 The stream route emits Server-Sent Events whose names reuse the `RunEventType`
 vocabulary, and always terminates with exactly one terminal event, so a client
-can distinguish a completed run from a dropped connection. Closing the
+can distinguish a completed run from a dropped connection. The terminal event
+carries the run's total token usage, summed across every model call. Closing the
 connection cancels the run.
+
+A request to a route that exists but not for that method is answered `405` with
+an `Allow` header, rather than a `404` that would suggest the resource does not
+exist. `HEAD` is served for every `GET` route.
 
 Streamed deltas pass through a `Redactor` first. A nil `Redactor` selects
 `DefaultRedactor`, which strips model-supplied tool-call arguments while passing

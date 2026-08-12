@@ -41,23 +41,22 @@ var inlineParameterSchemas = map[string]json.RawMessage{
 var componentSchemas = map[string]json.RawMessage{
 	schemaNameRunRequest: json.RawMessage(`{
 		"type": "object",
-		"description": "Input for an agent run. Only user text is accepted; the agent's configured instructions remain the only system message.",
+		"description": "Input for an agent run. Only user text is accepted; the agent's configured instructions remain the only system message. An omitted or null body runs the agent with no seed messages, which is valid for an agent whose instructions drive the first turn.",
 		"properties": {
 			"messages": {
-				"type": "array",
-				"description": "Conversation messages seeding the run. Each is treated as a user turn.",
+				"type": ["array", "null"],
+				"description": "Conversation messages seeding the run. Each is treated as a user turn. Null is accepted and equivalent to an empty list.",
 				"items": {
 					"type": "object",
 					"properties": {
-						"content": {"type": "string", "description": "The message text."}
+						"content": {"type": "string", "description": "The message text. An omitted value is equivalent to an empty string."}
 					},
-					"required": ["content"],
 					"additionalProperties": false
 				}
 			},
 			"metadata": {
-				"type": "object",
-				"description": "Caller metadata carried through to tool execution and run events.",
+				"type": ["object", "null"],
+				"description": "Caller metadata carried through to tool execution and run events. Null is accepted and equivalent to no metadata.",
 				"additionalProperties": {"type": "string"}
 			}
 		},
@@ -95,8 +94,8 @@ var componentSchemas = map[string]json.RawMessage{
 		"properties": {
 			"input": {"description": "JSON value passed to the first step."},
 			"metadata": {
-				"type": "object",
-				"description": "Caller metadata carried through to step execution and run events.",
+				"type": ["object", "null"],
+				"description": "Caller metadata carried through to step execution and run events. Null is accepted and equivalent to no metadata.",
 				"additionalProperties": {"type": "string"}
 			}
 		},
@@ -233,7 +232,7 @@ var componentSchemas = map[string]json.RawMessage{
 
 	schemaNameStreamEvent: json.RawMessage(`{
 		"type": "object",
-		"description": "One Server-Sent Event payload. Delta events carry text, a tool call, or structured output; the single terminal event carries the run status and, on failure, a public error.",
+		"description": "One Server-Sent Event payload. Delta events carry text, a tool call, or structured output; the single terminal event carries the run status, the run's total token usage, and, on failure, a public error. There is no delta-level error field: an aborting provider stream is reported once through the terminal event.",
 		"properties": {
 			"type": {"type": "string", "description": "Event name, matching the SSE event field.", "enum": ["model_delta", "run_succeeded", "run_failed", "run_cancelled"]},
 			"run_id": {"type": "string", "description": "Present on the terminal event."},
@@ -252,7 +251,7 @@ var componentSchemas = map[string]json.RawMessage{
 			"structured_output": {"description": "Structured payload of the terminal assistant message."},
 			"finish_reason": {"type": "string", "enum": ["stop", "length", "tool_calls", "content_filter", "cancelled", "unspecified"]},
 			"status": {"type": "string", "description": "Terminal run status. Present on the terminal event.", "enum": ["pending", "running", "succeeded", "failed", "cancelled", "suspended"]},
-			"usage": {"$ref": "#/components/schemas/Usage"},
+			"usage": {"$ref": "#/components/schemas/Usage", "description": "Per-call figures on a delta; the run total on the terminal event."},
 			"error": {"$ref": "#/components/schemas/Error"}
 		},
 		"required": ["type"],

@@ -39,11 +39,16 @@ All notable changes to this project are documented in this file.
   builds the router, so a served route cannot be missing from it; exposed
   primitives are named in their operations' descriptions and each workflow's
   declared input schema is embedded in its request body, keeping the published
-  contract as precise as the runtime validation. Agent runs do not report token
-  usage over HTTP: `RunResult` carries no aggregate and an agent's `RunListener`
-  is fixed at construction, so a per-request total cannot be collected without
-  mutating state shared by concurrent requests; configure a `RunListener` on the
-  agent, or read per-call usage from the streaming route's deltas. New public
+  contract as precise as the runtime validation. A request to a route that
+  exists but not for the requested method is answered `405` with an `Allow`
+  header rather than a `404` implying the resource is absent, and `HEAD` is
+  served for every `GET` route so the served surface equals the documented one.
+  Non-streaming agent runs do not report token usage: `RunResult` carries no
+  aggregate and an agent's `RunListener` is fixed at construction, so a
+  per-request total cannot be collected without mutating state shared by
+  concurrent requests; configure a `RunListener` on the agent, or use the
+  streaming route, whose terminal event carries the run total summed across
+  every model call. New public
   types: `httpapi.Server`, `httpapi.ServerConfig`, `httpapi.Redactor`,
   `httpapi.ErrorCode`, and the wire contracts `RunRequest`, `RunResponse`,
   `WorkflowRunRequest`, `WorkflowRunResponse`, `StreamEvent`, `ErrorResponse`,

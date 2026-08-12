@@ -1,11 +1,15 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,6 +110,12 @@ func TestAgentRunRejectsMalformedBody(t *testing.T) {
 		"not an object":   `["hi"]`,
 		"trailing value":  `{"messages":[]}{"messages":[]}`,
 		"invalid message": `{"messages":[{"content":42}]}`,
+		// Trailing bytes that are not a second JSON value. json.Decoder.More
+		// reports false for these at the top level, so a More-based check
+		// accepts them and runs the agent on a body the client got wrong.
+		"trailing bracket": `{}]`,
+		"trailing brace":   `{}}`,
+		"trailing garbage": `{"messages":[]} not json`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := doRaw(t, server.Handler(), http.MethodPost, "/agents/assistant/runs", body)
@@ -185,26 +195,54 @@ func TestConcurrentRequestsAreIsolated(t *testing.T) {
 	})))
 	handler := server.Handler()
 
+	// Each goroutine collects its own failure rather than calling t.Fatalf.
+	// Fatalf is only valid from the test's own goroutine: from a spawned one it
+	// stops that goroutine without failing the test promptly, so a real failure
+	// would be reported confusingly while the rest of the run continued.
+	type outcome struct {
+		index int
+		err   error
+	}
+	failures := make(chan outcome, 16)
+
 	var wg sync.WaitGroup
 	for i := range 16 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			want := "caller-" + strconv.Itoa(i)
-			recorder := doJSON(t, handler, http.MethodPost, "/agents/assistant/runs", httpapi.RunRequest{
+
+			body, err := json.Marshal(httpapi.RunRequest{
 				Messages: []httpapi.MessageInput{{Content: want}},
 			})
-			if recorder.Code != http.StatusOK {
-				t.Errorf("status = %d body = %s", recorder.Code, recorder.Body)
+			if err != nil {
+				failures <- outcome{i, err}
 				return
 			}
-			response := decodeBody[httpapi.RunResponse](t, recorder)
+			request := httptest.NewRequest(http.MethodPost, "/agents/assistant/runs", bytes.NewReader(body))
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				failures <- outcome{i, fmt.Errorf("status = %d body = %s", recorder.Code, recorder.Body)}
+				return
+			}
+			var response httpapi.RunResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				failures <- outcome{i, fmt.Errorf("decode body %q: %w", recorder.Body, err)}
+				return
+			}
 			if response.Content != "echo:"+want {
-				t.Errorf("content = %q, want %q", response.Content, "echo:"+want)
+				failures <- outcome{i, fmt.Errorf("content = %q, want %q", response.Content, "echo:"+want)}
 			}
 		}()
 	}
 	wg.Wait()
+	close(failures)
+
+	for failure := range failures {
+		t.Errorf("request %d: %v", failure.index, failure.err)
+	}
 }
 
 func TestUnexposedPrimitivesHaveNoRoute(t *testing.T) {
@@ -223,6 +261,54 @@ func TestUnexposedPrimitivesHaveNoRoute(t *testing.T) {
 			}
 			assertErrorCode(t, recorder, httpapi.ErrorCodeNotFound)
 		})
+	}
+}
+
+// A request to a real path with the wrong method must be 405, not 404: telling
+// a client the resource does not exist when the route is present is misleading,
+// and a 404 here would leave ErrorCodeMethodNotAllowed unreachable.
+func TestWrongMethodOnExistingRouteReturnsMethodNotAllowed(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{Store: lebro.NewMemoryStore()})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", &scriptedModel{})))
+	must(t, server.ExposeWorkflow(newEchoWorkflow(t, "echo")))
+	handler := server.Handler()
+
+	for name, request := range map[string]struct {
+		method string
+		target string
+		allow  string
+	}{
+		"GET on agent run":      {http.MethodGet, "/agents/assistant/runs", http.MethodPost},
+		"GET on workflow run":   {http.MethodGet, "/workflows/echo/runs", http.MethodPost},
+		"POST on health":        {http.MethodPost, "/health", http.MethodGet},
+		"DELETE on thread":      {http.MethodDelete, "/threads/t-1", http.MethodGet},
+		"PUT on agent listing":  {http.MethodPut, "/agents", http.MethodGet},
+		"POST on the contract":  {http.MethodPost, "/openapi.json", http.MethodGet},
+		"GET on agent stream":   {http.MethodGet, "/agents/assistant/runs/stream", http.MethodPost},
+		"PATCH on the messages": {http.MethodPatch, "/threads/t-1/messages", http.MethodGet},
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := doJSON(t, handler, request.method, request.target, nil)
+			if recorder.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusMethodNotAllowed, recorder.Body)
+			}
+			assertErrorCode(t, recorder, httpapi.ErrorCodeMethodNotAllowed)
+			// RFC 9110 requires Allow on a 405 so the client learns what the
+			// route does accept.
+			if allow := recorder.Header().Get("Allow"); !strings.Contains(allow, request.allow) {
+				t.Fatalf("Allow = %q, want it to include %q", allow, request.allow)
+			}
+		})
+	}
+}
+
+// HEAD is served for every GET route, so the surface the router exposes equals
+// the surface the document describes.
+func TestHeadIsServedForGetRoutes(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	recorder := doJSON(t, server.Handler(), http.MethodHead, "/health", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HEAD /health status = %d, want %d", recorder.Code, http.StatusOK)
 	}
 }
 

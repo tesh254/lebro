@@ -170,6 +170,74 @@ func TestStreamTerminatesFailedRunWithTypedError(t *testing.T) {
 	}
 }
 
+// An aborting provider stream must not emit an empty model_delta before the
+// terminal event. StreamEvent has no field for a delta-level error, so an
+// error-only delta would serialize to an event carrying nothing but a type,
+// immediately followed by the terminal event with the real classification.
+func TestStreamSuppressesErrorOnlyDeltas(t *testing.T) {
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{Text: "partial output"},
+		{Err: errors.New("provider aborted the stream")},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	events := readSSE(t, recorder.Body)
+
+	for i, event := range events {
+		if event.name != "model_delta" {
+			continue
+		}
+		if event.data.Text == "" && event.data.ToolCall == nil &&
+			len(event.data.StructuredOutput) == 0 && event.data.FinishReason == "" &&
+			event.data.Usage == nil {
+			t.Fatalf("empty model_delta at index %d carries nothing a client can use: %+v", i, event.data)
+		}
+	}
+
+	if len(events) == 0 {
+		t.Fatal("no events emitted")
+	}
+	final := events[len(events)-1]
+	if final.name != "run_failed" {
+		t.Fatalf("terminal event = %q, want run_failed", final.name)
+	}
+	if final.data.Error == nil {
+		t.Fatal("terminal event carries no error, so the abort is unreported")
+	}
+}
+
+// Usage is documented on the terminal event, so it must actually be populated
+// there. It is the run total, not one call's figures: a provider reports usage
+// per call, and a client treating the terminal event as the end-of-run marker
+// should not have to sum deltas itself.
+func TestStreamTerminalEventCarriesRunTotalUsage(t *testing.T) {
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{Text: "one", Usage: lebro.ModelUsage{InputTokens: 3, OutputTokens: 5, TotalTokens: 8}},
+		{Text: "two", FinishReason: lebro.FinishReasonStop, Usage: lebro.ModelUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	events := readSSE(t, recorder.Body)
+
+	final := events[len(events)-1]
+	if final.name != "run_succeeded" {
+		t.Fatalf("terminal event = %q, want run_succeeded", final.name)
+	}
+	if final.data.Usage == nil {
+		t.Fatal("terminal event carries no usage despite documenting the field")
+	}
+	// The per-call figures differ, so a total that merely echoed the last delta
+	// would score differently from a genuine sum.
+	want := httpapi.Usage{InputTokens: 4, OutputTokens: 7, TotalTokens: 11}
+	if *final.data.Usage != want {
+		t.Fatalf("usage = %+v, want the run total %+v", *final.data.Usage, want)
+	}
+}
+
 // Errors discovered before the stream opens are reported with a real status
 // code, because the status is not yet committed.
 func TestStreamReportsPreflightErrorsWithStatus(t *testing.T) {

@@ -238,10 +238,16 @@ func decodeJSON[T any](r *http.Request) (T, error) {
 	if err := decoder.Decode(&value); err != nil {
 		return value, err
 	}
-	// A body with trailing content past the first JSON value is malformed;
-	// accepting it would let two different payloads produce the same run.
-	if decoder.More() {
-		return value, errors.New("lebro/httpapi: request body contains more than one JSON value")
+	// A body with anything past the first JSON value is malformed; accepting it
+	// would let two different payloads produce the same run.
+	//
+	// This must be a second Decode rather than decoder.More(): More reports
+	// whether another value follows *within an array or object being streamed*,
+	// so at the top level it returns false for stray trailing bytes and a body
+	// like `{}]` would be accepted. Decoding again surfaces both cases — a
+	// second value and unparseable trailing bytes — as a non-EOF result.
+	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return value, errors.New("lebro/httpapi: request body contains trailing content after the first JSON value")
 	}
 	return value, nil
 }

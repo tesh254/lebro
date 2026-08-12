@@ -87,7 +87,7 @@ func (s *Server) openAPIOperation(r route) map[string]any {
 
 	if r.requestBody != "" {
 		operation["requestBody"] = map[string]any{
-			"required": false,
+			"required": s.requestBodyRequired(r),
 			"content": map[string]any{
 				"application/json": map[string]any{
 					"schema": s.requestBodySchema(r),
@@ -96,6 +96,23 @@ func (s *Server) openAPIOperation(r route) map[string]any {
 		}
 	}
 	return operation
+}
+
+// requestBodyRequired reports whether an operation's request body may be
+// omitted. An agent run accepts an empty body — an agent whose instructions
+// drive the first turn needs no seed messages — but a workflow whose first step
+// declares a required input rejects an omitted body with 400, so documenting it
+// as optional would publish a contract the server does not honor.
+func (s *Server) requestBodyRequired(r route) bool {
+	if r.requestBody != schemaNameWorkflowRunRequest {
+		return false
+	}
+	for _, summary := range s.workflowSummaries() {
+		if len(summary.InputSchema) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // operationDescription augments a route's static description with what is
@@ -125,8 +142,15 @@ func (s *Server) operationDescription(r route) string {
 // The workflow run body is special-cased: each exposed workflow declares its
 // own first-step input schema, so a single shared schema would document the
 // route as accepting any JSON when in practice each workflow accepts one
-// specific shape. A oneOf over per-workflow schemas keeps the published
-// contract as precise as the runtime validation actually is.
+// specific shape. Listing the per-workflow schemas keeps the published contract
+// as precise as the runtime validation.
+//
+// The combinator is anyOf, not oneOf. oneOf requires an instance to match
+// exactly one branch, which is wrong here twice over: the path's {id} already
+// selects which workflow applies, and two workflows that accept the same shape
+// (or one schema-ful workflow alongside the permissive generic body) would make
+// every valid request match more than one branch and be rejected by the very
+// contract that documents it.
 func (s *Server) requestBodySchema(r route) any {
 	if r.requestBody != schemaNameWorkflowRunRequest {
 		return schemaRef(r.requestBody)
@@ -135,7 +159,7 @@ func (s *Server) requestBodySchema(r route) any {
 	if len(variants) == 0 {
 		return schemaRef(schemaNameWorkflowRunRequest)
 	}
-	return map[string]any{"oneOf": variants}
+	return map[string]any{"anyOf": variants}
 }
 
 // workflowRequestVariants builds one request-body variant per exposed workflow
@@ -240,8 +264,8 @@ func workflowRequestSchema(summary WorkflowSummary) map[string]any {
 		"properties": map[string]any{
 			"input": summary.InputSchema,
 			"metadata": map[string]any{
-				"type":                 "object",
-				"description":          "Caller metadata carried through to step execution and run events.",
+				"type":                 []string{"object", "null"},
+				"description":          "Caller metadata carried through to step execution and run events. Null is accepted and equivalent to no metadata.",
 				"additionalProperties": map[string]any{"type": "string"},
 			},
 		},
@@ -251,17 +275,26 @@ func workflowRequestSchema(summary WorkflowSummary) map[string]any {
 }
 
 // workflowSchemaName is the component name for a workflow's request schema.
-// Characters outside the OpenAPI component-name character set are replaced so a
+// Characters outside the OpenAPI component-name character set are escaped so a
 // workflow ID containing a dot or slash cannot produce an unreferenceable name.
+//
+// The encoding is reversible, which matters: replacing every unsafe rune with a
+// single "_" would map the distinct IDs "billing.sync" and "billing_sync" onto
+// one component name, and the second workflow registered would silently
+// overwrite the first's schema — publishing the wrong validation contract for
+// one of them. Escaping as "_xHH" (with a literal underscore escaped too) keeps
+// distinct IDs distinct.
 func workflowSchemaName(id string) string {
 	var b strings.Builder
 	b.WriteString("WorkflowRunRequest_")
 	for _, r := range id {
 		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
 			b.WriteRune(r)
 		default:
-			b.WriteRune('_')
+			// %x keeps the escape within the component-name character set for
+			// every rune, including multi-byte ones.
+			fmt.Fprintf(&b, "_x%x", r)
 		}
 	}
 	return b.String()
