@@ -1,0 +1,19 @@
+internal/runtime/rag_indexer_test.go
+  s_0d5d4c397c521e::t_b3e63ec44ec6a8 579-580
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "943d9bd4f129fdeb4f0cfb76a6201043730fcd43",
+  "prompts": {},
+  "sessions": {
+    "s_0d5d4c397c521e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438c2b27-4a46-4e89-af57-57f16a0bfd30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
