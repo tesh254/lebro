@@ -1,0 +1,25 @@
+examples/rag-retrieval/main_test.go
+  s_0d5d4c397c521e::t_de79caabcbd8dc 167-196
+  s_0d5d4c397c521e::t_52b78953f6976b 7
+internal/runtime/rag_indexer_test.go
+  s_0d5d4c397c521e::t_cb9cd2fed263c0 629-633,636,645-650
+  s_0d5d4c397c521e::t_2c0fe800dd92ba 552-565,579-581,583-585
+examples/rag-retrieval/main.go
+  s_0d5d4c397c521e::t_a7f82091bd47e4 127-130,136-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "85fb5c4e96147370ed1427428ff8edd962539f40",
+  "prompts": {},
+  "sessions": {
+    "s_0d5d4c397c521e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438c2b27-4a46-4e89-af57-57f16a0bfd30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
