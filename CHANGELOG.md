@@ -6,6 +6,50 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Embeddable HTTP server and generated OpenAPI contract. The new optional
+  `httpapi` package serves registered agents and workflows over HTTP and
+  publishes the contract as an OpenAPI 3.1 document. It is absent from the core
+  dependency graph and imports only the standard library and the `lebro` façade,
+  so an application that does not serve HTTP never compiles it in and one that
+  does gains no third-party dependency. Only explicitly registered primitives
+  are routable: `NewServer` returns a server with nothing exposed, and
+  `ExposeAgent` and `ExposeWorkflow` are the only ways to add a route, so a
+  primitive that was not registered cannot be reached by guessing an identifier.
+  Routes cover run (`POST /agents/{id}/runs`), streaming
+  (`POST /agents/{id}/runs/stream`), workflow (`POST /workflows/{id}/runs`),
+  thread reads (`GET /threads/{id}` and `GET /threads/{id}/messages`), listings,
+  health, and the contract itself at `GET /openapi.json`. Requests supply user
+  text only — message roles are fixed server-side, so a client cannot inject a
+  system prompt or forge an assistant turn, and thread IDs come from the path or
+  query string rather than a request body, so one caller cannot address
+  another's durable conversation by naming it in a payload. Failures surface as
+  stable `ErrorCode` values derived from the runtime's normalized error kinds,
+  each with a fixed public message; internal error text never reaches a response
+  body. The streaming route emits Server-Sent Events whose names reuse the
+  `RunEventType` vocabulary and always terminates with exactly one terminal
+  event, so a client distinguishes a completed run from a dropped connection,
+  and closing the connection cancels the run. Streamed deltas pass through a
+  `Redactor` first; a nil `Redactor` selects `DefaultRedactor`, which strips
+  model-supplied tool-call arguments while passing assistant text and structured
+  output through, so a zero-valued configuration streams less rather than more.
+  Authentication is deliberately absent — `ServerConfig.Middleware` wraps the
+  router and the package stays neutral about the scheme — and workflow resume is
+  not exposed, matching the MCP server, because no durable atomic resume claim
+  exists yet. The OpenAPI document is generated from the same route table that
+  builds the router, so a served route cannot be missing from it; exposed
+  primitives are named in their operations' descriptions and each workflow's
+  declared input schema is embedded in its request body, keeping the published
+  contract as precise as the runtime validation. Agent runs do not report token
+  usage over HTTP: `RunResult` carries no aggregate and an agent's `RunListener`
+  is fixed at construction, so a per-request total cannot be collected without
+  mutating state shared by concurrent requests; configure a `RunListener` on the
+  agent, or read per-call usage from the streaming route's deltas. New public
+  types: `httpapi.Server`, `httpapi.ServerConfig`, `httpapi.Redactor`,
+  `httpapi.ErrorCode`, and the wire contracts `RunRequest`, `RunResponse`,
+  `WorkflowRunRequest`, `WorkflowRunResponse`, `StreamEvent`, `ErrorResponse`,
+  `ThreadResponse`, `MessageListResponse`, `HealthResponse`, and the listing
+  types. A runnable example is in `examples/http-server`.
+
 - Document ingestion, embeddings, and retrieval tools. Retrieval-augmented
   generation is assembled from provider-neutral contracts — `Document`, `Chunk`,
   `Chunker`, `EmbeddingModel`, and `Retriever` — that persist through the
