@@ -40,7 +40,7 @@ type FeedbackRecord struct {
 	TraceID   TraceID           `json:"trace_id,omitempty"`
 	SpanID    SpanID            `json:"span_id,omitempty"`
 	Kind      FeedbackKind      `json:"kind"`
-	Score     float64           `json:"score,omitempty"`
+\tScore     float64           `json:"score"`
 	Comment   string            `json:"comment,omitempty"`
 	Source    string            `json:"source,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
