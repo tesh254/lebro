@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 
 	"github.com/tesh254/lebro"
@@ -121,12 +122,30 @@ func (s *Studio) buildHandler() http.Handler {
 }
 
 // tracesOrEmpty returns the configured TraceLister or an empty stand-in, so the
-// trace handlers never nil-check.
+// trace handlers never nil-check. It treats a typed-nil interface value — a nil
+// pointer boxed in the interface, which is not equal to a nil interface — as
+// absent too, so a caller that passes an uninitialized lister gets empty trace
+// views rather than a nil-pointer panic in a handler.
 func (s *Studio) tracesOrEmpty() TraceLister {
-	if s.config.Traces == nil {
+	if isNilLister(s.config.Traces) {
 		return emptyTraceLister{}
 	}
 	return s.config.Traces
+}
+
+// isNilLister reports whether a TraceLister is a nil interface or a nil-able
+// value (pointer, map, slice, channel, func) that is itself nil.
+func isNilLister(lister TraceLister) bool {
+	if lister == nil {
+		return true
+	}
+	value := reflect.ValueOf(lister)
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // writeJSON serializes value as the response body. It mirrors httpapi's helper

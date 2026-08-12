@@ -80,17 +80,52 @@ func (s *Studio) handleGetTrace(w http.ResponseWriter, r *http.Request) {
 // start time, so the run root comes first and each model and tool call follows
 // in the order it happened. The Repository returns spans in export order, which
 // ends a child before its parent, so the raw slice is not the order to render.
-// Ties break on SpanID for a stable sequence a polling client can rely on.
+//
+// On an exact start-time tie the comparison cannot rely on SpanID, which has no
+// ordering contract, and must not place a child before its parent. It breaks
+// the tie so a parent sorts before its own descendants — a root before a span
+// whose ancestry includes it — and otherwise keeps the incoming order, which a
+// stable sort preserves. The result never renders a child above the span that
+// started it, whatever ID scheme the backend uses.
 func orderSpans(spans []obsv.Span) []obsv.Span {
 	ordered := make([]obsv.Span, len(spans))
 	copy(ordered, spans)
+
+	ancestors := ancestorDepth(ordered)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if !ordered[i].Start.Equal(ordered[j].Start) {
 			return ordered[i].Start.Before(ordered[j].Start)
 		}
-		return ordered[i].SpanID < ordered[j].SpanID
+		// Shallower spans first, so a parent precedes its descendants when they
+		// share a start instant. Equal depth keeps insertion order via the
+		// stable sort.
+		return ancestors[ordered[i].SpanID] < ancestors[ordered[j].SpanID]
 	})
 	return ordered
+}
+
+// ancestorDepth maps each span to the number of ancestors it has within the
+// trace, following ParentSpanID links. A root has depth zero. The walk is
+// bounded by the span count so a malformed parent cycle cannot loop forever.
+func ancestorDepth(spans []obsv.Span) map[obsv.SpanID]int {
+	parent := make(map[obsv.SpanID]obsv.SpanID, len(spans))
+	for _, span := range spans {
+		parent[span.SpanID] = span.ParentSpanID
+	}
+	depth := make(map[obsv.SpanID]int, len(spans))
+	for _, span := range spans {
+		steps := 0
+		for current := span.ParentSpanID; current != ""; current = parent[current] {
+			steps++
+			if steps > len(spans) {
+				// A cycle or a parent outside the trace: stop counting rather
+				// than loop, treating the remaining chain as flat.
+				break
+			}
+		}
+		depth[span.SpanID] = steps
+	}
+	return depth
 }
 
 // summarizeTraces reduces a flat span stream to one summary per trace, sorted
@@ -113,8 +148,11 @@ func summarizeTraces(spans []obsv.Span) []TraceSummary {
 		acc.summary.SpanCount++
 		// The root run span names the trace and carries the outcome the listing
 		// shows. Prefer it, but keep the earliest start across all spans so a
-		// trace still sorts sensibly if its root has not been recorded yet.
-		if span.IsRoot() {
+		// trace still sorts sensibly if its root has not been recorded yet. The
+		// first root seen stays authoritative: a trace has one run root, and a
+		// later parentless span (a sibling recorded without its parent) must not
+		// overwrite the trace's name and status.
+		if span.IsRoot() && !acc.hasRoot {
 			acc.summary.Name = span.Name
 			acc.summary.Status = string(span.Status)
 			acc.hasRoot = true

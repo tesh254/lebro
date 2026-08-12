@@ -1305,7 +1305,9 @@ static bundle; a build with no bundle serves a placeholder page so the API is
 still usable.
 
 ```go
-observer, _ := obsv.New(obsv.Config{Repository: repository})
+// QueueSize: -1 exports spans synchronously, so a run's trace is queryable the
+// moment the run returns; the default buffers on a background goroutine.
+observer, _ := obsv.New(obsv.Config{Repository: repository, QueueSize: -1})
 
 agent, _ := lebro.NewAgent(lebro.AgentConfig{
     Definition: lebro.AgentDefinition{ID: "assistant", Name: "Assistant"},
@@ -1334,7 +1336,13 @@ renders the events top to bottom.
 
 The developer UI itself — a TanStack Start application replicating the feel of a
 modern agent studio — lives in the separate `lebro-studio` project; its build
-output is embedded into `studio/dist` to serve it from here.
+output is embedded into `studio/dist` to serve it from here. A from-source build
+has an empty `studio/dist` and serves a placeholder page. To embed the real UI —
+required before packaging a release — build it and copy the bundle in:
+
+```sh
+make studio-ui LEBRO_STUDIO_UI=/path/to/lebro-studio
+```
 
 Run the Studio example (no network or API key required):
 

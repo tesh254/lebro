@@ -259,27 +259,31 @@ func TestAPIMountedUnderAPIPrefix(t *testing.T) {
 }
 
 // TestStartServesThenShutsDownOnContextCancel exercises the explicit opt-in:
-// Start binds a listener, serves, and stops cleanly when its context is
-// cancelled. It also demonstrates the off-by-default property — nothing listens
-// until Start is called.
+// serve runs on a listener, answers requests, and stops cleanly when its context
+// is cancelled. It also demonstrates the off-by-default property — nothing
+// listens until serve is called.
+//
+// The test binds its own ephemeral listener and hands it to serve, rather than
+// letting Start bind an address. That removes the race a bind-by-address test
+// has: the port is never freed and rebound, so the OS cannot hand it to another
+// socket in the gap.
 func TestStartServesThenShutsDownOnContextCancel(t *testing.T) {
 	agent := newAgent(t, nil, nil)
 
-	// Bind an ephemeral port ourselves to learn the address, then hand it to
-	// Start. Closing our probe listener first frees the port for Start.
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("probe listen: %v", err)
+		t.Fatalf("listen: %v", err)
 	}
-	addr := probe.Addr().String()
-	_ = probe.Close()
+	addr := listener.Addr().String()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- studio.Start(ctx, addr, studio.Config{Agents: []*lebro.Agent{agent}}) }()
+	go func() {
+		done <- studio.ServeForTest(ctx, listener, studio.Config{Agents: []*lebro.Agent{agent}})
+	}()
 
 	// Poll until the server answers, so the test does not race the goroutine's
-	// bind.
+	// startup.
 	if !waitForServer(t, "http://"+addr+"/api/agents") {
 		cancel()
 		<-done
@@ -290,10 +294,10 @@ func TestStartServesThenShutsDownOnContextCancel(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil && err != context.Canceled {
-			t.Fatalf("Start returned unexpected error: %v", err)
+			t.Fatalf("serve returned unexpected error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Start did not return after context cancel")
+		t.Fatal("serve did not return after context cancel")
 	}
 }
 

@@ -8,6 +8,14 @@
 // Start. UI state is never a runtime requirement — the agents and workflows a
 // program runs behave identically whether or not a Studio is attached.
 //
+// The web UI is served from studio/dist, which is embedded at build time. A
+// from-source build has an empty dist and serves a placeholder page; a release
+// must populate it first by building the lebro-studio project and copying its
+// client bundle in. The repository ships a make target for this — run
+// `make studio-ui` (optionally with LEBRO_STUDIO_UI pointing at a lebro-studio
+// checkout) before packaging a release, or the released Studio serves only the
+// placeholder.
+//
 // A Studio composes two existing lebro surfaces rather than reimplementing them.
 // Agent runs, workflow runs, streaming, and thread reads are served by the
 // httpapi package, mounted under /api. Ordered run events — the run, step,
