@@ -6,6 +6,26 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Durable schedules and recurring workflow runs. A new `Scheduler` fires
+  persisted schedules whose next fire time has arrived, reusing
+  `LinearWorkflow.Run` for each execution, so recurring work survives a process
+  restart: due schedules are reloaded from the `Store` on every tick rather than
+  held in memory. A `ScheduleRecord` carries a cron or `@every` spec (compiled by
+  the standard-library-only `ParseCronSpec` — five fields plus fixed intervals),
+  a `ConcurrencyPolicy` (`ConcurrencyAllow` or `ConcurrencySkip`), the workflow
+  input, and the persisted `NextFireAt`/`LastFireAt`; each fire appends a
+  `ScheduleExecutionRecord` to durable history with a `succeeded`, `failed`,
+  `skipped`, or `missed` status, so overlapping runs dropped by the concurrency
+  policy and fires elapsed during an outage are both visible after the fact.
+  `Scheduler.Tick(ctx, now)` is the deterministic core (testable with a fixed
+  `Clock`); `Scheduler.Start`/`Stop` wrap it in a background loop. Two new
+  repositories, `ScheduleRepository` and `ScheduleExecutionRepository`, join the
+  `Store` contract and are implemented by the memory, SQLite, and PostgreSQL
+  adapters (append-only migrations) and enforced by `NewPolicyStore`. The public
+  surface adds `Scheduler`, `SchedulerConfig`, `NewScheduler`, `TickResult`,
+  `ScheduleRecord`, `ScheduleExecutionRecord`, `ScheduleFilter`, `CronSchedule`,
+  `ParseCronSpec`, `WorkflowResolver`/`WorkflowMap`, and the concurrency and
+  execution-status constants; no new module dependency is introduced.
 - Pluggable authentication and authorization hooks. A new `Policy` contract lets
   an application allow or deny an agent run, a tool call, a workflow run, or a
   storage operation against a caller `Identity` (subject, tenant, capabilities,

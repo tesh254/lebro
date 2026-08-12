@@ -140,6 +140,32 @@ var sqliteSchemaMigrations = []string{
 	`ALTER TABLE workflow_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE workflow_runs ADD COLUMN path TEXT`,
 	`ALTER TABLE workflow_runs ADD COLUMN fan_out TEXT`,
+	`CREATE TABLE schedules (
+		id           TEXT PRIMARY KEY,
+		workflow_id  TEXT NOT NULL,
+		spec         TEXT NOT NULL,
+		paused       INTEGER NOT NULL DEFAULT 0,
+		concurrency  TEXT NOT NULL DEFAULT '',
+		input        TEXT,
+		metadata     TEXT,
+		next_fire_at TEXT,
+		last_fire_at TEXT,
+		created_at   TEXT NOT NULL,
+		updated_at   TEXT NOT NULL
+	)`,
+	`CREATE TABLE schedule_executions (
+		id            TEXT NOT NULL,
+		schedule_id   TEXT NOT NULL REFERENCES schedules(id),
+		run_id        TEXT,
+		status        TEXT NOT NULL,
+		scheduled_for TEXT NOT NULL,
+		started_at    TEXT NOT NULL,
+		finished_at   TEXT,
+		error         TEXT NOT NULL DEFAULT '',
+		seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+		UNIQUE (schedule_id, id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule_seq ON schedule_executions(schedule_id, seq)`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -228,6 +254,10 @@ func (s *SQLiteStore) WorkflowRuns() WorkflowRunRepository { return &sqliteRepos
 func (s *SQLiteStore) WorkflowSnapshots() WorkflowSnapshotRepository {
 	return &sqliteRepositories{q: s.db}
 }
+func (s *SQLiteStore) Schedules() ScheduleRepository { return &sqliteRepositories{q: s.db} }
+func (s *SQLiteStore) ScheduleExecutions() ScheduleExecutionRepository {
+	return &sqliteRepositories{q: s.db}
+}
 
 // sqlQueryer is satisfied by both *sql.DB and *sql.Tx so the repositories work
 // standalone and transaction-scoped.
@@ -245,6 +275,10 @@ func (r *sqliteRepositories) Threads() ThreadRepository                     { re
 func (r *sqliteRepositories) Messages() MessageRepository                   { return r }
 func (r *sqliteRepositories) WorkflowRuns() WorkflowRunRepository           { return r }
 func (r *sqliteRepositories) WorkflowSnapshots() WorkflowSnapshotRepository { return r }
+func (r *sqliteRepositories) Schedules() ScheduleRepository                 { return r }
+func (r *sqliteRepositories) ScheduleExecutions() ScheduleExecutionRepository {
+	return r
+}
 
 func (r *sqliteRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -639,6 +673,186 @@ func (r *sqliteRepositories) ListWorkflowSnapshots(ctx context.Context, id RunID
 	return scanSnapshotPage(rows, offset, limit)
 }
 
+func (r *sqliteRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v.ID == "" || v.WorkflowID == "" {
+		return errors.New("lebro: schedule and workflow IDs are required")
+	}
+	if v.Spec == "" {
+		return errors.New("lebro: schedule spec is required")
+	}
+	for name, value := range map[string]json.RawMessage{"input": v.Input, "metadata": v.Metadata} {
+		if err := validateJSON(value); err != nil {
+			return fmt.Errorf("lebro: schedule %s: %w", name, err)
+		}
+	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: schedule: %w", err)
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			workflow_id  = excluded.workflow_id,
+			spec         = excluded.spec,
+			paused       = excluded.paused,
+			concurrency  = excluded.concurrency,
+			input        = excluded.input,
+			metadata     = excluded.metadata,
+			next_fire_at = excluded.next_fire_at,
+			last_fire_at = excluded.last_fire_at,
+			created_at   = excluded.created_at,
+			updated_at   = excluded.updated_at`,
+		v.ID, v.WorkflowID, v.Spec, sqliteBool(v.Paused), string(v.Concurrency), sqliteJSON(v.Input), sqliteJSON(v.Metadata),
+		sqliteNullableTime(v.NextFireAt), sqliteNullableTime(v.LastFireAt), sqliteTime(v.CreatedAt), sqliteTime(v.UpdatedAt)); err != nil {
+		return fmt.Errorf("lebro: save schedule %q: %w", v.ID, sqliteError(err))
+	}
+	return nil
+}
+
+func (r *sqliteRepositories) GetSchedule(ctx context.Context, id ScheduleID) (ScheduleRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return ScheduleRecord{}, err
+	}
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules WHERE id = ?`, id)
+	record, err := scanSchedule(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ScheduleRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ScheduleRecord{}, fmt.Errorf("lebro: get schedule %q: %w", id, sqliteError(err))
+	}
+	return record, nil
+}
+
+func (r *sqliteRepositories) ListSchedules(ctx context.Context, filter ScheduleFilter, p PageRequest) (Page[ScheduleRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ScheduleRecord]{}, err
+	}
+	offset, limit, err := sqlPageBounds(p)
+	if err != nil {
+		return Page[ScheduleRecord]{}, err
+	}
+	var (
+		query = `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules`
+		args  []any
+		where []string
+	)
+	if filter.WorkflowID != "" {
+		where = append(where, "workflow_id = ?")
+		args = append(args, filter.WorkflowID)
+	}
+	if filter.DueBy != nil {
+		// Due work is non-paused, has a next fire time, and it is at or before
+		// the cutoff. A NULL next_fire_at (unscheduled) never matches.
+		where = append(where, "paused = 0", "next_fire_at IS NOT NULL", "next_fire_at <= ?")
+		args = append(args, sqliteTime(*filter.DueBy))
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
+	}
+	query += " ORDER BY created_at, id LIMIT ? OFFSET ?"
+	args = append(args, limit+1, offset)
+	rows, err := r.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return Page[ScheduleRecord]{}, fmt.Errorf("lebro: list schedules: %w", sqliteError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	return scanSchedulePage(rows, offset, limit)
+}
+
+func (r *sqliteRepositories) DeleteSchedule(ctx context.Context, id ScheduleID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// The schedule_executions foreign key has no ON DELETE CASCADE (the schema
+	// migration is append-only and predates it), so the child history is
+	// removed first. Both deletes run in one transaction so a schedule with
+	// history is never left half-deleted.
+	var missing bool
+	err := r.withAutoTx(ctx, func(q sqlQueryer) error {
+		if _, err := q.ExecContext(ctx, `DELETE FROM schedule_executions WHERE schedule_id = ?`, id); err != nil {
+			return fmt.Errorf("lebro: delete schedule executions %q: %w", id, sqliteError(err))
+		}
+		result, err := q.ExecContext(ctx, `DELETE FROM schedules WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("lebro: delete schedule %q: %w", id, sqliteError(err))
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("lebro: delete schedule %q: %w", id, sqliteError(err))
+		}
+		missing = n == 0
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if missing {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *sqliteRepositories) SaveScheduleExecution(ctx context.Context, v ScheduleExecutionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v.ID == "" || v.ScheduleID == "" {
+		return errors.New("lebro: schedule execution and schedule IDs are required")
+	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: schedule execution: %w", err)
+	}
+	if err := r.scheduleExists(ctx, v.ScheduleID); err != nil {
+		return err
+	}
+	var found string
+	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM schedule_executions WHERE schedule_id = ? AND id = ?`, v.ScheduleID, string(v.ID)).Scan(&found); {
+	case err == nil:
+		return errors.New("lebro: schedule execution already exists")
+	case !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("lebro: check schedule execution %q: %w", v.ID, sqliteError(err))
+	}
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(v.ID), v.ScheduleID, sqliteNullableString(string(v.RunID)), string(v.Status), sqliteTime(v.ScheduledFor), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), v.Error); err != nil {
+		return fmt.Errorf("lebro: save schedule execution %q: %w", v.ID, sqliteError(err))
+	}
+	return nil
+}
+
+func (r *sqliteRepositories) ListScheduleExecutions(ctx context.Context, id ScheduleID, p PageRequest) (Page[ScheduleExecutionRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	if err := r.scheduleExists(ctx, id); err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	offset, limit, err := sqlPageBounds(p)
+	if err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	rows, err := r.q.QueryContext(ctx, `SELECT id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error FROM schedule_executions WHERE schedule_id = ? ORDER BY seq LIMIT ? OFFSET ?`, id, limit+1, offset)
+	if err != nil {
+		return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: list schedule executions for schedule %q: %w", id, sqliteError(err))
+	}
+	defer func() { _ = rows.Close() }()
+	return scanScheduleExecutionPage(rows, offset, limit)
+}
+
+func (r *sqliteRepositories) scheduleExists(ctx context.Context, id ScheduleID) error {
+	var found int
+	err := r.q.QueryRowContext(ctx, `SELECT 1 FROM schedules WHERE id = ?`, id).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("lebro: sqlite: %w", sqliteError(err))
+	}
+	return nil
+}
+
 // threadExists and runExists reproduce the parent-existence checks that
 // MemoryStore performs before accepting child records.
 func (r *sqliteRepositories) threadExists(ctx context.Context, id ThreadID) error {
@@ -833,6 +1047,100 @@ func scanSnapshotPage(rows *sql.Rows, offset, limit int) (Page[WorkflowSnapshotR
 	return page, nil
 }
 
+func scanSchedule(row messagePageScanner) (ScheduleRecord, error) {
+	var record ScheduleRecord
+	var concurrency string
+	var input, metadata sql.NullString
+	var nextFireAt, lastFireAt sql.NullString
+	var paused int
+	var createdAt, updatedAt string
+	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &createdAt, &updatedAt); err != nil {
+		return ScheduleRecord{}, err
+	}
+	record.Paused = paused != 0
+	record.Concurrency = ConcurrencyPolicy(concurrency)
+	record.Input, record.Metadata = sqliteRawJSON(input), sqliteRawJSON(metadata)
+	next, err := sqliteParseNullableTime(nextFireAt)
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	record.NextFireAt = next
+	last, err := sqliteParseNullableTime(lastFireAt)
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	record.LastFireAt = last
+	created, err := sqliteParseTime(createdAt)
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	updated, err := sqliteParseTime(updatedAt)
+	if err != nil {
+		return ScheduleRecord{}, err
+	}
+	record.CreatedAt, record.UpdatedAt = created, updated
+	return record, nil
+}
+
+func scanSchedulePage(rows *sql.Rows, offset, limit int) (Page[ScheduleRecord], error) {
+	var page Page[ScheduleRecord]
+	for rows.Next() && len(page.Records) <= limit {
+		record, err := scanSchedule(rows)
+		if err != nil {
+			return Page[ScheduleRecord]{}, fmt.Errorf("lebro: scan schedule: %w", sqliteError(err))
+		}
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return Page[ScheduleRecord]{}, fmt.Errorf("lebro: list schedules: %w", sqliteError(err))
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
+}
+
+func scanScheduleExecutionPage(rows *sql.Rows, offset, limit int) (Page[ScheduleExecutionRecord], error) {
+	var page Page[ScheduleExecutionRecord]
+	for rows.Next() && len(page.Records) <= limit {
+		var record ScheduleExecutionRecord
+		var runID, finishedAt sql.NullString
+		var status, scheduledFor, startedAt string
+		if err := rows.Scan(&record.ID, &record.ScheduleID, &runID, &status, &scheduledFor, &startedAt, &finishedAt, &record.Error); err != nil {
+			return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: scan schedule execution: %w", sqliteError(err))
+		}
+		if runID.Valid {
+			record.RunID = RunID(runID.String)
+		}
+		record.Status = ScheduleExecStatus(status)
+		scheduled, err := sqliteParseTime(scheduledFor)
+		if err != nil {
+			return Page[ScheduleExecutionRecord]{}, err
+		}
+		record.ScheduledFor = scheduled
+		started, err := sqliteParseTime(startedAt)
+		if err != nil {
+			return Page[ScheduleExecutionRecord]{}, err
+		}
+		record.StartedAt = started
+		finished, err := sqliteParseNullableTime(finishedAt)
+		if err != nil {
+			return Page[ScheduleExecutionRecord]{}, err
+		}
+		record.FinishedAt = finished
+		page.Records = append(page.Records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: list schedule executions: %w", sqliteError(err))
+	}
+	if len(page.Records) > limit {
+		page.Records = page.Records[:limit]
+		page.NextCursor = strconv.Itoa(offset + limit)
+	}
+	return page, nil
+}
+
 // Times and JSON payloads are stored in UTC in a format that matches their
 // serialized JSON representation, so records round-trip losslessly.
 func sqliteNullableString(v string) any {
@@ -855,6 +1163,26 @@ func sqliteParseTime(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("lebro: decode stored time %q: %w", s, err)
 	}
 	return t, nil
+}
+
+// sqliteParseNullableTime decodes a nullable timestamp column. A NULL yields a
+// nil pointer; a present value must parse or the read fails.
+func sqliteParseNullableTime(v sql.NullString) (*time.Time, error) {
+	if !v.Valid {
+		return nil, nil
+	}
+	t, err := sqliteParseTime(v.String)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func sqliteBool(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func sqliteJSON(v json.RawMessage) any {

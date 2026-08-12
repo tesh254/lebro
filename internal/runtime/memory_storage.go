@@ -20,11 +20,14 @@ type MemoryStore struct {
 }
 
 type memoryState struct {
-	threads     map[ThreadID]ThreadRecord
-	messages    map[ThreadID][]MessageRecord
-	runs        map[RunID]WorkflowRunRecord
-	snapshots   map[RunID][]WorkflowSnapshotRecord
-	snapshotIDs map[RunID]map[string]struct{}
+	threads      map[ThreadID]ThreadRecord
+	messages     map[ThreadID][]MessageRecord
+	runs         map[RunID]WorkflowRunRecord
+	snapshots    map[RunID][]WorkflowSnapshotRecord
+	snapshotIDs  map[RunID]map[string]struct{}
+	schedules    map[ScheduleID]ScheduleRecord
+	executions   map[ScheduleID][]ScheduleExecutionRecord
+	executionIDs map[ScheduleID]map[string]struct{}
 }
 
 // NewMemoryStore creates an empty in-memory storage implementation.
@@ -34,11 +37,14 @@ func NewMemoryStore() *MemoryStore {
 
 func newMemoryState() memoryState {
 	return memoryState{
-		threads:     map[ThreadID]ThreadRecord{},
-		messages:    map[ThreadID][]MessageRecord{},
-		runs:        map[RunID]WorkflowRunRecord{},
-		snapshots:   map[RunID][]WorkflowSnapshotRecord{},
-		snapshotIDs: map[RunID]map[string]struct{}{},
+		threads:      map[ThreadID]ThreadRecord{},
+		messages:     map[ThreadID][]MessageRecord{},
+		runs:         map[RunID]WorkflowRunRecord{},
+		snapshots:    map[RunID][]WorkflowSnapshotRecord{},
+		snapshotIDs:  map[RunID]map[string]struct{}{},
+		schedules:    map[ScheduleID]ScheduleRecord{},
+		executions:   map[ScheduleID][]ScheduleExecutionRecord{},
+		executionIDs: map[ScheduleID]map[string]struct{}{},
 	}
 }
 
@@ -46,6 +52,10 @@ func (s *MemoryStore) Threads() ThreadRepository                     { return s 
 func (s *MemoryStore) Messages() MessageRepository                   { return s }
 func (s *MemoryStore) WorkflowRuns() WorkflowRunRepository           { return s }
 func (s *MemoryStore) WorkflowSnapshots() WorkflowSnapshotRepository { return s }
+func (s *MemoryStore) Schedules() ScheduleRepository                 { return s }
+func (s *MemoryStore) ScheduleExecutions() ScheduleExecutionRepository {
+	return s
+}
 
 // Migrate is a no-op: MemoryStore has no external schema.
 func (s *MemoryStore) Migrate(context.Context) error { return nil }
@@ -152,6 +162,48 @@ func (s *MemoryStore) ListWorkflowSnapshots(ctx context.Context, id RunID, page 
 	defer s.mu.RUnlock()
 	return listWorkflowSnapshots(ctx, s.state, id, page)
 }
+func (s *MemoryStore) SaveSchedule(ctx context.Context, record ScheduleRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := saveSchedule(ctx, &s.state, record)
+	if err == nil {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) GetSchedule(ctx context.Context, id ScheduleID) (ScheduleRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return getSchedule(ctx, s.state, id)
+}
+func (s *MemoryStore) ListSchedules(ctx context.Context, filter ScheduleFilter, page PageRequest) (Page[ScheduleRecord], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return listSchedules(ctx, s.state, filter, page)
+}
+func (s *MemoryStore) DeleteSchedule(ctx context.Context, id ScheduleID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := deleteSchedule(ctx, &s.state, id)
+	if err == nil {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) SaveScheduleExecution(ctx context.Context, record ScheduleExecutionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := saveScheduleExecution(ctx, &s.state, record)
+	if err == nil {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) ListScheduleExecutions(ctx context.Context, id ScheduleID, page PageRequest) (Page[ScheduleExecutionRecord], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return listScheduleExecutions(ctx, s.state, id, page)
+}
 
 type memoryRepositories struct {
 	state memoryState
@@ -162,6 +214,10 @@ func (r *memoryRepositories) Threads() ThreadRepository                     { re
 func (r *memoryRepositories) Messages() MessageRepository                   { return r }
 func (r *memoryRepositories) WorkflowRuns() WorkflowRunRepository           { return r }
 func (r *memoryRepositories) WorkflowSnapshots() WorkflowSnapshotRepository { return r }
+func (r *memoryRepositories) Schedules() ScheduleRepository                 { return r }
+func (r *memoryRepositories) ScheduleExecutions() ScheduleExecutionRepository {
+	return r
+}
 func (r *memoryRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	err := createThread(ctx, &r.state, v)
 	if err == nil {
@@ -211,6 +267,36 @@ func (r *memoryRepositories) SaveWorkflowSnapshot(ctx context.Context, v Workflo
 }
 func (r *memoryRepositories) ListWorkflowSnapshots(ctx context.Context, id RunID, p PageRequest) (Page[WorkflowSnapshotRecord], error) {
 	return listWorkflowSnapshots(ctx, r.state, id, p)
+}
+func (r *memoryRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord) error {
+	err := saveSchedule(ctx, &r.state, v)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) GetSchedule(ctx context.Context, id ScheduleID) (ScheduleRecord, error) {
+	return getSchedule(ctx, r.state, id)
+}
+func (r *memoryRepositories) ListSchedules(ctx context.Context, filter ScheduleFilter, p PageRequest) (Page[ScheduleRecord], error) {
+	return listSchedules(ctx, r.state, filter, p)
+}
+func (r *memoryRepositories) DeleteSchedule(ctx context.Context, id ScheduleID) error {
+	err := deleteSchedule(ctx, &r.state, id)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) SaveScheduleExecution(ctx context.Context, v ScheduleExecutionRecord) error {
+	err := saveScheduleExecution(ctx, &r.state, v)
+	if err == nil {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) ListScheduleExecutions(ctx context.Context, id ScheduleID, p PageRequest) (Page[ScheduleExecutionRecord], error) {
+	return listScheduleExecutions(ctx, r.state, id, p)
 }
 
 func createThread(ctx context.Context, s *memoryState, v ThreadRecord) error {
@@ -421,6 +507,126 @@ func listWorkflowSnapshots(ctx context.Context, s memoryState, id RunID, p PageR
 	return paginate(s.snapshots[id], p, cloneWorkflowSnapshotRecord)
 }
 
+func saveSchedule(ctx context.Context, s *memoryState, v ScheduleRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v.ID == "" || v.WorkflowID == "" {
+		return fmt.Errorf("lebro: schedule and workflow IDs are required")
+	}
+	if v.Spec == "" {
+		return fmt.Errorf("lebro: schedule spec is required")
+	}
+	for name, value := range map[string]json.RawMessage{"input": v.Input, "metadata": v.Metadata} {
+		if err := validateJSON(value); err != nil {
+			return fmt.Errorf("lebro: schedule %s: %w", name, err)
+		}
+	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: schedule: %w", err)
+	}
+	s.schedules[v.ID] = cloneScheduleRecord(v)
+	return nil
+}
+func getSchedule(ctx context.Context, s memoryState, id ScheduleID) (ScheduleRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return ScheduleRecord{}, err
+	}
+	v, ok := s.schedules[id]
+	if !ok {
+		return ScheduleRecord{}, ErrNotFound
+	}
+	return cloneScheduleRecord(v), nil
+}
+func listSchedules(ctx context.Context, s memoryState, filter ScheduleFilter, p PageRequest) (Page[ScheduleRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ScheduleRecord]{}, err
+	}
+	ids := make([]ScheduleID, 0, len(s.schedules))
+	for id := range s.schedules {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		left, right := s.schedules[ids[i]], s.schedules[ids[j]]
+		if left.CreatedAt.Equal(right.CreatedAt) {
+			return ids[i] < ids[j]
+		}
+		return left.CreatedAt.Before(right.CreatedAt)
+	})
+	filtered := make([]ScheduleRecord, 0, len(ids))
+	for _, id := range ids {
+		schedule := s.schedules[id]
+		if !scheduleMatchesFilter(schedule, filter) {
+			continue
+		}
+		filtered = append(filtered, schedule)
+	}
+	return paginate(filtered, p, cloneScheduleRecord)
+}
+
+// scheduleMatchesFilter reports whether a schedule satisfies the filter. A
+// DueBy filter selects only non-paused schedules with a NextFireAt at or before
+// the instant, so a paused or unscheduled (nil NextFireAt) schedule is never
+// returned as due work.
+func scheduleMatchesFilter(schedule ScheduleRecord, filter ScheduleFilter) bool {
+	if filter.WorkflowID != "" && schedule.WorkflowID != filter.WorkflowID {
+		return false
+	}
+	if filter.DueBy != nil {
+		if schedule.Paused || schedule.NextFireAt == nil || schedule.NextFireAt.After(*filter.DueBy) {
+			return false
+		}
+	}
+	return true
+}
+func deleteSchedule(ctx context.Context, s *memoryState, id ScheduleID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := s.schedules[id]; !ok {
+		return ErrNotFound
+	}
+	// Remove the schedule's execution history with it so a schedule recreated
+	// under the same ID does not inherit the old executions, matching the SQL
+	// adapters' ON DELETE CASCADE.
+	delete(s.schedules, id)
+	delete(s.executions, id)
+	delete(s.executionIDs, id)
+	return nil
+}
+func saveScheduleExecution(ctx context.Context, s *memoryState, v ScheduleExecutionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if v.ID == "" || v.ScheduleID == "" {
+		return fmt.Errorf("lebro: schedule execution and schedule IDs are required")
+	}
+	if err := validateRecord(v); err != nil {
+		return fmt.Errorf("lebro: schedule execution: %w", err)
+	}
+	if _, ok := s.schedules[v.ScheduleID]; !ok {
+		return ErrNotFound
+	}
+	if s.executionIDs[v.ScheduleID] == nil {
+		s.executionIDs[v.ScheduleID] = map[string]struct{}{}
+	}
+	if _, ok := s.executionIDs[v.ScheduleID][string(v.ID)]; ok {
+		return fmt.Errorf("lebro: schedule execution already exists")
+	}
+	s.executions[v.ScheduleID] = append(s.executions[v.ScheduleID], cloneScheduleExecutionRecord(v))
+	s.executionIDs[v.ScheduleID][string(v.ID)] = struct{}{}
+	return nil
+}
+func listScheduleExecutions(ctx context.Context, s memoryState, id ScheduleID, p PageRequest) (Page[ScheduleExecutionRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ScheduleExecutionRecord]{}, err
+	}
+	if _, ok := s.schedules[id]; !ok {
+		return Page[ScheduleExecutionRecord]{}, ErrNotFound
+	}
+	return paginate(s.executions[id], p, cloneScheduleExecutionRecord)
+}
+
 func paginate[T any](records []T, request PageRequest, cloneRecord func(T) T) (Page[T], error) {
 	start := 0
 	if request.Cursor != "" {
@@ -479,7 +685,43 @@ func cloneMemoryState(s memoryState) memoryState {
 			out.snapshotIDs[runID][id] = struct{}{}
 		}
 	}
+	for k, v := range s.schedules {
+		out.schedules[k] = cloneScheduleRecord(v)
+	}
+	for k, v := range s.executions {
+		out.executions[k] = append([]ScheduleExecutionRecord(nil), v...)
+		for i := range out.executions[k] {
+			out.executions[k][i] = cloneScheduleExecutionRecord(out.executions[k][i])
+		}
+	}
+	for scheduleID, ids := range s.executionIDs {
+		out.executionIDs[scheduleID] = make(map[string]struct{}, len(ids))
+		for id := range ids {
+			out.executionIDs[scheduleID][id] = struct{}{}
+		}
+	}
 	return out
+}
+
+func cloneScheduleRecord(v ScheduleRecord) ScheduleRecord {
+	v.Input = cloneJSON(v.Input)
+	v.Metadata = cloneJSON(v.Metadata)
+	if v.NextFireAt != nil {
+		next := *v.NextFireAt
+		v.NextFireAt = &next
+	}
+	if v.LastFireAt != nil {
+		last := *v.LastFireAt
+		v.LastFireAt = &last
+	}
+	return v
+}
+func cloneScheduleExecutionRecord(v ScheduleExecutionRecord) ScheduleExecutionRecord {
+	if v.FinishedAt != nil {
+		finished := *v.FinishedAt
+		v.FinishedAt = &finished
+	}
+	return v
 }
 
 func cloneThreadRecord(v ThreadRecord) ThreadRecord { v.Metadata = cloneJSON(v.Metadata); return v }

@@ -46,6 +46,7 @@ const (
 	ResourceKindMessage          ResourceKind = "message"
 	ResourceKindWorkflowRun      ResourceKind = "workflow_run"
 	ResourceKindWorkflowSnapshot ResourceKind = "workflow_snapshot"
+	ResourceKindSchedule         ResourceKind = "schedule"
 )
 
 // Resource describes the target of an authorization decision. Kind and ID

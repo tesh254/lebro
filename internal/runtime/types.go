@@ -9,12 +9,14 @@ import (
 // Stable identifiers make runtime records portable across model providers,
 // storage adapters, and transport layers.
 type (
-	AgentID    string
-	RunID      string
-	StepID     string
-	ThreadID   string
-	ToolID     string
-	WorkflowID string
+	AgentID             string
+	RunID               string
+	StepID              string
+	ThreadID            string
+	ToolID              string
+	WorkflowID          string
+	ScheduleID          string
+	ScheduleExecutionID string
 )
 
 // ErrMessageStructuredOutputInvalidJSON is returned by Message.Validate when

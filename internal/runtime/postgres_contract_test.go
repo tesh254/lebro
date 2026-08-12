@@ -31,7 +31,7 @@ func TestPostgresStorePassesStorageContract(t *testing.T) {
 	testkit.StorageContractSuite(t, func(t *testing.T) lebro.Store {
 		t.Helper()
 		ctx := context.Background()
-		for _, table := range []string{"workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
+		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
 			if _, err := cleanupDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 				t.Fatalf("drop %s: %v", table, err)
 			}
