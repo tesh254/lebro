@@ -1,0 +1,24 @@
+httpapi/server_test.go
+  s_c2681123a3ef96::t_f14db60a605f87 347-382,390-393,397,399-401
+  s_c2681123a3ef96::t_ae4296c8baa69f 383-389,394-396,398
+httpapi/server.go
+  s_c2681123a3ef96::t_a368c310e9e2b7 190
+  s_c2681123a3ef96::t_d098155aae8e44 214-226,230-232,252,264-273
+  s_c2681123a3ef96::t_4fdf72278d34ba 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "96d0951baf9d986681161391f00ac22f6a861ccb",
+  "prompts": {},
+  "sessions": {
+    "s_c2681123a3ef96": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88db97b6-d710-4caa-a99b-50b485ea6f50",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
