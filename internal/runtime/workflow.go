@@ -2142,11 +2142,20 @@ func (w *LinearWorkflow) runStepWithRetry(ctx context.Context, step compiledStep
 				if step.suspendSchema == nil {
 					return nil, &retryOutcome{kind: retryInvalidOutput, cause: fmt.Errorf("lebro: step %q signalled suspend but declares no SuspendSchema", stepID)}
 				}
-				if err := validateStepValue(step.suspendSchema, ValidationTargetSuspendContract, signal.Contract); err != nil {
-					if attempt != 1 {
-						emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, err)
+				// An empty contract publishes no pinned resume value: the step
+				// declares a SuspendSchema to validate the resume input at Resume
+				// but does not constrain resume to a single value. Skipping
+				// validation here (rather than validating empty bytes, which no
+				// schema accepts) lets a step suspend to await free-form input —
+				// a human approval decision, say — while every existing caller,
+				// which always publishes a non-empty contract, is unaffected.
+				if len(signal.Contract) > 0 {
+					if err := validateStepValue(step.suspendSchema, ValidationTargetSuspendContract, signal.Contract); err != nil {
+						if attempt != 1 {
+							emitter.emitStepAttemptFinished(runID, position, stepID, attempt, delay, attemptStart, err)
+						}
+						return nil, &retryOutcome{kind: retryInvalidOutput, cause: err}
 					}
-					return nil, &retryOutcome{kind: retryInvalidOutput, cause: err}
 				}
 				// Normalize the suspend signal's step identity to the
 				// executing step so the persisted snapshot and public result

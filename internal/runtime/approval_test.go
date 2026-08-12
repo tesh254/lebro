@@ -20,7 +20,7 @@ func approvalWorkflow(t *testing.T, store Store, clock Clock, ids IDSource, list
 	if len(req.DecisionSchema) == 0 {
 		req.DecisionSchema = json.RawMessage(`{"type":"object"}`)
 	}
-	gate, err := NewApprovalGate("await-approval", "run-tool", inner, req, clock)
+	gate, err := NewApprovalGate("await-approval", "run-tool", inner, req, contractCompiler(), store, clock)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,6 +230,41 @@ func TestApprovalGateTimeoutFailsRun(t *testing.T) {
 	}
 }
 
+func TestApprovalGateLateDenialIsTimeoutNotRejection(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	clock := NewFixedClock(time.Unix(4500, 0))
+	var innerCalls int32
+	inner := StepHandlerFunc(func(_ context.Context, in json.RawMessage) (json.RawMessage, error) {
+		atomic.AddInt32(&innerCalls, 1)
+		return in, nil
+	})
+	wf := approvalWorkflow(t, store, clock, NewFixedIDSource([]RunID{"late-denial-run-1"}, nil), nil,
+		ApprovalRequirement{Action: ActionToolCall, TTL: time.Minute}, inner)
+
+	suspended, err := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`{"amount":100}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := requestFromSuspend(t, suspended)
+
+	// A denial recorded after the window must surface as a timeout, not a
+	// rejection: expiry is evaluated before the approval outcome.
+	lateDenial := decisionJSON(t, ApprovalDecision{Approved: false, Reason: "no", DecidedAt: req.ExpiresAt.Add(time.Hour), Request: req})
+	_, err = wf.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: lateDenial})
+	if !errors.Is(err, ErrApprovalExpired) {
+		t.Fatalf("err = %v, want ErrApprovalExpired (expiry precedes rejection)", err)
+	}
+	if errors.Is(err, ErrApprovalRejected) {
+		t.Fatalf("err = %v, must not be a rejection", err)
+	}
+}
+
 func TestApprovalGateInvalidDecisionFailsRun(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +297,52 @@ func TestApprovalGateInvalidDecisionFailsRun(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&innerCalls); got != 0 {
 		t.Fatalf("protected handler ran %d times on invalid decision, want 0", got)
+	}
+}
+
+func TestApprovalGateTamperedRequestFailsRun(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	clock := NewFixedClock(time.Unix(5500, 0))
+	var innerCalls int32
+	inner := StepHandlerFunc(func(_ context.Context, in json.RawMessage) (json.RawMessage, error) {
+		atomic.AddInt32(&innerCalls, 1)
+		return in, nil
+	})
+	wf := approvalWorkflow(t, store, clock, NewFixedIDSource([]RunID{"tamper-run-1"}, nil), nil,
+		ApprovalRequirement{Action: ActionToolCall, Resource: Resource{Kind: ResourceKindTool, ID: "wire.transfer"}}, inner)
+
+	suspended, err := wf.Run(ctx, WorkflowRunInput{Input: json.RawMessage(`{"amount":100}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := requestFromSuspend(t, suspended)
+
+	// Tamper: approve, but swap the reviewed arguments for a larger transfer the
+	// human never saw. The echoed request no longer matches the one persisted at
+	// suspend, so the gate must reject it and never run the protected handler.
+	tampered := req
+	tampered.Arguments = json.RawMessage(`{"amount":1000000}`)
+	decision := decisionJSON(t, ApprovalDecision{Approved: true, Decider: "attacker", DecidedAt: clock.Now(), Request: tampered})
+
+	_, err = wf.Resume(ctx, WorkflowResumeInput{RunID: suspended.ID, Input: decision})
+	if !errors.Is(err, ErrApprovalInvalidDecision) {
+		t.Fatalf("err = %v, want ErrApprovalInvalidDecision", err)
+	}
+	if got := atomic.LoadInt32(&innerCalls); got != 0 {
+		t.Fatalf("protected handler ran %d times on tampered request, want 0", got)
+	}
+	stored, err := store.WorkflowRuns().GetWorkflowRun(ctx, suspended.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != RunStatusFailed {
+		t.Fatalf("stored status = %q, want failed (tamper recorded)", stored.Status)
 	}
 }
 

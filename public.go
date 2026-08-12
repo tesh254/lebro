@@ -430,8 +430,8 @@ func NewSubagent(config SubagentConfig) (*Subagent, error) {
 
 func NewToolStep(tool *RegisteredTool) (*ToolStep, error) { return runtime.NewToolStep(tool) }
 
-func NewApprovalGate(requestID, guardID StepID, inner StepHandler, req ApprovalRequirement, clock Clock) (ApprovalGate, error) {
-	return runtime.NewApprovalGate(requestID, guardID, inner, req, clock)
+func NewApprovalGate(requestID, guardID StepID, inner StepHandler, req ApprovalRequirement, compiler SchemaCompiler, store Store, clock Clock) (ApprovalGate, error) {
+	return runtime.NewApprovalGate(requestID, guardID, inner, req, compiler, store, clock)
 }
 
 func ToolMetadataFromContext(ctx context.Context) map[string]string {
