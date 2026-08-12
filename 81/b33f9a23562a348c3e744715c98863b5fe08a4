@@ -1,0 +1,78 @@
+httpapi/redact.go
+  s_c2681123a3ef96::t_8ac7c384fa6e6f 1-44
+httpapi/doc.go
+  s_c2681123a3ef96::t_96dc34c98052d1 1-74
+httpapi/contracts.go
+  s_c2681123a3ef96::t_c155a78f12ebab 1-42,52-242
+  s_c2681123a3ef96::t_bca0c375098b27 43
+  s_c2681123a3ef96::t_56be8b411a21b3 44-51
+httpapi/openapi_test.go
+  s_c2681123a3ef96::t_86aae72c32edf4 367-373,375,378-379,382-385,388-391
+  s_c2681123a3ef96::t_579bb154259902 4
+  s_c2681123a3ef96::t_135ebb862b8cda 68-74
+  s_c2681123a3ef96::t_b9662851108a76 1-3,5-67,75-366,374,376-377,380-381,386-387,392-419
+httpapi/handlers.go
+  s_c2681123a3ef96::t_f8413ea2adeab2 4
+  s_c2681123a3ef96::t_79821e04f6306e 236
+httpapi/server_test.go
+  s_c2681123a3ef96::t_fd4e8f5117f6a8 1-7,10-131,210-484
+  s_c2681123a3ef96::t_f4d95fe898dfd3 8-9
+  s_c2681123a3ef96::t_1df39f2be2a423 132-209
+examples/http-server/main_test.go
+  s_c2681123a3ef96::t_f44dd715cdfa4c 1-97
+httpapi/errors.go
+  s_c2681123a3ef96::t_214f5d2032abd6 1-193
+httpapi/helpers_test.go
+  s_c2681123a3ef96::t_a3700bc992bce0 89,96
+  s_c2681123a3ef96::t_1c08c1fa8dc696 1-23,35-88,90-95,97-151
+  s_c2681123a3ef96::t_70ec1bb4217014 24-34
+README.md
+  s_c2681123a3ef96::t_71c03d9abc4960 21
+  s_c2681123a3ef96::t_fe790d3e8bbf35 1045-1116
+httpapi/errors_test.go
+  s_c2681123a3ef96::t_a3700bc992bce0 54-173
+  s_c2681123a3ef96::t_ca2ad287d68134 187
+  s_c2681123a3ef96::t_8ea36e640d935b 8
+examples/README.md
+  s_c2681123a3ef96::t_dc615be7c2acb6 112-120
+CHANGELOG.md
+  s_c2681123a3ef96::t_cf352088fc753d 9-52
+httpapi/stream.go
+  s_c2681123a3ef96::t_aaf1fda1ee93ea 1-199
+httpapi/openapi.go
+  s_c2681123a3ef96::t_c0ee06daa33304 1-308
+httpapi/stream_test.go
+  s_c2681123a3ef96::t_f5a53388daa8f2 12-14,192-193,195-208,226,232-294,305-324,327-336
+  s_c2681123a3ef96::t_1a4f9bf00bbda9 20
+  s_c2681123a3ef96::t_8e726dab584a80 213-224,231
+  s_c2681123a3ef96::t_76c66c158b7a40 194,227,295,338-358
+  s_c2681123a3ef96::t_a3700bc992bce0 419
+  s_c2681123a3ef96::t_924b9f47eb1579 487-522
+examples/http-server/main.go
+  s_c2681123a3ef96::t_5a425bea743457 1-199
+httpapi/main_test.go
+  s_c2681123a3ef96::t_5b18d114f8516a 1-25
+httpapi/routes.go
+  s_c2681123a3ef96::t_bbab1b12ad9943 1-209
+httpapi/schemas.go
+  s_c2681123a3ef96::t_9058eb4f2e1bad 1-68,70-73,75,77-307
+  s_c2681123a3ef96::t_d634d7f66a0b93 69,74,76
+httpapi/server.go
+  s_c2681123a3ef96::t_b2555bebde1749 1-274
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "81b33f9a23562a348c3e744715c98863b5fe08a4",
+  "prompts": {},
+  "sessions": {
+    "s_c2681123a3ef96": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "88db97b6-d710-4caa-a99b-50b485ea6f50",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
