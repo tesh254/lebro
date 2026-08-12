@@ -1,0 +1,28 @@
+internal/runtime/approval_test.go
+  s_beb9781627feeb::t_d1ee0e7870ecdb 1-343
+internal/runtime/approval.go
+  s_beb9781627feeb::t_c5a61f358361f4 1-186,205-206
+  s_beb9781627feeb::t_9f02fcda549481 187-204
+public.go
+  s_beb9781627feeb::t_212b7dff99387d 433-436
+  s_beb9781627feeb::t_45b2f776faad2c 103-106
+  s_beb9781627feeb::t_a2ca70510c1c45 379-382
+CHANGELOG.md
+  s_beb9781627feeb::t_c41e2bf47aa36a 9-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "69c0221c8a5a9a66fc591c3b0ff2083240eb7ce7",
+  "prompts": {},
+  "sessions": {
+    "s_beb9781627feeb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9759967e-fa79-459a-811d-aa1ef4d352d2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
