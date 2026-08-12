@@ -42,6 +42,10 @@ const (
 	// omitted structured output when one was requested or produced a value
 	// that failed local JSON Schema validation.
 	AgentErrorInvalidStructuredOutput AgentErrorKind = "invalid_structured_output"
+	// AgentErrorUnauthorized means a configured Policy denied the run or a tool
+	// call within it. The wrapped error is a *PolicyDenial, so callers can use
+	// errors.As to inspect the denied action and resource.
+	AgentErrorUnauthorized AgentErrorKind = "unauthorized"
 )
 
 var (
@@ -67,6 +71,10 @@ var (
 	// ErrAgentInvalidStructuredOutput matches runs whose terminal model
 	// response omitted requested structured output or failed schema validation.
 	ErrAgentInvalidStructuredOutput = errors.New("lebro: agent invalid structured output")
+	// ErrAgentUnauthorized matches runs denied by a configured Policy, either at
+	// run start or on a tool call. The wrapped *PolicyDenial also matches
+	// ErrPolicyDenied.
+	ErrAgentUnauthorized = errors.New("lebro: agent unauthorized")
 )
 
 // AgentError preserves the category, failing step, and cause of an agent-loop
@@ -136,6 +144,8 @@ func agentErrorSentinel(kind AgentErrorKind) error {
 		return ErrAgentCancelled
 	case AgentErrorInvalidStructuredOutput:
 		return ErrAgentInvalidStructuredOutput
+	case AgentErrorUnauthorized:
+		return ErrAgentUnauthorized
 	default:
 		return errors.New("lebro: agent failure")
 	}
@@ -193,6 +203,13 @@ type AgentConfig struct {
 	// leave no messages, so the thread's message sequence stays valid. When
 	// nil, agent behavior is unchanged.
 	Store Store
+	// Policy optionally authorizes the run at start and every model-requested
+	// tool call against the caller Identity carried on the run context (see
+	// WithIdentity). A denied run or tool call fails with an
+	// AgentErrorUnauthorized wrapping a *PolicyDenial, recorded in the run
+	// result and events. When nil, no authorization is applied and agent
+	// behavior is unchanged.
+	Policy Policy
 }
 
 // Agent repeatedly asks a model, executes requested tools, and feeds results
@@ -213,6 +230,7 @@ type Agent struct {
 	clock          Clock
 	idSource       IDSource
 	store          Store
+	policy         Policy
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -291,6 +309,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		clock:          clock,
 		idSource:       idSource,
 		store:          config.Store,
+		policy:         config.Policy,
 	}, nil
 }
 
@@ -332,6 +351,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	var allAttempts []ModelAttempt
 
 	emitter.emit(runID, 0, "", RunEventStarted)
+
+	if err := a.authorizeRun(runCtx); err != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
+		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
+	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -582,6 +606,12 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 
 	runID := a.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
+
+	if authErr := a.authorizeRun(runCtx); authErr != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, authErr)
+		return nil, authErr
+	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -1044,12 +1074,25 @@ func (a *Agent) validateStructuredOutput(compiled CompiledSchema, response Model
 	}
 }
 
+// authorizeRun asks the configured policy to authorize the run against the
+// agent resource. It returns a typed AgentError wrapping the *PolicyDenial on
+// denial and nil when no policy is configured or the run is permitted.
+func (a *Agent) authorizeRun(ctx context.Context) *AgentError {
+	if err := authorize(ctx, a.policy, ActionAgentRun, Resource{Kind: ResourceKindAgent, ID: string(a.definition.ID)}); err != nil {
+		return &AgentError{Kind: AgentErrorUnauthorized, Step: 0, Err: err}
+	}
+	return nil
+}
+
 func (a *Agent) executeToolCall(ctx context.Context, runID RunID, step int, stepID StepID, threadID ThreadID, call ModelToolCall, metadata map[string]string) ToolExecutionResult {
 	if a.tools == nil {
 		return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not registered: %w", call.ToolID, ErrToolNotFound))
 	}
 	if _, ok := a.allowed[call.ToolID]; !ok {
 		return failedToolExecution(call.ToolID, ToolExecutionNotFound, fmt.Errorf("lebro: tool %q is not allowed for this agent: %w", call.ToolID, ErrToolNotFound))
+	}
+	if err := authorize(ctx, a.policy, ActionToolCall, Resource{Kind: ResourceKindTool, ID: string(call.ToolID)}); err != nil {
+		return failedToolExecution(call.ToolID, ToolExecutionUnauthorized, err)
 	}
 	toolMetadata := make(map[string]string, len(metadata)+3)
 	for key, value := range metadata {
@@ -1183,6 +1226,8 @@ func toolExecutionAgentError(step int, result ToolExecutionResult) *AgentError {
 		return &AgentError{Kind: AgentErrorInvalidToolOutput, Step: step, Err: result.Err}
 	case ToolExecutionCancelled:
 		return &AgentError{Kind: AgentErrorCancelled, Step: step, Err: result.Err}
+	case ToolExecutionUnauthorized:
+		return &AgentError{Kind: AgentErrorUnauthorized, Step: step, Err: result.Err}
 	default:
 		return &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: result.Err}
 	}

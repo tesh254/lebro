@@ -45,6 +45,11 @@ const (
 	ToolExecutionPanicked      ToolExecutionState = "panicked"
 	ToolExecutionCancelled     ToolExecutionState = "cancelled"
 	ToolExecutionNotFound      ToolExecutionState = "not_found"
+	// ToolExecutionUnauthorized means a configured Policy denied the tool call
+	// before the handler ran. Err is a *ToolExecutionError that wraps a
+	// *PolicyDenial, so use errors.As / errors.Is rather than a direct type
+	// assertion on Err.
+	ToolExecutionUnauthorized ToolExecutionState = "unauthorized"
 )
 
 // ToolExecutionResult is the normalized result of a tool invocation. Output is
