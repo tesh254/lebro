@@ -127,6 +127,14 @@ in-process through `httptest`, so no network or API key is required):
 go run ./examples/http-client
 ```
 
+Run the studio example (exposes an agent and a workflow on a local Studio,
+runs them, and inspects the ordered events a run records; the Studio is served
+in-process through `httptest`, so no network or API key is required):
+
+```sh
+go run ./examples/studio
+```
+
 Run the supervised delegation example (a supervisor agent selects a named
 subagent and delegates a focused task to it; no network or API key required):
 

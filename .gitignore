@@ -4,3 +4,11 @@ dist/
 bin/
 streaming
 storage-sqlite.db
+
+# The studio package embeds studio/dist at build time. Keep the directory
+# present so //go:embed compiles on a fresh clone, but do not commit a built
+# UI bundle; it is produced by the separate lebro-studio project and copied in
+# at release time.
+!studio/dist/
+studio/dist/*
+!studio/dist/.gitkeep
