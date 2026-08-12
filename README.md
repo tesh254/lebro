@@ -19,6 +19,7 @@ lebro/                   public API façade and module documentation
 internal/runtime/        model, tools, schema, workflow, storage, vector, and RAG runtime
 jsonschema/              optional JSON Schema compiler implementation
 httpapi/                 optional HTTP server and generated OpenAPI contract
+evals/                   optional datasets, scorers, and experiment runs
 internal/testkit/        deterministic provider fixtures and contract suites for tests
 examples/                runnable feature-focused examples
 docs/                    installation and release guides
@@ -1201,6 +1202,91 @@ Run the client example (no network or API key required):
 
 ```sh
 go run ./examples/http-client
+```
+
+## Dataset evaluation, scorers, and experiment runs
+
+The optional `evals` package measures quality before a release: a versioned
+dataset runs against an agent or workflow, scorers judge every case, and two
+runs of the same dataset version are compared. Nothing in the root module
+imports it, so an application that does not evaluate never compiles it in.
+
+A dataset's `Version` is a content hash over its ordered, normalized cases
+rather than a caller-supplied label, so "the same dataset version" is a
+verifiable fact. Editing, adding, or reordering a case changes the version;
+reformatting a case's JSON input does not, because inputs are canonicalized
+before hashing.
+
+```go
+dataset := evals.Dataset{
+	ID: "capitals",
+	Cases: []evals.Case{
+		{ID: "france", Input: json.RawMessage(`"What is the capital of France?"`), Expected: "Paris"},
+		{ID: "japan", Input: json.RawMessage(`"What is the capital of Japan?"`), Expected: "Tokyo"},
+	},
+}
+
+exact, err := evals.NewExactMatch(evals.ExactMatchConfig{TrimSpace: true})
+graded, err := evals.NewModelScorer(evals.ModelScorerConfig{Model: grader})
+
+experiment, err := evals.New(evals.ExperimentConfig{
+	Name:       "release-candidate",
+	Dataset:    dataset,
+	Target:     evals.NewAgentTarget(agent),
+	Scorers:    []evals.Scorer{exact, graded},
+	Repository: evals.NewMemoryRepository(),
+})
+record, results, err := experiment.Run(ctx)
+```
+
+`Target` is what a dataset runs against. `NewAgentTarget` adapts any
+`lebro.Workflow` — which `*lebro.Agent` implements — and `NewWorkflowTarget`
+adapts a JSON-step workflow such as `*lebro.LinearWorkflow`, so one dataset
+serves both without a caller-written adapter. A case carries both an `Input`
+and `Messages`; each target reads the field it needs and reports
+`ErrTargetUnsupportedCase` for a case it cannot invoke.
+
+Deterministic rule scorers need no provider: `NewExactMatch`, `NewContains`,
+`NewRegexp`, `NewJSONEquals`, and `NewNumericRange`. `NewModelScorer` grades
+with a language model behind the existing model protocol — the caller supplies
+the `lebro.Model`, so no provider dependency enters the module.
+
+**A scorer failure is reported separately from the target's run outcome.** A
+scorer that errors or panics lands in `CaseResult.ScorerFailures` and leaves the
+target's `Status` and `Output` untouched; `ExperimentRecord` counts
+`TargetFailures` and `ScorerFailures` apart for the same reason. "Did the agent
+work?" and "could we measure it?" are different questions, and a broken judge
+must not read as a broken agent. A panicking scorer is recovered, so one bad
+scorer cannot abandon the run — the other scorers still measure that case.
+
+Cases run across a bounded worker pool, but results are always ordered by
+position in the dataset, so a stored record never depends on worker scheduling.
+
+`Compare` reports the difference between two runs and refuses records whose
+dataset ID or version disagree, because comparing two question sets would look
+like a quality change while really being a change of subject:
+
+```go
+comparison, err := evals.Compare(baseline, candidate, baselineCases, candidateCases)
+for _, regression := range comparison.Regressions {
+	log.Printf("regressed: %s/%s — %s", regression.CaseID, regression.Scorer, regression.Reason)
+}
+```
+
+Aggregate deltas alone can hide a real regression: two offsetting per-case
+changes cancel out in the mean, which is why `Regressions` and `Improvements`
+name the cases whose pass state moved.
+
+Results persist through `evals.Repository`, deliberately separate from
+`lebro.Store`, so evaluation data can live in a different database from threads
+and workflow state and an evaluation write can never join the transaction that
+persists a workflow step. The package ships `MemoryRepository`; a
+database-backed implementation is an application concern.
+
+Run the evaluation example (no network or API key required):
+
+```sh
+go run ./examples/evals-dataset
 ```
 
 ## Examples

@@ -141,3 +141,12 @@ deterministic local embedder, so no network or API key is required):
 ```sh
 go run ./examples/rag-retrieval
 ```
+
+Run the evaluation example (runs a versioned dataset against a target, scores
+each case with rule and model-graded scorers, and compares two experiment runs
+of the same dataset version; the target and grader are deterministic local
+stand-ins, so no network or API key is required):
+
+```sh
+go run ./examples/evals-dataset
+```
