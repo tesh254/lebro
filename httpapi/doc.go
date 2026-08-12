@@ -88,9 +88,15 @@
 // Failures reach the caller as *APIError, carrying the server's ErrorCode and
 // unwrapping to the lebro sentinel that classifies it: a remote tool failure
 // matches errors.Is(err, lebro.ErrAgentToolFailure) exactly as a local one
-// does. Codes with no runtime counterpart — a malformed request, a method
-// mismatch — carry the code alone rather than claiming a sentinel that cannot
-// occur locally.
+// does. A code maps to a sentinel only where every runtime error producing it
+// shares one; invalid_input and invalid_output are raised by both agent and
+// workflow failures, so they carry the code alone rather than a sentinel that
+// would be wrong half the time, as do codes with no runtime counterpart such as
+// a malformed request or a method mismatch.
+//
+// A run ended by the caller's context reports the context error it actually
+// observed, so an elapsed deadline matches context.DeadlineExceeded rather than
+// context.Canceled, preserving the distinction the in-process runtime makes.
 //
 // ContractVersion names the wire contract both sides speak.
 // Client.CheckCompatibility compares it against the server's published version

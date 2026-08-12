@@ -272,8 +272,12 @@ func TestCompatWorkflowInvalidInputIsTyped(t *testing.T) {
 	if apiErr.Code != httpapi.ErrorCodeInvalidInput {
 		t.Errorf("code = %q, want invalid_input", apiErr.Code)
 	}
-	if !errors.Is(err, lebro.ErrWorkflowInvalidStepInput) {
-		t.Errorf("error %v does not match lebro.ErrWorkflowInvalidStepInput", err)
+	// invalid_input covers both a rejected workflow step input and rejected
+	// agent tool arguments, so the client deliberately claims no sentinel for
+	// it: a caller branches on Code. Asserting the absence keeps a future
+	// change from quietly reintroducing a half-right match.
+	if errors.Is(err, lebro.ErrWorkflowInvalidStepInput) {
+		t.Errorf("error %v falsely claims lebro.ErrWorkflowInvalidStepInput", err)
 	}
 }
 
@@ -442,32 +446,29 @@ func TestCompatStreamCancelStopsRemoteRun(t *testing.T) {
 }
 
 // blockingModel blocks in Generate until its context is cancelled, reporting
-// when it started and when it observed the cancellation.
+// when it started and when it observed the cancellation. Cancellation is its
+// only exit: a run that reaches this model cannot complete, which is what makes
+// it able to prove that cancellation propagated rather than that the run simply
+// finished first.
 type blockingModel struct {
 	startOnce sync.Once
 	started   chan struct{}
-	cancelled chan struct{}
 	closeOnce sync.Once
-	released  chan struct{}
+	cancelled chan struct{}
 }
 
 func newBlockingModel() *blockingModel {
 	return &blockingModel{
 		started:   make(chan struct{}),
 		cancelled: make(chan struct{}),
-		released:  make(chan struct{}),
 	}
 }
 
 func (m *blockingModel) Generate(ctx context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
 	m.startOnce.Do(func() { close(m.started) })
-	select {
-	case <-ctx.Done():
-		m.closeOnce.Do(func() { close(m.cancelled) })
-		return lebro.ModelResponse{}, ctx.Err()
-	case <-m.released:
-		return textResponse("released"), nil
-	}
+	<-ctx.Done()
+	m.closeOnce.Do(func() { close(m.cancelled) })
+	return lebro.ModelResponse{}, ctx.Err()
 }
 
 func TestCompatThreadRoundTrip(t *testing.T) {
@@ -590,6 +591,35 @@ func TestCompatMessagePagingFollowsCursor(t *testing.T) {
 	}
 	if got := strings.Join(seen, ""); got != "abcde" {
 		t.Errorf("paged content = %q, want %q", got, "abcde")
+	}
+}
+
+// TestCompatEscapedIdentifiersReachTheServer is the end-to-end half of the
+// escaping regression: an agent whose ID contains a path separator or a space
+// is exposed under that exact ID, so a client that encoded it twice would get
+// not-found for an agent the server serves. Driving the real mux is what makes
+// this meaningful — the mux is the thing that has to agree with the encoding.
+func TestCompatEscapedIdentifiersReachTheServer(t *testing.T) {
+	t.Parallel()
+
+	for _, id := range []string{"team/assistant", "my agent", "café"} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+
+			client, _ := newCompatServer(t, func(server *httpapi.Server) {
+				must(t, server.ExposeAgent(newAgent(t, id, &scriptedModel{
+					responses: []lebro.ModelResponse{textResponse("reached")},
+				})))
+			})
+
+			result, err := client.Run(context.Background(), id, httpapi.RunRequest{
+				Messages: []httpapi.MessageInput{{Content: "hi"}},
+			})
+			must(t, err)
+			if result.Content != "reached" {
+				t.Errorf("content = %q, want %q", result.Content, "reached")
+			}
+		})
 	}
 }
 

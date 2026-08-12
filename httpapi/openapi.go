@@ -18,7 +18,7 @@ const openAPIVersion = "3.1.0"
 // the Client speaks. It is semantic: the major component changes when a client
 // built against an older version can no longer read a response — a field
 // removed or retyped, a route withdrawn, an error code repurposed — and the
-// minor component changes for additions a older client ignores safely.
+// minor component changes for additions an older client ignores safely.
 //
 // It is deliberately separate from ServerConfig.Version, which names the
 // application's own API version and is chosen by the application. Two

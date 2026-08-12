@@ -34,29 +34,51 @@ var (
 // one it stands for. A caller that handles lebro.ErrAgentToolFailure from
 // Agent.Run handles it identically from Client.Run.
 //
-// The mapping is intentionally not total in the reverse direction: several
-// runtime sentinels collapse onto one code on the wire, because the code is the
-// public classification and the wire deliberately does not distinguish, say, an
-// unknown tool from a missing thread. Mapping back therefore picks the sentinel
-// that names the class, not one arbitrary member of it.
+// A code maps to a sentinel only when every runtime error that produces it
+// shares that sentinel. Several codes fail that test: the server derives
+// invalid_input from a rejected workflow step input *and* from rejected agent
+// tool arguments, and invalid_output likewise covers a bad step output, a bad
+// tool output, and a bad structured output. The wire deliberately does not say
+// which, so there is no sentinel the client can name without being wrong for
+// the other cases — claiming lebro.ErrWorkflowInvalidStepInput for an agent
+// run's rejected tool arguments would make errors.Is report a workflow error
+// for a run that has no steps.
 //
-// Codes with no corresponding runtime sentinel — a malformed request, a
-// method mismatch, an unclassified internal failure — map to nil. Their
-// APIError still carries the code, so a caller branches on that; there is no
-// lebro sentinel to claim they are, and inventing one would let
-// errors.Is match a local error that cannot occur.
+// Those codes therefore map to nil, as do the codes with no runtime counterpart
+// at all — a malformed request, a method mismatch, an unclassified internal
+// failure. Their APIError still carries the code, which is the honest
+// classification and the one a caller should branch on. A sentinel that is
+// right only half the time is worse than none: it turns a visible "no match"
+// into a silent wrong match.
 var sentinelForCode = map[ErrorCode]error{
-	ErrorCodeInvalidRequest:     nil,
-	ErrorCodeInvalidInput:       lebro.ErrWorkflowInvalidStepInput,
+	// Unambiguous: one runtime failure class each, whatever produced the run.
 	ErrorCodeNotFound:           lebro.ErrNotFound,
-	ErrorCodeInvalidOutput:      lebro.ErrWorkflowInvalidStepOutput,
 	ErrorCodeToolFailure:        lebro.ErrAgentToolFailure,
 	ErrorCodeStepFailure:        lebro.ErrWorkflowStepFailure,
 	ErrorCodeProviderFailure:    lebro.ErrAgentProviderFailure,
 	ErrorCodeStepLimitExhausted: lebro.ErrAgentStepLimitExhausted,
 	ErrorCodeCancelled:          lebro.ErrAgentCancelled,
-	ErrorCodeMethodNotAllowed:   nil,
-	ErrorCodeInternal:           nil,
+
+	// Ambiguous or unrepresented: branch on Code instead.
+	ErrorCodeInvalidInput:     nil,
+	ErrorCodeInvalidOutput:    nil,
+	ErrorCodeInvalidRequest:   nil,
+	ErrorCodeMethodNotAllowed: nil,
+	ErrorCodeInternal:         nil,
+}
+
+// cancelledAPIError builds the error for a run that ended because the caller's
+// context did. The context error is carried rather than folded into the code so
+// a deadline stays distinguishable from an explicit cancellation: the runtime
+// preserves that distinction locally (see preferContextError in
+// internal/runtime), and a caller that retries on context.DeadlineExceeded but
+// not on context.Canceled would otherwise mis-branch on a remote run.
+func cancelledAPIError(cause error) *APIError {
+	return &APIError{
+		Code:    ErrorCodeCancelled,
+		Message: publicMessage[ErrorCodeCancelled],
+		cause:   cause,
+	}
 }
 
 // APIError is a failure the server reported with a public error code. It is
@@ -78,6 +100,12 @@ type APIError struct {
 	// an error carried on a stream's terminal event, which has no status of its
 	// own — the stream itself returned 200 before the run failed.
 	StatusCode int
+
+	// cause is the local error that ended the call, when there was one: the
+	// caller's context error for a cancelled or timed-out run. It is unexported
+	// because it is not part of the wire contract — the server never sends it —
+	// but it is surfaced through Unwrap so errors.Is reaches it.
+	cause error
 }
 
 func (e *APIError) Error() string {
@@ -90,25 +118,34 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("lebro/httpapi: %s (HTTP %d): %s", e.Code, e.StatusCode, e.Message)
 }
 
-// Unwrap reports the lebro sentinel for this code, plus context.Canceled for a
-// cancelled run. It returns a slice so a cancelled run matches both
-// lebro.ErrAgentCancelled and context.Canceled; a caller checking either is
-// asking the same question.
+// Unwrap reports the lebro sentinel for this code, plus the context error for a
+// run the caller's context ended. It returns a slice so a cancelled run matches
+// both lebro.ErrAgentCancelled and the context error a caller would check.
+//
+// The context error is the specific one observed — context.DeadlineExceeded for
+// an elapsed deadline, context.Canceled for an explicit cancel — rather than
+// always context.Canceled, so a caller that distinguishes them sees the same
+// thing an in-process run reports. A cancelled run the server classified, with
+// no local context error to attribute it to, falls back to context.Canceled:
+// the run was cancelled, and that is the check a caller writes.
 func (e *APIError) Unwrap() []error {
 	if e == nil {
 		return nil
 	}
-	sentinel := sentinelForCode[e.Code]
-	if e.Code == ErrorCodeCancelled {
-		if sentinel == nil {
-			return []error{context.Canceled}
-		}
-		return []error{sentinel, context.Canceled}
+	unwrapped := make([]error, 0, 2)
+	if sentinel := sentinelForCode[e.Code]; sentinel != nil {
+		unwrapped = append(unwrapped, sentinel)
 	}
-	if sentinel == nil {
+	switch {
+	case e.cause != nil:
+		unwrapped = append(unwrapped, e.cause)
+	case e.Code == ErrorCodeCancelled:
+		unwrapped = append(unwrapped, context.Canceled)
+	}
+	if len(unwrapped) == 0 {
 		return nil
 	}
-	return []error{sentinel}
+	return unwrapped
 }
 
 // apiErrorFromBody builds an APIError from a decoded error body. A body whose
@@ -118,10 +155,16 @@ func (e *APIError) Unwrap() []error {
 // is the same practical situation as an unclassified failure.
 func apiErrorFromBody(body ErrorBody, status int) *APIError {
 	code := body.Code
-	if _, known := publicMessage[code]; !known {
-		code = ErrorCodeInternal
-	}
 	message := body.Message
+	if _, known := publicMessage[code]; !known {
+		// The code is one this build does not know, so the message paired with
+		// it is not a message this contract defines either. Carrying it through
+		// would let non-canonical — potentially internal — text reach the
+		// caller under a code that claims to be the fixed public one. Replace
+		// both together.
+		code = ErrorCodeInternal
+		message = ""
+	}
 	if message == "" {
 		message = publicMessage[code]
 	}

@@ -1179,9 +1179,16 @@ if errors.As(err, &apiErr) {
 }
 ```
 
-A cancelled run additionally matches `context.Canceled`. Codes with no runtime
-counterpart — `invalid_request`, `method_not_allowed`, `internal_error` — carry
-the code alone rather than claiming a sentinel that cannot occur locally.
+A run the caller's context ended reports the context error it observed, so an
+elapsed deadline matches `context.DeadlineExceeded` and an explicit cancel
+matches `context.Canceled` — the same distinction the in-process runtime makes.
+
+A code maps to a sentinel only where every runtime error producing it shares
+one. `invalid_input` and `invalid_output` are raised by both agent and workflow
+failures, so they carry the code alone rather than a sentinel that would be
+wrong half the time; the same applies to `invalid_request`,
+`method_not_allowed`, and `internal_error`, which have no runtime counterpart.
+Branch on `APIError.Code` for those.
 
 `ContractVersion` names the wire contract both sides speak and is published in
 the generated document as `info.x-lebro-contract-version`.

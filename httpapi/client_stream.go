@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"sync"
 )
 
@@ -131,7 +130,8 @@ func (c *Client) RunStream(ctx context.Context, agentID string, request RunReque
 	// returning so an early error cannot leak the context.
 	streamCtx, cancel := context.WithCancel(ctx)
 
-	response, err := c.do(streamCtx, http.MethodPost, "/agents/"+url.PathEscape(agentID)+"/runs/stream", queryFrom(options), request)
+	path, escaped := agentRunPath(agentID, "/stream")
+	response, err := c.do(streamCtx, http.MethodPost, path, escaped, queryFrom(options), request)
 	if err != nil {
 		cancel()
 		return nil, err
@@ -251,6 +251,14 @@ func (s *ClientStream) read(response *http.Response, events chan<- StreamEvent) 
 			// held across iterations, so retaining the slice would decode
 			// whatever the scanner read next.
 			chunk := bytes.TrimPrefix(bytes.TrimPrefix(line[len("data:"):], []byte(" ")), []byte("\t"))
+			// The scanner's own limit bounds one physical line, not the frame
+			// they accumulate into, so a server sending many under-limit data
+			// lines in a single frame would otherwise make the client allocate
+			// without bound. Enforce the limit on the accumulated payload.
+			if len(data)+len(chunk)+1 > maxStreamEventBytes {
+				s.outcome_ = fmt.Errorf("lebro/httpapi: stream event exceeds %d bytes: %w", maxStreamEventBytes, ErrMalformedResponse)
+				return
+			}
 			if data != nil {
 				data = append(data, '\n')
 			}
@@ -287,11 +295,13 @@ func (s *ClientStream) read(response *http.Response, events chan<- StreamEvent) 
 // context is reported as a cancelled run rather than a transport fault: the
 // caller stopped the run, and the server saw the same thing.
 func streamReadError(err error) error {
+	// The specific context error is carried through rather than collapsed, so a
+	// deadline stays distinguishable from an explicit cancel.
 	if errors.Is(err, context.Canceled) {
-		return &APIError{Code: ErrorCodeCancelled, Message: publicMessage[ErrorCodeCancelled]}
+		return cancelledAPIError(context.Canceled)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return &APIError{Code: ErrorCodeCancelled, Message: publicMessage[ErrorCodeCancelled]}
+		return cancelledAPIError(context.DeadlineExceeded)
 	}
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return fmt.Errorf("lebro/httpapi: %w", ErrStreamIncomplete)

@@ -40,8 +40,12 @@ func (scriptedModel) Generate(_ context.Context, request lebro.ModelRequest) (le
 	return response, nil
 }
 
+// streamedWords is the scripted stream's payload. streamAndCancel derives its
+// cancellation point from the length, so the two cannot drift apart.
+var streamedWords = []string{"Streaming ", "one ", "word ", "at ", "a ", "time ", "until ", "cancelled."}
+
 func (scriptedModel) Stream(ctx context.Context, _ lebro.ModelRequest) (lebro.StreamReader, error) {
-	words := []string{"Streaming ", "one ", "word ", "at ", "a ", "time ", "until ", "cancelled."}
+	words := streamedWords
 	index := 0
 	return &lebro.StreamReaderFunc{
 		NextFn: func() (lebro.StreamDelta, error) {
@@ -253,7 +257,13 @@ func streamAndCancel(ctx context.Context, client *httpapi.Client) {
 	}
 	defer stream.Cancel()
 
-	const readBeforeCancel = 3
+	// Cancel partway through the model's word list rather than at a fixed
+	// count, so shortening or lengthening the script cannot silently push the
+	// cancellation past the end of the run and turn this into a demonstration
+	// of a run that simply finished. Cancellation correctness does not depend
+	// on the timing — the reader stops on Cancel immediately — but the demo's
+	// meaning does.
+	readBeforeCancel := len(streamedWords) / 2
 	var seen int
 	for event := range stream.Events {
 		fmt.Printf("delta: %q\n", event.Text)

@@ -77,9 +77,11 @@ func TestClientErrorCodeMapsToSentinel(t *testing.T) {
 		sentinel error
 	}{
 		{httpapi.ErrorCodeInvalidRequest, http.StatusBadRequest, nil},
-		{httpapi.ErrorCodeInvalidInput, http.StatusBadRequest, lebro.ErrWorkflowInvalidStepInput},
+		// invalid_input and invalid_output are produced by both agent and
+		// workflow failures, so no single sentinel is right for either.
+		{httpapi.ErrorCodeInvalidInput, http.StatusBadRequest, nil},
 		{httpapi.ErrorCodeNotFound, http.StatusNotFound, lebro.ErrNotFound},
-		{httpapi.ErrorCodeInvalidOutput, http.StatusBadGateway, lebro.ErrWorkflowInvalidStepOutput},
+		{httpapi.ErrorCodeInvalidOutput, http.StatusBadGateway, nil},
 		{httpapi.ErrorCodeToolFailure, http.StatusInternalServerError, lebro.ErrAgentToolFailure},
 		{httpapi.ErrorCodeStepFailure, http.StatusInternalServerError, lebro.ErrWorkflowStepFailure},
 		{httpapi.ErrorCodeProviderFailure, http.StatusBadGateway, lebro.ErrAgentProviderFailure},
@@ -118,6 +120,20 @@ func TestClientErrorCodeMapsToSentinel(t *testing.T) {
 			}
 			if testCase.sentinel != nil && !errors.Is(err, testCase.sentinel) {
 				t.Errorf("error %v does not match sentinel %v", err, testCase.sentinel)
+			}
+			// A code with no unambiguous sentinel must not claim one: a wrong
+			// match is worse than no match, because it silently mis-branches.
+			if testCase.sentinel == nil {
+				for _, wrong := range []error{
+					lebro.ErrWorkflowInvalidStepInput,
+					lebro.ErrWorkflowInvalidStepOutput,
+					lebro.ErrAgentToolFailure,
+					lebro.ErrNotFound,
+				} {
+					if errors.Is(err, wrong) {
+						t.Errorf("code %q falsely matches %v", testCase.code, wrong)
+					}
+				}
 			}
 		})
 	}
@@ -188,6 +204,12 @@ func TestClientUnknownErrorCodeReportsInternal(t *testing.T) {
 	if apiErr.Code != httpapi.ErrorCodeInternal {
 		t.Errorf("code = %q, want %q", apiErr.Code, httpapi.ErrorCodeInternal)
 	}
+	// The message paired with an unknown code is not part of this contract
+	// either, so it must not reach the caller under a code claiming to be the
+	// fixed public one.
+	if strings.Contains(apiErr.Message, "from the future") {
+		t.Errorf("message = %q, want the canonical text for internal_error", apiErr.Message)
+	}
 }
 
 func TestClientMalformedSuccessBody(t *testing.T) {
@@ -237,7 +259,7 @@ func TestClientSendsRequestShape(t *testing.T) {
 		_, _ = r.Body.Read(body)
 		got <- captured{
 			method: r.Method,
-			path:   r.URL.Path,
+			path:   r.URL.EscapedPath(),
 			query:  r.URL.RawQuery,
 			body:   strings.TrimSpace(string(body)),
 			auth:   r.Header.Get("Authorization"),
@@ -818,6 +840,159 @@ func TestClientHandlesNullJSONBodies(t *testing.T) {
 			t.Errorf("result = %+v, want the zero value", result)
 		}
 	})
+}
+
+// TestClientEscapesPathSegmentsExactlyOnce is a regression test: assigning an
+// already-escaped path to url.URL.Path makes it re-escape on render, so "%2F"
+// went on the wire as "%252F" and the server reported not-found for an agent it
+// exposes. The assertion is on the escaped path, which is what the mux routes
+// on — the decoded Path field looks correct either way, which is how the bug
+// survived the first round of tests.
+func TestClientEscapesPathSegmentsExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{"team/assistant", "/agents/team%2Fassistant/runs"},
+		{"my agent", "/agents/my%20agent/runs"},
+		{"café", "/agents/caf%C3%A9/runs"},
+		{"plain", "/agents/plain/runs"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.id, func(t *testing.T) {
+			t.Parallel()
+
+			got := make(chan string, 1)
+			client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				got <- r.URL.EscapedPath()
+				_ = json.NewEncoder(w).Encode(httpapi.RunResponse{RunID: "run-1"})
+			})
+
+			_, err := client.Run(context.Background(), testCase.id, httpapi.RunRequest{})
+			must(t, err)
+
+			if path := <-got; path != testCase.want {
+				t.Errorf("wire path = %q, want %q", path, testCase.want)
+			}
+		})
+	}
+}
+
+// TestClientDeadlineIsDistinctFromCancellation asserts an elapsed deadline is
+// not reported as an explicit cancellation. The in-process runtime preserves
+// the distinction, and a caller that retries on DeadlineExceeded but not on
+// Canceled would mis-branch if the client collapsed them.
+func TestClientDeadlineIsDistinctFromCancellation(t *testing.T) {
+	t.Parallel()
+
+	// The handler must not block on the request context alone: httptest's
+	// Close waits for outstanding handlers, so a handler parked until the
+	// client's context ends would keep the server alive past the test.
+	// Releasing on either the request context or an explicit channel keeps
+	// cleanup prompt.
+	// The handler stalls just long enough for the client's context to expire
+	// first, which is the event under test. It returns on its own rather than
+	// waiting for the request context, because httptest's Close waits for
+	// outstanding handlers and a handler parked on the connection would keep
+	// the server alive well past the assertion.
+	newBlockingClient := func(t *testing.T) *httpapi.Client {
+		t.Helper()
+		return newTestClient(t, func(_ http.ResponseWriter, _ *http.Request) {
+			time.Sleep(300 * time.Millisecond)
+		})
+	}
+
+	t.Run("deadline", func(t *testing.T) {
+		client := newBlockingClient(t)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+
+		_, err := client.Run(ctx, "assistant", httpapi.RunRequest{})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error %v does not match context.DeadlineExceeded", err)
+		}
+		if errors.Is(err, context.Canceled) {
+			t.Errorf("error %v falsely matches context.Canceled", err)
+		}
+		if !errors.Is(err, lebro.ErrAgentCancelled) {
+			t.Errorf("error %v does not match lebro.ErrAgentCancelled", err)
+		}
+	})
+
+	t.Run("explicit cancel", func(t *testing.T) {
+		client := newBlockingClient(t)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		_, err := client.Run(ctx, "assistant", httpapi.RunRequest{})
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("error %v does not match context.Canceled", err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error %v falsely matches context.DeadlineExceeded", err)
+		}
+	})
+}
+
+// TestClientStreamBoundsAccumulatedFrame is a regression test: the scanner's
+// limit bounds one physical line, so a frame split across many under-limit data
+// lines could accumulate without bound — 40 lines of 0.5MB each allocate ~20MB
+// against a 1MB frame limit.
+//
+// The payload is valid JSON when joined, so the failure must come from the size
+// check rather than from a decode error. An oversized frame of garbage would
+// fail either way and would not distinguish the bound from its absence.
+func TestClientStreamBoundsAccumulatedFrame(t *testing.T) {
+	t.Parallel()
+
+	const (
+		lineCount = 40
+		lineBytes = 500 * 1024
+	)
+	// Split one long JSON string value across many data lines. Joined with
+	// newlines the result is still a well-formed StreamEvent, so a client that
+	// accepted it would decode successfully — which is exactly the outcome the
+	// bound has to prevent.
+	chunk := strings.Repeat("A", lineBytes)
+
+	var body strings.Builder
+	body.WriteString("event: model_delta\n")
+	body.WriteString(`data: {"type":"model_delta","text":"`)
+	body.WriteString("\n")
+	for range lineCount {
+		body.WriteString("data: " + chunk + "\n")
+	}
+	body.WriteString(`data: "}`)
+	body.WriteString("\n\n")
+
+	client := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(body.String()))
+	})
+
+	stream, err := client.RunStream(context.Background(), "assistant", httpapi.RunRequest{})
+	must(t, err)
+	defer stream.Cancel()
+
+	_, err = stream.Drain()
+	if !errors.Is(err, httpapi.ErrMalformedResponse) {
+		t.Fatalf("error = %v, want ErrMalformedResponse for an oversized frame", err)
+	}
+	// Distinguish the size check from a decode failure: without the bound the
+	// frame decodes cleanly and Drain returns no error at all.
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %v, want it to report the size bound rather than a decode failure", err)
+	}
 }
 
 func TestClientCheckCompatibilityRejectsMalformedDocument(t *testing.T) {

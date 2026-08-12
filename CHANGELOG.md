@@ -32,10 +32,14 @@ All notable changes to this project are documented in this file.
   Failures arrive as `*APIError` carrying the server's `ErrorCode` and
   unwrapping to the lebro sentinel that classifies it, so
   `errors.Is(err, lebro.ErrAgentToolFailure)` holds for a remote tool failure
-  exactly as for a local one, and a cancelled run additionally matches
-  `context.Canceled`; codes with no runtime counterpart carry the code alone
-  rather than claiming a sentinel that cannot occur locally. `ContractVersion`
-  names the wire contract, is published in the generated document as
+  exactly as for a local one. A code maps to a sentinel only where every runtime
+  error producing it shares one: `invalid_input` and `invalid_output` are raised
+  by both agent and workflow failures, so they carry the code alone rather than
+  a sentinel that would be wrong half the time, as do codes with no runtime
+  counterpart. A run ended by the caller's context reports the context error it
+  observed, so an elapsed deadline matches `context.DeadlineExceeded` rather
+  than `context.Canceled`, preserving the distinction the runtime makes locally.
+  `ContractVersion` names the wire contract, is published in the document as
   `info.x-lebro-contract-version`, and `Client.CheckCompatibility` compares
   major versions and reports `ErrIncompatibleContract` on a mismatch — called
   explicitly, never on every request, so a run does not pay for a round trip it

@@ -100,6 +100,26 @@ func NewClient(config ClientConfig) (*Client, error) {
 	}, nil
 }
 
+// agentRunPath renders the decoded and escaped forms of an agent route. Both
+// are needed because the escaped form is what goes on the wire while the
+// decoded form is what url.URL validates it against.
+func agentRunPath(agentID, suffix string) (string, string) {
+	return "/agents/" + agentID + "/runs" + suffix,
+		"/agents/" + url.PathEscape(agentID) + "/runs" + suffix
+}
+
+// workflowRunPath renders the decoded and escaped forms of a workflow route.
+func workflowRunPath(workflowID string) (string, string) {
+	return "/workflows/" + workflowID + "/runs",
+		"/workflows/" + url.PathEscape(workflowID) + "/runs"
+}
+
+// threadPath renders the decoded and escaped forms of a thread route.
+func threadPath(threadID, suffix string) (string, string) {
+	return "/threads/" + threadID + suffix,
+		"/threads/" + url.PathEscape(threadID) + suffix
+}
+
 // RunOption modifies a run request's query parameters.
 type RunOption func(url.Values)
 
@@ -148,13 +168,13 @@ func WithLimit(limit int) MessageOption {
 
 // Health reports server readiness and what it exposes.
 func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
-	return request[HealthResponse](ctx, c, http.MethodGet, "/health", nil, nil)
+	return request[HealthResponse](ctx, c, http.MethodGet, "/health", "/health", nil, nil)
 }
 
 // ListAgents enumerates every agent the server exposes, in the server's stable
 // ID order.
 func (c *Client) ListAgents(ctx context.Context) ([]AgentSummary, error) {
-	response, err := request[AgentListResponse](ctx, c, http.MethodGet, "/agents", nil, nil)
+	response, err := request[AgentListResponse](ctx, c, http.MethodGet, "/agents", "/agents", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +184,7 @@ func (c *Client) ListAgents(ctx context.Context) ([]AgentSummary, error) {
 // ListWorkflows enumerates every workflow the server exposes, including each
 // one's declared input schema when it has one.
 func (c *Client) ListWorkflows(ctx context.Context) ([]WorkflowSummary, error) {
-	response, err := request[WorkflowListResponse](ctx, c, http.MethodGet, "/workflows", nil, nil)
+	response, err := request[WorkflowListResponse](ctx, c, http.MethodGet, "/workflows", "/workflows", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +201,8 @@ func (c *Client) Run(ctx context.Context, agentID string, request_ RunRequest, o
 	if agentID == "" {
 		return RunResponse{}, errors.New("lebro/httpapi: agent ID is required")
 	}
-	return request[RunResponse](ctx, c, http.MethodPost, "/agents/"+url.PathEscape(agentID)+"/runs", queryFrom(options), request_)
+	path, escaped := agentRunPath(agentID, "")
+	return request[RunResponse](ctx, c, http.MethodPost, path, escaped, queryFrom(options), request_)
 }
 
 // RunWorkflow executes a workflow to completion and returns its final output.
@@ -192,7 +213,8 @@ func (c *Client) RunWorkflow(ctx context.Context, workflowID string, request_ Wo
 	if workflowID == "" {
 		return WorkflowRunResponse{}, errors.New("lebro/httpapi: workflow ID is required")
 	}
-	return request[WorkflowRunResponse](ctx, c, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/runs", queryFrom(options), request_)
+	path, escaped := workflowRunPath(workflowID)
+	return request[WorkflowRunResponse](ctx, c, http.MethodPost, path, escaped, queryFrom(options), request_)
 }
 
 // GetThread reads a durable conversation's metadata. It requires the server to
@@ -201,7 +223,8 @@ func (c *Client) GetThread(ctx context.Context, threadID string) (ThreadResponse
 	if threadID == "" {
 		return ThreadResponse{}, errors.New("lebro/httpapi: thread ID is required")
 	}
-	return request[ThreadResponse](ctx, c, http.MethodGet, "/threads/"+url.PathEscape(threadID), nil, nil)
+	path, escaped := threadPath(threadID, "")
+	return request[ThreadResponse](ctx, c, http.MethodGet, path, escaped, nil, nil)
 }
 
 // ListMessages returns one page of a thread's ordered messages. Follow
@@ -216,14 +239,15 @@ func (c *Client) ListMessages(ctx context.Context, threadID string, options ...M
 			option(query)
 		}
 	}
-	return request[MessageListResponse](ctx, c, http.MethodGet, "/threads/"+url.PathEscape(threadID)+"/messages", query, nil)
+	path, escaped := threadPath(threadID, "/messages")
+	return request[MessageListResponse](ctx, c, http.MethodGet, path, escaped, query, nil)
 }
 
 // OpenAPI fetches the server's generated OpenAPI document as raw JSON. It is
 // returned unparsed because the document is a contract to hand to a generator
 // or a validator, not a value this package models.
 func (c *Client) OpenAPI(ctx context.Context) ([]byte, error) {
-	response, err := c.do(ctx, http.MethodGet, "/openapi.json", nil, nil)
+	response, err := c.do(ctx, http.MethodGet, "/openapi.json", "/openapi.json", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -308,13 +332,13 @@ func queryFrom(options []RunOption) url.Values {
 }
 
 // request performs a call and decodes its JSON response into T.
-func request[T any](ctx context.Context, c *Client, method, path string, query url.Values, body any) (T, error) {
+func request[T any](ctx context.Context, c *Client, method, path, escapedPath string, query url.Values, body any) (T, error) {
 	var value T
 	if c == nil {
 		return value, errors.New("lebro/httpapi: client is nil")
 	}
 
-	response, err := c.do(ctx, method, path, query, body)
+	response, err := c.do(ctx, method, path, escapedPath, query, body)
 	if err != nil {
 		return value, err
 	}
@@ -338,7 +362,7 @@ func request[T any](ctx context.Context, c *Client, method, path string, query u
 
 // do builds and sends one request. The body is marshalled before the request is
 // created so an encoding failure is reported without a round trip.
-func (c *Client) do(ctx context.Context, method, path string, query url.Values, body any) (*http.Response, error) {
+func (c *Client) do(ctx context.Context, method, path, escapedPath string, query url.Values, body any) (*http.Response, error) {
 	if c == nil {
 		return nil, errors.New("lebro/httpapi: client is nil")
 	}
@@ -352,7 +376,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		reader = bytes.NewReader(encoded)
 	}
 
-	request, err := http.NewRequestWithContext(ctx, method, c.resolve(path, query), reader)
+	request, err := http.NewRequestWithContext(ctx, method, c.resolve(path, escapedPath, query), reader)
 	if err != nil {
 		return nil, fmt.Errorf("lebro/httpapi: build request: %w", err)
 	}
@@ -372,7 +396,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		// respond, and the APIError unwraps to context.Canceled so the
 		// idiomatic check still works.
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, &APIError{Code: ErrorCodeCancelled, Message: publicMessage[ErrorCodeCancelled]}
+			return nil, cancelledAPIError(ctxErr)
 		}
 		return nil, fmt.Errorf("lebro/httpapi: %s %s: %w", method, path, err)
 	}
@@ -380,9 +404,24 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 }
 
 // resolve renders an absolute URL for a route path under the configured base.
-func (c *Client) resolve(path string, query url.Values) string {
+//
+// It takes the path in both forms. url.URL re-escapes Path when it renders the
+// URL, so assigning an already-escaped path to Path alone double-encodes it: an
+// agent named "team/assistant" would go on the wire as "team%252Fassistant" and
+// the server would report not-found for an agent it exposes. Setting RawPath to
+// the escaped form makes url.URL emit it verbatim, but only when RawPath is a
+// valid encoding of Path — otherwise it is ignored and Path is re-escaped —
+// which is why the decoded form is threaded through rather than derived here.
+func (c *Client) resolve(path, escapedPath string, query url.Values) string {
 	target := *c.baseURL
 	target.Path = c.baseURL.Path + path
+	target.RawPath = c.baseURL.EscapedPath() + escapedPath
+	// A RawPath that is not a distinct encoding of Path is redundant, and
+	// url.URL drops it in that case anyway. Clearing it keeps the common path
+	// on the ordinary escaping rules rather than a hand-built one.
+	if target.RawPath == target.Path {
+		target.RawPath = ""
+	}
 	if len(query) > 0 {
 		target.RawQuery = query.Encode()
 	}
