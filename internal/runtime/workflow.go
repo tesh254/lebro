@@ -262,6 +262,9 @@ const (
 	// WorkflowErrorInvalidFanOutInput means the input to a fan-out step
 	// failed its InputSchema validation before any branch ran.
 	WorkflowErrorInvalidFanOutInput WorkflowErrorKind = "invalid_fanout_input"
+	// WorkflowErrorUnauthorized means a configured Policy denied the run at
+	// start. The wrapped error is a *PolicyDenial.
+	WorkflowErrorUnauthorized WorkflowErrorKind = "unauthorized"
 )
 
 var (
@@ -295,6 +298,9 @@ var (
 	// ErrWorkflowInvalidFanOutInput matches fan-out steps whose input
 	// failed the InputSchema before any branch ran.
 	ErrWorkflowInvalidFanOutInput = errors.New("lebro: workflow invalid fan-out input")
+	// ErrWorkflowUnauthorized matches runs denied by a configured Policy at
+	// start. The wrapped *PolicyDenial also matches ErrPolicyDenied.
+	ErrWorkflowUnauthorized = errors.New("lebro: workflow unauthorized")
 )
 
 // WorkflowError preserves the category, failing step, and cause of a workflow
@@ -373,6 +379,8 @@ func workflowErrorSentinel(kind WorkflowErrorKind) error {
 		return ErrWorkflowFanOutInputMapperFailed
 	case WorkflowErrorInvalidFanOutInput:
 		return ErrWorkflowInvalidFanOutInput
+	case WorkflowErrorUnauthorized:
+		return ErrWorkflowUnauthorized
 	default:
 		return errors.New("lebro: workflow failure")
 	}
@@ -553,6 +561,13 @@ type LinearWorkflowConfig struct {
 	Clock          Clock
 	IDSource       IDSource
 	Store          Store
+	// Policy optionally authorizes the workflow run at start against the caller
+	// Identity carried on the run context (see WithIdentity). A denied run fails
+	// with a WorkflowErrorUnauthorized wrapping a *PolicyDenial, recorded in the
+	// run record and events. Agent and tool steps additionally enforce their own
+	// policy because the same context identity flows into every nested run. When
+	// nil, no authorization is applied and workflow behavior is unchanged.
+	Policy Policy
 }
 
 // LinearWorkflow executes typed steps in declared order, validating each
@@ -566,6 +581,7 @@ type LinearWorkflow struct {
 	clock      Clock
 	idSource   IDSource
 	store      Store
+	policy     Policy
 }
 
 // NewLinearWorkflow validates the configuration, compiles step schemas once,
@@ -619,6 +635,7 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		clock:      clock,
 		idSource:   idSource,
 		store:      config.Store,
+		policy:     config.Policy,
 	}, nil
 }
 
@@ -730,6 +747,13 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	current := cloneRawMessage(input.Input)
 	completedOutputs := make([]json.RawMessage, 0, len(w.steps))
 	anchor := w.newAnchor(runID, input, metadata)
+
+	if derr := authorize(ctx, w.policy, ActionWorkflowRun, Resource{Kind: ResourceKindWorkflow, ID: string(w.definition.ID)}); derr != nil {
+		authErr := &WorkflowError{Kind: WorkflowErrorUnauthorized, Err: derr}
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, authErr)
+		w.persistTerminalBestEffort(anchor, nil, 0, "", nil, nil, RunStatusFailed, authErr)
+		return w.fail(runID, metadata, nil, nil, authErr)
+	}
 
 	if perr := validateRetryOverrides(input.RetryOverrides); perr != nil {
 		overrideErr := perr.(*invalidRetryOverrideError)

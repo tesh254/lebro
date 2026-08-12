@@ -153,6 +153,16 @@ type (
 	RunRecorder                = runtime.RunRecorder
 	Clock                      = runtime.Clock
 	IDSource                   = runtime.IDSource
+	Identity                   = runtime.Identity
+	Capability                 = runtime.Capability
+	Action                     = runtime.Action
+	ResourceKind               = runtime.ResourceKind
+	Resource                   = runtime.Resource
+	Decision                   = runtime.Decision
+	Policy                     = runtime.Policy
+	AllowAllPolicy             = runtime.AllowAllPolicy
+	PolicyDenial               = runtime.PolicyDenial
+	PolicyStore                = runtime.PolicyStore
 )
 
 const (
@@ -175,6 +185,7 @@ const (
 	ToolExecutionPanicked      = runtime.ToolExecutionPanicked
 	ToolExecutionCancelled     = runtime.ToolExecutionCancelled
 	ToolExecutionNotFound      = runtime.ToolExecutionNotFound
+	ToolExecutionUnauthorized  = runtime.ToolExecutionUnauthorized
 
 	ValidationTargetToolInput        = runtime.ValidationTargetToolInput
 	ValidationTargetToolOutput       = runtime.ValidationTargetToolOutput
@@ -200,6 +211,21 @@ const (
 	AgentErrorStepLimitExhausted      = runtime.AgentErrorStepLimitExhausted
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
+	AgentErrorUnauthorized            = runtime.AgentErrorUnauthorized
+
+	ActionAgentRun     = runtime.ActionAgentRun
+	ActionToolCall     = runtime.ActionToolCall
+	ActionWorkflowRun  = runtime.ActionWorkflowRun
+	ActionStorageRead  = runtime.ActionStorageRead
+	ActionStorageWrite = runtime.ActionStorageWrite
+
+	ResourceKindAgent            = runtime.ResourceKindAgent
+	ResourceKindTool             = runtime.ResourceKindTool
+	ResourceKindWorkflow         = runtime.ResourceKindWorkflow
+	ResourceKindThread           = runtime.ResourceKindThread
+	ResourceKindMessage          = runtime.ResourceKindMessage
+	ResourceKindWorkflowRun      = runtime.ResourceKindWorkflowRun
+	ResourceKindWorkflowSnapshot = runtime.ResourceKindWorkflowSnapshot
 
 	SubagentErrorInvalidInput = runtime.SubagentErrorInvalidInput
 	SubagentErrorRunFailed    = runtime.SubagentErrorRunFailed
@@ -216,6 +242,7 @@ const (
 	WorkflowErrorFanOutBranchFailed      = runtime.WorkflowErrorFanOutBranchFailed
 	WorkflowErrorFanOutInputMapperFailed = runtime.WorkflowErrorFanOutInputMapperFailed
 	WorkflowErrorInvalidFanOutInput      = runtime.WorkflowErrorInvalidFanOutInput
+	WorkflowErrorUnauthorized            = runtime.WorkflowErrorUnauthorized
 
 	RunEventStarted              = runtime.RunEventStarted
 	RunEventModelStarted         = runtime.RunEventModelStarted
@@ -301,6 +328,9 @@ var (
 	ErrAgentStepLimitExhausted      = runtime.ErrAgentStepLimitExhausted
 	ErrAgentCancelled               = runtime.ErrAgentCancelled
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
+	ErrAgentUnauthorized            = runtime.ErrAgentUnauthorized
+
+	ErrPolicyDenied = runtime.ErrPolicyDenied
 
 	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
 	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
@@ -323,6 +353,7 @@ var (
 	ErrWorkflowFanOutBranchFailed      = runtime.ErrWorkflowFanOutBranchFailed
 	ErrWorkflowFanOutInputMapperFailed = runtime.ErrWorkflowFanOutInputMapperFailed
 	ErrWorkflowInvalidFanOutInput      = runtime.ErrWorkflowInvalidFanOutInput
+	ErrWorkflowUnauthorized            = runtime.ErrWorkflowUnauthorized
 
 	ErrVectorNotFound         = runtime.ErrVectorNotFound
 	ErrVectorAlreadyExists    = runtime.ErrVectorAlreadyExists
@@ -376,6 +407,33 @@ func NewModelToolCalls(calls ...ModelToolCall) (ModelToolCalls, error) {
 
 func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 	return runtime.NewModelStructuredOutput(value)
+}
+
+// WithIdentity returns a context carrying identity so downstream agent, tool,
+// workflow, and storage operations authorize against the same caller. Nested
+// runs (subagents, workflow steps) inherit it automatically because they share
+// the run context.
+func WithIdentity(ctx context.Context, identity Identity) context.Context {
+	return runtime.WithIdentity(ctx, identity)
+}
+
+// IdentityFromContext returns a caller-owned copy of the identity previously
+// stored with WithIdentity and whether one was present.
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	return runtime.IdentityFromContext(ctx)
+}
+
+// Allow returns an allowing policy Decision.
+func Allow() Decision { return runtime.Allow() }
+
+// Deny returns a denying policy Decision carrying an optional reason.
+func Deny(reason string) Decision { return runtime.Deny(reason) }
+
+// NewPolicyStore returns a Store that authorizes every repository operation
+// against policy before delegating to store. A nil policy leaves the store's
+// behavior unchanged.
+func NewPolicyStore(store Store, policy Policy) (*PolicyStore, error) {
+	return runtime.NewPolicyStore(store, policy)
 }
 
 func NewMemoryStore() *MemoryStore { return runtime.NewMemoryStore() }

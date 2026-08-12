@@ -6,6 +6,24 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Pluggable authentication and authorization hooks. A new `Policy` contract lets
+  an application allow or deny an agent run, a tool call, a workflow run, or a
+  storage operation against a caller `Identity` (subject, tenant, capabilities,
+  and attributes) that flows through the run context via `WithIdentity` /
+  `IdentityFromContext`. The library ships no identity provider and no concrete
+  policy engine — only the hook: `AgentConfig.Policy` and
+  `LinearWorkflowConfig.Policy` authorize runs and their tool calls, and
+  `NewPolicyStore` wraps any `Store` to authorize every repository read and write
+  at method granularity. A denied operation returns a typed, auditable
+  `*PolicyDenial` (matched by `errors.Is(err, ErrPolicyDenied)`) that preserves
+  the caller, action, resource, and reason; agent and workflow denials are
+  recorded in the run result and the terminal run event via the new
+  `AgentErrorUnauthorized` / `WorkflowErrorUnauthorized` kinds and the
+  `ToolExecutionUnauthorized` tool state. Identity propagates automatically into
+  subagent delegations and workflow steps because they share the run context. A
+  nil `Policy` allows everything, so the core library stays usable with no policy
+  configured, and `AllowAllPolicy` is the explicit no-op. Nothing in the module
+  gains a dependency; the contract is standard-library-only.
 - Dataset evaluation, scorers, and experiment runs. The new optional `evals`
   package runs a versioned dataset against an agent or workflow, scores every
   case, and persists per-case results so two runs can be compared before a

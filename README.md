@@ -215,6 +215,7 @@ to `lebro.DefaultAgentMaxSteps` when zero. Failures are returned as
 | `AgentErrorStepLimitExhausted` | Loop consumed every permitted step |
 | `AgentErrorCancelled` | Run context or deadline cancelled |
 | `AgentErrorInvalidStructuredOutput` | Terminal response omitted or failed schema validation of requested structured output |
+| `AgentErrorUnauthorized` | Configured `Policy` denied the run or a tool call (see [Authentication and authorization hooks](#authentication-and-authorization-hooks)) |
 
 `errors.Is` works against the `lebro.ErrAgent*` sentinels and against
 `context.Canceled` / `context.DeadlineExceeded`. The wrapped error preserves the
@@ -1288,6 +1289,73 @@ Run the evaluation example (no network or API key required):
 ```sh
 go run ./examples/evals-dataset
 ```
+
+## Authentication and authorization hooks
+
+lebro provides pluggable policy hooks so an application can enforce its own
+tenant and user rules across agent runs, tool calls, workflow runs, and storage
+operations. The library ships no identity provider and no concrete policy
+engine: you authenticate a caller however you like, attach an `Identity` to the
+run context, and supply a `Policy` that decides.
+
+```go
+type tenantPolicy struct{}
+
+func (tenantPolicy) Authorize(_ context.Context, id lebro.Identity, action lebro.Action, res lebro.Resource) lebro.Decision {
+    if action == lebro.ActionToolCall && !id.HasCapability("tools:call") {
+        return lebro.Deny("missing tools:call capability")
+    }
+    return lebro.Allow()
+}
+
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "weather-agent", Model: "gpt-4o", Tools: []lebro.ToolID{"weather.lookup"}},
+    Model:      model,
+    Tools:      registry,
+    Policy:     tenantPolicy{},
+})
+if err != nil {
+    panic(err)
+}
+
+ctx := lebro.WithIdentity(context.Background(), lebro.Identity{
+    Subject:      "user-42",
+    Tenant:       "acme",
+    Capabilities: []lebro.Capability{"tools:call"},
+})
+
+result, err := agent.Run(ctx, lebro.RunInput{
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Weather in Nairobi?"}},
+})
+if errors.Is(err, lebro.ErrPolicyDenied) {
+    var denial *lebro.PolicyDenial
+    errors.As(err, &denial)
+    // denial.Action, denial.Resource, denial.Reason, denial.Subject
+}
+```
+
+The `Policy` is consulted at four points, each with an `Action` and a
+`Resource`:
+
+| Action | When | Resource kind |
+|--------|------|---------------|
+| `ActionAgentRun` | Once at agent run start | `ResourceKindAgent` |
+| `ActionToolCall` | Before each model-requested tool call, including subagent delegation | `ResourceKindTool` |
+| `ActionWorkflowRun` | Once at `LinearWorkflow` run start | `ResourceKindWorkflow` |
+| `ActionStorageRead` / `ActionStorageWrite` | Before each repository read/write on a `PolicyStore` | thread, message, workflow-run, snapshot |
+
+Wrap any `Store` with `lebro.NewPolicyStore(store, policy)` to authorize storage
+at method granularity; a denied read or write never reaches the underlying
+store. Denials are typed and auditable: every denial is a `*lebro.PolicyDenial`
+matched by `errors.Is(err, lebro.ErrPolicyDenied)`, agent and workflow denials
+carry the `AgentErrorUnauthorized` / `WorkflowErrorUnauthorized` kinds and are
+recorded in the run result and the terminal run event, and a denied tool call
+reports the `ToolExecutionUnauthorized` state.
+
+Identity flows through the run context, so subagent delegations and workflow
+steps authorize against the same caller without extra wiring. A nil `Policy`
+allows everything, so the core library is fully usable without one;
+`lebro.AllowAllPolicy{}` is the explicit no-op.
 
 ## Examples
 
