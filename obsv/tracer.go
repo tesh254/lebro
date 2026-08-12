@@ -118,14 +118,64 @@ type stepKey struct {
 	pos  int
 }
 
-// stepSlot identifies one step slot within a run's in-flight state. For
-// non-fan-out steps the branch is empty and the slot is unique by position. For
-// fan-out branch steps the branch name disambiguates concurrent branches that
-// share the same step position, preventing one branch's step span from
-// overwriting another's.
+// stepSlot identifies one open step within a run's in-flight state.
+//
+// Position alone is not unique: a fan-out child step is reported at the same
+// position as the fan-out step that launched it, so keying on position would make
+// the child overwrite its parent. StepID separates those two.
+//
+// fanBranch additionally separates concurrent fan-out branches. A workflow the
+// runtime accepts cannot reach this case — step IDs are validated unique across
+// the whole tree, branches included — but the tracer consumes an event stream, not
+// a validated workflow, and dropping the branch would let one branch's span
+// overwrite another's and never be exported.
+//
+// The selected-branch value from a branch_selected event is deliberately excluded:
+// it names the branch a conditional step *chose*, not the slot the step occupies,
+// so including it made the lookup miss the open step. slotFor is used for step
+// lifecycle events, where Branch means the fan-out branch being executed.
 type stepSlot struct {
-	pos    int
-	branch string
+	pos       int
+	stepID    lebro.StepID
+	fanBranch string
+}
+
+// slotFor derives the slot a step lifecycle event addresses. On these events
+// Branch is the fan-out branch under execution, which is exactly what
+// disambiguates concurrent branches.
+func slotFor(event lebro.RunEvent) stepSlot {
+	return stepSlot{pos: event.Step, stepID: event.StepID, fanBranch: event.Branch}
+}
+
+// resolveSlot finds the open step slot an event runs inside, recovering the
+// fan-out branch the event does not report.
+//
+// Retry-attempt, model, and tool events inside a fan-out child carry no branch
+// even though the child's step span was recorded with one, so an exact slot
+// lookup misses and the operation would parent to the enclosing fan-out step
+// instead of the child. Position and StepID identify the step; the branch is
+// recovered from the open slots, and only when unambiguous — attaching to the
+// wrong concurrent branch is worse than attaching to the run.
+func (run *runTrace) resolveSlot(event lebro.RunEvent) (stepSlot, bool) {
+	exact := slotFor(event)
+	if _, ok := run.steps[exact]; ok {
+		return exact, true
+	}
+	var (
+		found stepSlot
+		count int
+	)
+	for slot := range run.steps {
+		if slot.pos != event.Step || slot.stepID != event.StepID {
+			continue
+		}
+		found = slot
+		count++
+	}
+	if count != 1 {
+		return exact, false
+	}
+	return found, true
 }
 
 // runTrace holds the in-flight spans for a single run.
@@ -140,11 +190,12 @@ type runTrace struct {
 	// tools maps an open tool span by tool-call ID. A step may request several
 	// tool calls, and the runtime may execute them in any order.
 	tools map[string]*Span
-	// steps maps an open step span by step slot, which is unique within a run
-	// even when two steps share a declared StepID, and disambiguates fan-out
-	// branches that share the same step position.
+	// steps maps an open step span by slot: position and StepID, plus the
+	// fan-out branch where one is reported. See stepSlot for why each part is
+	// needed.
 	steps map[stepSlot]*Span
-	// attempts maps an open retry-attempt span by step slot.
+	// attempts maps an open retry-attempt span by the slot of the step it
+	// retries, resolved through resolveSlot so it matches the step's own slot.
 	attempts map[stepSlot]*Span
 	// modelAttempts is the open provider-attempt span for the current model
 	// call.
@@ -288,12 +339,49 @@ func (t *Tracer) locateParent(event lebro.RunEvent) (TraceID, SpanID) {
 }
 
 // parentFor returns the span a step-scoped operation should attach to: the
-// enclosing step span when the run has one open, otherwise the run span. The
-// branch parameter disambiguates fan-out branch steps that share a step
-// position.
-func (run *runTrace) parentFor(step int, branch string) SpanID {
-	if span, ok := run.steps[stepSlot{pos: step, branch: branch}]; ok {
+// enclosing step span when the run has one open, otherwise the run span.
+func (run *runTrace) parentFor(event lebro.RunEvent) SpanID {
+	if span, ok := run.enclosingStep(event); ok {
 		return span.SpanID
+	}
+	return run.rootID
+}
+
+// openStep resolves the open step span a step lifecycle event belongs to.
+func (run *runTrace) openStep(event lebro.RunEvent) (*Span, bool) {
+	span, ok := run.steps[slotFor(event)]
+	return span, ok
+}
+
+// enclosingStep resolves the open step span a step-scoped operation runs inside.
+// The slot is recovered rather than computed, since these events do not report the
+// fan-out branch their step was opened under.
+func (run *runTrace) enclosingStep(event lebro.RunEvent) (*Span, bool) {
+	slot, ok := run.resolveSlot(event)
+	if !ok {
+		return nil, false
+	}
+	span, ok := run.steps[slot]
+	return span, ok
+}
+
+// stepParent returns the span a step should attach to: the enclosing fan-out step
+// when this is a fan-out child, otherwise the run span.
+//
+// A fan-out child is reported at the same position as the fan-out step that
+// launched it and carries the branch name, which is how the two are told apart.
+// Without this the child parented to the run root and the fan-out step's subtree
+// read as empty.
+func (t *Tracer) stepParent(run *runTrace, event lebro.RunEvent) SpanID {
+	if event.Branch == "" {
+		return run.rootID
+	}
+	// The enclosing fan-out step occupies the same position under a different
+	// step ID and no branch of its own.
+	for slot, span := range run.steps {
+		if slot.pos == event.Step && slot.fanBranch == "" && slot.stepID != event.StepID {
+			return span.SpanID
+		}
 	}
 	return run.rootID
 }
@@ -319,10 +407,9 @@ func (t *Tracer) newSpan(run *runTrace, event lebro.RunEvent, kind SpanKind, nam
 }
 
 func (t *Tracer) openStep(run *runTrace, event lebro.RunEvent) {
-	span := t.newSpan(run, event, SpanKindStep, stepName(event.StepID), run.rootID)
+	span := t.newSpan(run, event, SpanKindStep, stepName(event.StepID), t.stepParent(run, event))
 	span.setAttr(AttrStepPosition, strconv.Itoa(event.Step))
-	slot := stepSlot{pos: event.Step, branch: event.Branch}
-	run.steps[slot] = span
+	run.steps[slotFor(event)] = span
 	// Record the step span so a nested run launched from it can parent to it.
 	// The nested run reports this step by RunID, StepID, and position, so the
 	// anchor is keyed the way the child will address it.
@@ -351,16 +438,15 @@ func (t *Tracer) pruneAnchors() {
 }
 
 func (t *Tracer) closeStep(run *runTrace, event lebro.RunEvent) {
-	slot := stepSlot{pos: event.Step, branch: event.Branch}
-	span, ok := run.steps[slot]
+	span, ok := run.openStep(event)
 	if !ok {
 		// A step can finish without a started event when input validation
 		// rejects it before any attempt runs. Synthesize the span so the
 		// rejection is still traced.
-		span = t.newSpan(run, event, SpanKindStep, stepName(event.StepID), run.rootID)
+		span = t.newSpan(run, event, SpanKindStep, stepName(event.StepID), t.stepParent(run, event))
 		span.setAttr(AttrStepPosition, strconv.Itoa(event.Step))
 	}
-	delete(run.steps, slot)
+	delete(run.steps, slotFor(event))
 	// A step's own span is no longer a valid parent once it has ended, but the
 	// mapping is left in place: a nested run's events may arrive after its
 	// launching step finished, and parenting to the ended step span is still
@@ -369,25 +455,27 @@ func (t *Tracer) closeStep(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) openStepAttempt(run *runTrace, event lebro.RunEvent) {
-	span := t.newSpan(run, event, SpanKindStepAttempt, fmt.Sprintf("%s attempt %d", stepName(event.StepID), event.Attempt), run.parentFor(event.Step, event.Branch))
+	span := t.newSpan(run, event, SpanKindStepAttempt, fmt.Sprintf("%s attempt %d", stepName(event.StepID), event.Attempt), run.parentFor(event))
 	span.setAttr(AttrAttempt, strconv.Itoa(event.Attempt))
 	if event.Delay > 0 {
 		span.setAttr(AttrAttemptDelay, event.Delay.String())
 	}
-	run.attempts[stepSlot{pos: event.Step, branch: event.Branch}] = span
+	slot, _ := run.resolveSlot(event)
+	run.attempts[slot] = span
 }
 
 func (t *Tracer) closeStepAttempt(run *runTrace, event lebro.RunEvent) {
-	span, ok := run.attempts[stepSlot{pos: event.Step, branch: event.Branch}]
+	slot, _ := run.resolveSlot(event)
+	span, ok := run.attempts[slot]
 	if !ok {
 		return
 	}
-	delete(run.attempts, stepSlot{pos: event.Step, branch: event.Branch})
+	delete(run.attempts, slot)
 	t.end(span, event, statusForError(event.Error))
 }
 
 func (t *Tracer) openModel(run *runTrace, event lebro.RunEvent) {
-	run.model = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event.Step, event.Branch))
+	run.model = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event))
 	run.deltas = 0
 	run.dropped = 0
 }
@@ -395,7 +483,7 @@ func (t *Tracer) openModel(run *runTrace, event lebro.RunEvent) {
 func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 	span := run.model
 	if span == nil {
-		span = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event.Step, event.Branch))
+		span = t.newSpan(run, event, SpanKindModel, "model", run.parentFor(event))
 	}
 	run.model = nil
 	span.Usage = event.Usage
@@ -416,7 +504,7 @@ func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) openModelAttempt(run *runTrace, event lebro.RunEvent) {
-	parent := run.parentFor(event.Step, event.Branch)
+	parent := run.parentFor(event)
 	if run.model != nil {
 		parent = run.model.SpanID
 	}
@@ -439,7 +527,7 @@ func (t *Tracer) closeModelAttempt(run *runTrace, event lebro.RunEvent) {
 }
 
 func (t *Tracer) openTool(run *runTrace, event lebro.RunEvent) {
-	span := t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event.Step, event.Branch))
+	span := t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event))
 	span.setAttr(AttrToolID, string(event.ToolID))
 	if event.ToolCallID != "" {
 		span.setAttr(AttrToolCallID, event.ToolCallID)
@@ -482,7 +570,7 @@ func (t *Tracer) recordAnchorIfAbsent(event lebro.RunEvent, traceID TraceID, spa
 func (t *Tracer) closeTool(run *runTrace, event lebro.RunEvent) {
 	span, ok := run.tools[event.ToolCallID]
 	if !ok {
-		span = t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event.Step, event.Branch))
+		span = t.newSpan(run, event, SpanKindTool, toolName(event.ToolID), run.parentFor(event))
 		span.setAttr(AttrToolID, string(event.ToolID))
 		if event.ToolCallID != "" {
 			span.setAttr(AttrToolCallID, event.ToolCallID)
@@ -551,7 +639,10 @@ func (t *Tracer) recordBranch(run *runTrace, event lebro.RunEvent) {
 		branch = event.DeltaText
 	}
 	target := run.root
-	if span, ok := run.steps[stepSlot{pos: event.Step, branch: event.Branch}]; ok {
+	// Resolve by position and StepID only: event.Branch here is the branch the
+	// step *selected*, not the fan-out branch it runs in, so it must not take
+	// part in the slot lookup. enclosingStep ignores it for exactly this reason.
+	if span, ok := run.enclosingStep(event); ok {
 		target = span
 		span.setAttr(AttrBranch, branch)
 	}

@@ -3,6 +3,7 @@ package obsv_test
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,11 @@ var fixtureStart = time.Date(2024, time.March, 1, 12, 0, 0, 0, time.UTC)
 // event carries a distinct timestamp and every span gets a non-zero duration.
 // A fixed clock would make every span's duration zero, which cannot distinguish
 // a correct duration from a dropped one.
+//
+// It is mutex-guarded because the runtime reads the clock from every goroutine it
+// runs a step on: concurrent fan-out branches call Now simultaneously.
 type steppingClock struct {
+	mu      sync.Mutex
 	current time.Time
 	step    time.Duration
 }
@@ -29,6 +34,8 @@ func newSteppingClock(step time.Duration) *steppingClock {
 }
 
 func (c *steppingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.current = c.current.Add(c.step)
 	return c.current
 }

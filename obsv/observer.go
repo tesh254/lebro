@@ -122,11 +122,14 @@ type Observer struct {
 	// synchronous exports on the emitting goroutine; queue is nil.
 	synchronous bool
 
-	// traces maps a run to its trace and run root span so RecordFeedback can
-	// correlate a record from a RunID alone. Bounded by traceMemoryLimit.
+	// traces maps a run ID to every occurrence observed under it, so
+	// RecordFeedback can correlate a record from a RunID alone. One ID can name
+	// several occurrences because run IDs are not unique across primitives.
+	// traceLR orders occurrences for eviction; both are bounded by
+	// traceMemoryLimit occurrences in total.
 	traceMu sync.Mutex
-	traces  map[lebro.RunID]runTraceRef
-	traceLR []lebro.RunID
+	traces  map[lebro.RunID][]runTraceRef
+	traceLR []traceEntry
 
 	stats struct {
 		exported         atomic.Int64
@@ -147,7 +150,7 @@ type Observer struct {
 	wg        sync.WaitGroup
 }
 
-// traceMemoryLimit bounds how many run-to-trace mappings an Observer retains for
+// traceMemoryLimit bounds how many run occurrences an Observer retains for
 // feedback correlation. Feedback arrives after a run, so the mapping must
 // outlive it, but an unbounded map would grow with every run for the process's
 // lifetime.
@@ -187,7 +190,7 @@ func New(config Config) (*Observer, error) {
 		batchSize:   config.BatchSize,
 		timeout:     timeout,
 		synchronous: config.QueueSize < 0,
-		traces:      make(map[lebro.RunID]runTraceRef),
+		traces:      make(map[lebro.RunID][]runTraceRef),
 		done:        make(chan struct{}),
 	}
 
@@ -370,15 +373,7 @@ func (o *Observer) RecordFeedback(ctx context.Context, record FeedbackRecord) er
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = o.clock.Now()
 	}
-	if record.TraceID == "" || record.RunSpanID == "" {
-		ref := o.traceFor(record.RunID)
-		if record.TraceID == "" {
-			record.TraceID = ref.traceID
-		}
-		if record.RunSpanID == "" {
-			record.RunSpanID = ref.runSpanID
-		}
-	}
+	o.resolveFeedbackRef(&record)
 	record.Metadata = cloneAttributes(record.Metadata)
 
 	filtered := o.feedback(record)
@@ -492,30 +487,91 @@ type runTraceRef struct {
 	runSpanID SpanID
 }
 
+// traceEntry records one remembered occurrence in insertion order so the oldest
+// can be evicted once the bound is reached.
+type traceEntry struct {
+	runID lebro.RunID
+	ref   runTraceRef
+}
+
 // rememberTrace records a run's trace and root span for later feedback
 // correlation, evicting the oldest entry once the bound is reached.
+//
+// Every occurrence is retained, not just the first. Run IDs are not unique
+// across independently-configured primitives, so keeping only the first
+// occurrence would let RecordFeedback pair a caller's TraceID with a different
+// occurrence's run span — a combination no stored record carries, which makes the
+// record unreadable by FeedbackByRun.
 func (o *Observer) rememberTrace(runID lebro.RunID, traceID TraceID, runSpanID SpanID) {
 	if runID == "" || traceID == "" {
 		return
 	}
 	o.traceMu.Lock()
 	defer o.traceMu.Unlock()
-	if _, ok := o.traces[runID]; ok {
-		return
+	occurrences := o.traces[runID]
+	for _, ref := range occurrences {
+		if ref.traceID == traceID && ref.runSpanID == runSpanID {
+			return
+		}
 	}
 	if len(o.traceLR) >= traceMemoryLimit {
 		oldest := o.traceLR[0]
 		o.traceLR = o.traceLR[1:]
-		delete(o.traces, oldest)
+		if remaining := o.traces[oldest.runID]; len(remaining) > 0 {
+			pruned := make([]runTraceRef, 0, len(remaining))
+			for _, ref := range remaining {
+				if ref != oldest.ref {
+					pruned = append(pruned, ref)
+				}
+			}
+			if len(pruned) == 0 {
+				delete(o.traces, oldest.runID)
+			} else {
+				o.traces[oldest.runID] = pruned
+			}
+		}
 	}
-	o.traces[runID] = runTraceRef{traceID: traceID, runSpanID: runSpanID}
-	o.traceLR = append(o.traceLR, runID)
+	ref := runTraceRef{traceID: traceID, runSpanID: runSpanID}
+	o.traces[runID] = append(occurrences, ref)
+	o.traceLR = append(o.traceLR, traceEntry{runID: runID, ref: ref})
 }
 
-func (o *Observer) traceFor(runID lebro.RunID) runTraceRef {
+// resolveFeedbackRef fills a record's missing trace or run-span identifier from
+// the Observer's history of the run.
+//
+// It only fills from an occurrence consistent with what the caller already
+// supplied: a record naming one occurrence's TraceID must not receive another
+// occurrence's run span. When the RunID alone is ambiguous — several occurrences
+// and nothing to choose between them — the record is left unqualified rather than
+// guessing, since a wrong pairing is unreadable while a missing span ID still
+// matches on trace and run.
+func (o *Observer) resolveFeedbackRef(record *FeedbackRecord) {
+	if record.TraceID != "" && record.RunSpanID != "" {
+		return
+	}
 	o.traceMu.Lock()
-	defer o.traceMu.Unlock()
-	return o.traces[runID]
+	occurrences := append([]runTraceRef(nil), o.traces[record.RunID]...)
+	o.traceMu.Unlock()
+
+	var matches []runTraceRef
+	for _, ref := range occurrences {
+		if record.TraceID != "" && ref.traceID != record.TraceID {
+			continue
+		}
+		if record.RunSpanID != "" && ref.runSpanID != record.RunSpanID {
+			continue
+		}
+		matches = append(matches, ref)
+	}
+	if len(matches) != 1 {
+		return
+	}
+	if record.TraceID == "" {
+		record.TraceID = matches[0].traceID
+	}
+	if record.RunSpanID == "" {
+		record.RunSpanID = matches[0].runSpanID
+	}
 }
 
 // systemClock reads the wall clock. It mirrors the runtime's default so an
