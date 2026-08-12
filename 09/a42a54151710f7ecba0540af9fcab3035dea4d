@@ -1,0 +1,32 @@
+internal/runtime/authz_agent_test.go
+  s_204f4a1293da0e::t_3705ab1528a187 130-190
+internal/runtime/storage_guard_test.go
+  s_204f4a1293da0e::t_9e6b1328ca7fb0 103-141
+internal/runtime/tool.go
+  s_204f4a1293da0e::t_15d7aa5948fb85 49-51
+internal/runtime/storage_guard.go
+  s_204f4a1293da0e::t_22c82d9814cdac 145-157
+  s_204f4a1293da0e::t_8bc7f64b3fe149 108-113
+  s_204f4a1293da0e::t_78e32a5ff9d8df 127-133
+internal/runtime/agent.go
+  s_204f4a1293da0e::t_692e831149e3a3 355
+  s_204f4a1293da0e::t_82f8db3e596757 610
+internal/runtime/workflow.go
+  s_204f4a1293da0e::t_8a2bb3474be66b 1114-1122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "09a42a54151710f7ecba0540af9fcab3035dea4d",
+  "prompts": {},
+  "sessions": {
+    "s_204f4a1293da0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "05389972-3cd6-4fd9-a6b7-2431dadb6ebf",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
