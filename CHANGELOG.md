@@ -6,6 +6,33 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Human approval gates for protected workflow steps. A new `ApprovalGate`,
+  built with `NewApprovalGate`, wraps a protected `StepHandler` (typically a
+  `ToolStep`) in two generated steps: a request step that suspends the run with
+  a typed `ApprovalRequest` (action, resource, reason, expiry, and the reviewed
+  arguments) and a guard step that resumes only with an `ApprovalDecision` and
+  invokes the protected handler solely on approval. The gate reuses the existing
+  durable suspend/resume machinery — the request is the suspend payload and the
+  decision is the resume input — so a pending approval survives a process
+  restart, and reject, approve, timeout, and invalid-decision outcomes are all
+  recorded through the existing run events. The guard loads the authoritative
+  request from the durable snapshot and requires the decision to echo it exactly,
+  so an approved resume cannot execute arguments the approver never reviewed; the
+  decision is validated against the requirement's `DecisionSchema` (compiled by
+  the workflow's `SchemaCompiler`) before any protected work runs. Expiry is
+  enforced deterministically at resume by comparing the decision against the
+  request's TTL-derived `ExpiresAt` (a zero TTL never expires) and is evaluated
+  before the approval outcome, so a late decision is always a timeout; no
+  background timer is introduced. A denial fails the run with
+  `ErrApprovalRejected`, a late decision with `ErrApprovalExpired`, and an
+  unusable, schema-invalid, or tampered decision with
+  `ErrApprovalInvalidDecision`. To let a step suspend for free-form input like an
+  approval decision, the workflow executor now treats an empty suspend contract
+  as "no pinned resume value" and validates only the resume input against the
+  `SuspendSchema`; every existing caller publishes a non-empty contract and is
+  unaffected. The public surface adds `ApprovalGate`, `NewApprovalGate`,
+  `ApprovalRequest`, `ApprovalDecision`, `ApprovalRequirement`, and the three
+  sentinels; no new module dependency is introduced.
 - Durable schedules and recurring workflow runs. A new `Scheduler` fires
   persisted schedules whose next fire time has arrived, reusing
   `LinearWorkflow.Run` for each execution, so recurring work survives a process

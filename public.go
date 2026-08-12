@@ -100,6 +100,10 @@ type (
 	SuspendError                = runtime.SuspendError
 	SuspendResult               = runtime.SuspendResult
 	WorkflowResumeInput         = runtime.WorkflowResumeInput
+	ApprovalRequest             = runtime.ApprovalRequest
+	ApprovalDecision            = runtime.ApprovalDecision
+	ApprovalRequirement         = runtime.ApprovalRequirement
+	ApprovalGate                = runtime.ApprovalGate
 	RetryPolicy                 = runtime.RetryPolicy
 	RetryablePredicate          = runtime.RetryablePredicate
 	PageRequest                 = runtime.PageRequest
@@ -372,6 +376,10 @@ var (
 	ErrInvalidResumeInput          = runtime.ErrInvalidResumeInput
 	ErrWorkflowResumeRequiresStore = runtime.ErrWorkflowResumeRequiresStore
 
+	ErrApprovalRejected        = runtime.ErrApprovalRejected
+	ErrApprovalExpired         = runtime.ErrApprovalExpired
+	ErrApprovalInvalidDecision = runtime.ErrApprovalInvalidDecision
+
 	ErrWorkflowNoBranchMatched         = runtime.ErrWorkflowNoBranchMatched
 	ErrWorkflowBranchConditionFailed   = runtime.ErrWorkflowBranchConditionFailed
 	ErrWorkflowInvalidBranchInput      = runtime.ErrWorkflowInvalidBranchInput
@@ -421,6 +429,10 @@ func NewSubagent(config SubagentConfig) (*Subagent, error) {
 }
 
 func NewToolStep(tool *RegisteredTool) (*ToolStep, error) { return runtime.NewToolStep(tool) }
+
+func NewApprovalGate(requestID, guardID StepID, inner StepHandler, req ApprovalRequirement, compiler SchemaCompiler, store Store, clock Clock) (ApprovalGate, error) {
+	return runtime.NewApprovalGate(requestID, guardID, inner, req, compiler, store, clock)
+}
 
 func ToolMetadataFromContext(ctx context.Context) map[string]string {
 	return runtime.ToolMetadataFromContext(ctx)
