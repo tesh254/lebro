@@ -229,8 +229,18 @@ func TestRedactAttributesRemovesNamedKeys(t *testing.T) {
 	if got := filtered.Attributes[obsv.AttrToolState]; got != "succeeded" {
 		t.Errorf("RedactAttributes dropped an unnamed key; tool state = %q", got)
 	}
-	if got := obsv.RedactAttributes()(span.Clone()); got.Attributes[obsv.AttrToolID] != "lookup" {
-		t.Error("RedactAttributes() with no keys should be a passthrough")
+	redacted := obsv.RedactAttributes()(obsv.Span{
+		SpanID: "span-2",
+		Attributes: map[string]string{
+			obsv.AttrToolID:             "lookup",
+			obsv.AttrSensitiveDeltaText: secretPayload,
+		},
+	})
+	if got := redacted.Attributes[obsv.AttrToolID]; got != "lookup" {
+		t.Errorf("RedactAttributes() dropped non-sensitive key = %q", got)
+	}
+	if _, ok := redacted.Attributes[obsv.AttrSensitiveDeltaText]; ok {
+		t.Error("RedactAttributes() exported sensitive data without DefaultFilter")
 	}
 }
 

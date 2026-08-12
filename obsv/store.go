@@ -23,19 +23,20 @@ type Repository interface {
 	AppendFeedback(ctx context.Context, records []FeedbackRecord) error
 	// SpansByTrace returns every stored span for a trace, in insertion order.
 	SpansByTrace(ctx context.Context, traceID TraceID) ([]Span, error)
-	// SpansByRun returns every stored span for a run, in insertion order. A run
-	// span and its descendants share a RunID only within that run: a nested run
-	// has its own, so this returns one run's spans rather than a whole trace.
-	SpansByRun(ctx context.Context, runID lebro.RunID) ([]Span, error)
-	// FeedbackByRun returns every stored feedback record for a run.
-	FeedbackByRun(ctx context.Context, runID lebro.RunID) ([]FeedbackRecord, error)
+	// SpansByRun returns every stored span for one run occurrence, in insertion
+	// order. Run IDs can collide across independently configured primitives, so
+	// TraceID is required alongside RunID.
+	SpansByRun(ctx context.Context, traceID TraceID, runID lebro.RunID) ([]Span, error)
+	// FeedbackByRun returns every stored feedback record for one run occurrence.
+	FeedbackByRun(ctx context.Context, traceID TraceID, runID lebro.RunID) ([]FeedbackRecord, error)
 }
 
 // MemoryRepository is an in-memory Repository. It requires no database, making
 // it suitable for tests, local development, and single-process deployments that
 // only need recent history. It is safe for concurrent use.
 //
-// The zero value is not usable; construct one with NewMemoryRepository.
+// Its zero value is ready for use. NewMemoryRepository is a convenience for
+// callers who prefer an explicit constructor.
 type MemoryRepository struct {
 	mu       sync.RWMutex
 	spans    []Span
@@ -101,7 +102,7 @@ func (r *MemoryRepository) SpansByTrace(_ context.Context, traceID TraceID) ([]S
 }
 
 // SpansByRun returns caller-owned copies of the run's spans.
-func (r *MemoryRepository) SpansByRun(_ context.Context, runID lebro.RunID) ([]Span, error) {
+func (r *MemoryRepository) SpansByRun(_ context.Context, traceID TraceID, runID lebro.RunID) ([]Span, error) {
 	if r == nil {
 		return nil, nil
 	}
@@ -109,7 +110,7 @@ func (r *MemoryRepository) SpansByRun(_ context.Context, runID lebro.RunID) ([]S
 	defer r.mu.RUnlock()
 	var matched []Span
 	for _, span := range r.spans {
-		if span.RunID == runID {
+		if span.TraceID == traceID && span.RunID == runID {
 			matched = append(matched, span.Clone())
 		}
 	}
@@ -117,7 +118,7 @@ func (r *MemoryRepository) SpansByRun(_ context.Context, runID lebro.RunID) ([]S
 }
 
 // FeedbackByRun returns caller-owned copies of the run's feedback records.
-func (r *MemoryRepository) FeedbackByRun(_ context.Context, runID lebro.RunID) ([]FeedbackRecord, error) {
+func (r *MemoryRepository) FeedbackByRun(_ context.Context, traceID TraceID, runID lebro.RunID) ([]FeedbackRecord, error) {
 	if r == nil {
 		return nil, nil
 	}
@@ -125,7 +126,7 @@ func (r *MemoryRepository) FeedbackByRun(_ context.Context, runID lebro.RunID) (
 	defer r.mu.RUnlock()
 	var matched []FeedbackRecord
 	for _, record := range r.feedback {
-		if record.RunID == runID {
+		if record.TraceID == traceID && record.RunID == runID {
 			matched = append(matched, record.Clone())
 		}
 	}

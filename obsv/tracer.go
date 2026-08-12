@@ -420,6 +420,17 @@ func (t *Tracer) openTool(run *runTrace, event lebro.RunEvent) {
 		span.setAttr(AttrToolCallID, event.ToolCallID)
 	}
 	run.tools[event.ToolCallID] = span
+	// A subagent starts inside its tool handler. Agent loops do not emit
+	// workflow step events, so this tool span is child run's concrete parent.
+	t.recordAnchor(event, run.traceID, span.SpanID)
+}
+
+func (t *Tracer) recordAnchor(event lebro.RunEvent, traceID TraceID, spanID SpanID) {
+	key := stepKey{run: event.RunID, step: event.StepID, pos: event.Step}
+	if _, exists := t.stepTraces[key]; !exists {
+		t.anchorOrder = append(t.anchorOrder, key)
+	}
+	t.stepTraces[key] = stepAnchor{trace: traceID, span: spanID}
 }
 
 func (t *Tracer) closeTool(run *runTrace, event lebro.RunEvent) {

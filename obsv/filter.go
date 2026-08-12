@@ -98,13 +98,14 @@ func ChainFilters(filters ...Filter) Filter {
 // a span and its events, on top of DefaultFilter's sensitive-prefix handling.
 func RedactAttributes(keys ...string) Filter {
 	if len(keys) == 0 {
-		return PassthroughFilter
+		return DefaultFilter
 	}
 	targets := make(map[string]struct{}, len(keys))
 	for _, key := range keys {
 		targets[key] = struct{}{}
 	}
 	return func(span Span) Span {
+		span = DefaultFilter(span)
 		span.Attributes = dropKeys(span.Attributes, targets)
 		for i := range span.Events {
 			span.Events[i].Attributes = dropKeys(span.Events[i].Attributes, targets)

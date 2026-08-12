@@ -204,6 +204,35 @@ func TestMetricsRecordFailureStatus(t *testing.T) {
 	}
 }
 
+func TestMetricsIncludeRetryAndFallbackSpans(t *testing.T) {
+	metrics := obsv.NewMemoryMetricExporter()
+	observer := newObserver(t, synchronousConfig(obsv.Config{Metrics: metrics}))
+	start := fixtureStart
+	for _, event := range []lebro.RunEvent{
+		{Type: lebro.RunEventStarted, RunID: "run-1", Timestamp: start},
+		{Type: lebro.RunEventStepStarted, RunID: "run-1", StepID: "step-1", Step: 1, Timestamp: start.Add(time.Millisecond)},
+		{Type: lebro.RunEventStepAttemptStarted, RunID: "run-1", StepID: "step-1", Step: 1, Attempt: 2, Timestamp: start.Add(2 * time.Millisecond)},
+		{Type: lebro.RunEventStepAttemptFinished, RunID: "run-1", StepID: "step-1", Step: 1, Attempt: 2, Timestamp: start.Add(3 * time.Millisecond), Duration: time.Millisecond},
+		{Type: lebro.RunEventModelStarted, RunID: "run-1", StepID: "step-1", Step: 1, Timestamp: start.Add(4 * time.Millisecond)},
+		{Type: lebro.RunEventModelAttemptStarted, RunID: "run-1", StepID: "step-1", Step: 1, Timestamp: start.Add(5 * time.Millisecond)},
+		{Type: lebro.RunEventModelAttemptFinished, RunID: "run-1", StepID: "step-1", Step: 1, Timestamp: start.Add(6 * time.Millisecond), Duration: time.Millisecond},
+		{Type: lebro.RunEventModelFinished, RunID: "run-1", StepID: "step-1", Step: 1, Timestamp: start.Add(7 * time.Millisecond), Duration: 3 * time.Millisecond},
+		{Type: lebro.RunEventStepFinished, RunID: "run-1", StepID: "step-1", Step: 1, Timestamp: start.Add(8 * time.Millisecond), Duration: 7 * time.Millisecond},
+		{Type: lebro.RunEventSucceeded, RunID: "run-1", Timestamp: start.Add(9 * time.Millisecond)},
+	} {
+		observer.OnRunEvent(event)
+	}
+	seen := make(map[string]bool)
+	for _, metric := range metrics.Metrics() {
+		seen[metric.Name] = true
+	}
+	for _, name := range []string{obsv.MetricStepAttemptDuration, obsv.MetricStepAttemptOutcome, obsv.MetricModelAttemptDuration, obsv.MetricModelAttemptOutcome} {
+		if !seen[name] {
+			t.Errorf("missing %s for ended retry or fallback span", name)
+		}
+	}
+}
+
 func sumMetric(metrics []obsv.Metric, name string) int64 {
 	var total int64
 	for _, metric := range metrics {

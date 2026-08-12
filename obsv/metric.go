@@ -22,19 +22,23 @@ const (
 // Metric names emitted for every ended span. Names are stable so a dashboard
 // built against them keeps working.
 const (
-	MetricRunDuration    = "lebro.run.duration"
-	MetricStepDuration   = "lebro.step.duration"
-	MetricModelDuration  = "lebro.model.duration"
-	MetricToolDuration   = "lebro.tool.duration"
-	MetricInputTokens    = "lebro.model.input_tokens"
-	MetricOutputTokens   = "lebro.model.output_tokens"
-	MetricTotalTokens    = "lebro.model.total_tokens"
-	MetricRunOutcome     = "lebro.run.outcome"
-	MetricStepOutcome    = "lebro.step.outcome"
-	MetricToolOutcome    = "lebro.tool.outcome"
-	MetricModelOutcome   = "lebro.model.outcome"
-	MetricSpansDropped   = "lebro.export.spans_dropped"
-	MetricExportFailures = "lebro.export.failures"
+	MetricRunDuration          = "lebro.run.duration"
+	MetricStepDuration         = "lebro.step.duration"
+	MetricStepAttemptDuration  = "lebro.step_attempt.duration"
+	MetricModelDuration        = "lebro.model.duration"
+	MetricModelAttemptDuration = "lebro.model_attempt.duration"
+	MetricToolDuration         = "lebro.tool.duration"
+	MetricInputTokens          = "lebro.model.input_tokens"
+	MetricOutputTokens         = "lebro.model.output_tokens"
+	MetricTotalTokens          = "lebro.model.total_tokens"
+	MetricRunOutcome           = "lebro.run.outcome"
+	MetricStepOutcome          = "lebro.step.outcome"
+	MetricStepAttemptOutcome   = "lebro.step_attempt.outcome"
+	MetricToolOutcome          = "lebro.tool.outcome"
+	MetricModelOutcome         = "lebro.model.outcome"
+	MetricModelAttemptOutcome  = "lebro.model_attempt.outcome"
+	MetricSpansDropped         = "lebro.export.spans_dropped"
+	MetricExportFailures       = "lebro.export.failures"
 )
 
 // Metric labels. Labels come from filtered span attributes, so no payload data
@@ -139,8 +143,12 @@ func durationMetricName(kind SpanKind) (string, bool) {
 		return MetricRunDuration, true
 	case SpanKindStep:
 		return MetricStepDuration, true
+	case SpanKindStepAttempt:
+		return MetricStepAttemptDuration, true
 	case SpanKindModel:
 		return MetricModelDuration, true
+	case SpanKindModelAttempt:
+		return MetricModelAttemptDuration, true
 	case SpanKindTool:
 		return MetricToolDuration, true
 	default:
@@ -154,8 +162,12 @@ func outcomeMetricName(kind SpanKind) (string, bool) {
 		return MetricRunOutcome, true
 	case SpanKindStep:
 		return MetricStepOutcome, true
+	case SpanKindStepAttempt:
+		return MetricStepAttemptOutcome, true
 	case SpanKindModel:
 		return MetricModelOutcome, true
+	case SpanKindModelAttempt:
+		return MetricModelAttemptOutcome, true
 	case SpanKindTool:
 		return MetricToolOutcome, true
 	default:

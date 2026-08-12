@@ -412,6 +412,49 @@ func TestTracerBoundsStreamingDeltaEvents(t *testing.T) {
 	}
 }
 
+func TestObserverCorrelatesDelegatedAgentWithToolSpan(t *testing.T) {
+	exporter := obsv.NewMemorySpanExporter()
+	observer := newObserver(t, synchronousConfig(obsv.Config{Spans: exporter}))
+	child, err := lebro.NewAgent(lebro.AgentConfig{
+		Definition: lebro.AgentDefinition{ID: "child", Model: "fixture"},
+		Model:      testkit.NewModel(testkit.Text("child result")),
+		Listener:   observer,
+		Clock:      newSteppingClock(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("NewAgent(child) error = %v", err)
+	}
+	subagent, err := lebro.NewSubagent(lebro.SubagentConfig{ID: "delegate", Agent: child})
+	if err != nil {
+		t.Fatalf("NewSubagent() error = %v", err)
+	}
+	registry := newRegistry(t, subagent)
+	supervisor, err := lebro.NewAgent(lebro.AgentConfig{
+		Definition: lebro.AgentDefinition{ID: "supervisor", Model: "fixture", Tools: []lebro.ToolID{"delegate"}},
+		Model: testkit.NewModel(
+			testkit.ToolCallResponse(testkit.ToolCall{ID: "delegate-1", ToolID: "delegate", Arguments: json.RawMessage(`{"task":"research"}`)}),
+			testkit.Text("complete"),
+		),
+		Tools: registry, Listener: observer, Clock: newSteppingClock(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("NewAgent(supervisor) error = %v", err)
+	}
+	if _, err := supervisor.Run(context.Background(), lebro.RunInput{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "delegate"}}}); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	spans := exporter.Spans()
+	tool := findSpan(t, spans, "delegation tool", func(span obsv.Span) bool {
+		return span.Kind == obsv.SpanKindTool && span.Attributes[obsv.AttrToolID] == "delegate"
+	})
+	childRun := findSpan(t, spans, "delegated child run", func(span obsv.Span) bool {
+		return span.Kind == obsv.SpanKindRun && span.ParentSpanID == tool.SpanID
+	})
+	if childRun.TraceID != tool.TraceID {
+		t.Errorf("delegated run trace = %q, tool trace = %q", childRun.TraceID, tool.TraceID)
+	}
+}
+
 func containsKinds(chain []obsv.SpanKind, want ...obsv.SpanKind) bool {
 	present := make(map[obsv.SpanKind]bool, len(chain))
 	for _, kind := range chain {

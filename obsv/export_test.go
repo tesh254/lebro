@@ -419,10 +419,10 @@ func (r failingRepository) AppendFeedback(context.Context, []obsv.FeedbackRecord
 func (r failingRepository) SpansByTrace(context.Context, obsv.TraceID) ([]obsv.Span, error) {
 	return nil, r.err
 }
-func (r failingRepository) SpansByRun(context.Context, lebro.RunID) ([]obsv.Span, error) {
+func (r failingRepository) SpansByRun(context.Context, obsv.TraceID, lebro.RunID) ([]obsv.Span, error) {
 	return nil, r.err
 }
-func (r failingRepository) FeedbackByRun(context.Context, lebro.RunID) ([]obsv.FeedbackRecord, error) {
+func (r failingRepository) FeedbackByRun(context.Context, obsv.TraceID, lebro.RunID) ([]obsv.FeedbackRecord, error) {
 	return nil, r.err
 }
 
@@ -446,9 +446,9 @@ func (r spanOnlyRepository) AppendFeedback(context.Context, []obsv.FeedbackRecor
 func (r spanOnlyRepository) SpansByTrace(context.Context, obsv.TraceID) ([]obsv.Span, error) {
 	return nil, nil
 }
-func (r spanOnlyRepository) SpansByRun(context.Context, lebro.RunID) ([]obsv.Span, error) {
+func (r spanOnlyRepository) SpansByRun(context.Context, obsv.TraceID, lebro.RunID) ([]obsv.Span, error) {
 	return nil, nil
 }
-func (r spanOnlyRepository) FeedbackByRun(context.Context, lebro.RunID) ([]obsv.FeedbackRecord, error) {
+func (r spanOnlyRepository) FeedbackByRun(context.Context, obsv.TraceID, lebro.RunID) ([]obsv.FeedbackRecord, error) {
 	return nil, nil
 }

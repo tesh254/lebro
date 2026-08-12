@@ -75,7 +75,8 @@ type Config struct {
 type Stats struct {
 	// SpansExported counts spans handed to at least one exporter or repository.
 	SpansExported int64
-	// SpansDropped counts spans discarded because the queue was full.
+	// SpansDropped counts spans discarded because the queue was full or the
+	// observer was already closed.
 	SpansDropped int64
 	// SpansFiltered counts spans suppressed by a Filter.
 	SpansFiltered int64
@@ -84,6 +85,8 @@ type Stats struct {
 	// FeedbackExported counts feedback records handed to an exporter or
 	// repository.
 	FeedbackExported int64
+	// FeedbackFiltered counts feedback records suppressed by a FeedbackFilter.
+	FeedbackFiltered int64
 }
 
 // Observer converts run lifecycle events into filtered, exported observability
@@ -126,12 +129,18 @@ type Observer struct {
 	traceLR []lebro.RunID
 
 	stats struct {
-		exported  atomic.Int64
-		dropped   atomic.Int64
-		filtered  atomic.Int64
-		failures  atomic.Int64
-		feedbacks atomic.Int64
+		exported         atomic.Int64
+		dropped          atomic.Int64
+		filtered         atomic.Int64
+		failures         atomic.Int64
+		feedbacks        atomic.Int64
+		feedbackFiltered atomic.Int64
+		droppedReported  atomic.Int64
+		failuresReported atomic.Int64
 	}
+
+	emissionMu sync.Mutex
+	closed     bool
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -229,7 +238,14 @@ func (o *Observer) onSpanEnd(span Span) {
 		return
 	}
 
+	o.emissionMu.Lock()
+	if o.closed {
+		o.emissionMu.Unlock()
+		o.stats.dropped.Add(1)
+		return
+	}
 	if o.synchronous {
+		o.emissionMu.Unlock()
 		o.export([]Span{filtered})
 		return
 	}
@@ -241,6 +257,7 @@ func (o *Observer) onSpanEnd(span Span) {
 		// metric make the loss visible.
 		o.stats.dropped.Add(1)
 	}
+	o.emissionMu.Unlock()
 }
 
 // drain exports queued spans until Close. It batches whatever is already
@@ -288,16 +305,16 @@ func (o *Observer) export(spans []Span) {
 	if len(spans) == 0 {
 		return
 	}
+	if o.spans == nil && o.logs == nil && o.metrics == nil && o.repository == nil {
+		return
+	}
 	o.stats.exported.Add(int64(len(spans)))
 
-	ctx, cancel := o.exportContext()
-	defer cancel()
-
 	if o.spans != nil {
-		o.call("spans", func() error { return o.spans.ExportSpans(ctx, cloneSpans(spans)) })
+		o.exportCall("spans", context.Background(), func(ctx context.Context) error { return o.spans.ExportSpans(ctx, cloneSpans(spans)) })
 	}
 	if o.repository != nil {
-		o.call("repository spans", func() error { return o.repository.AppendSpans(ctx, cloneSpans(spans)) })
+		o.exportCall("repository spans", context.Background(), func(ctx context.Context) error { return o.repository.AppendSpans(ctx, cloneSpans(spans)) })
 	}
 	if o.logs != nil || o.repository != nil {
 		records := make([]LogRecord, 0, len(spans))
@@ -305,10 +322,10 @@ func (o *Observer) export(spans []Span) {
 			records = append(records, logForSpan(span))
 		}
 		if o.logs != nil {
-			o.call("logs", func() error { return o.logs.ExportLogs(ctx, cloneLogRecords(records)) })
+			o.exportCall("logs", context.Background(), func(ctx context.Context) error { return o.logs.ExportLogs(ctx, cloneLogRecords(records)) })
 		}
 		if o.repository != nil {
-			o.call("repository logs", func() error { return o.repository.AppendLogs(ctx, cloneLogRecords(records)) })
+			o.exportCall("repository logs", context.Background(), func(ctx context.Context) error { return o.repository.AppendLogs(ctx, cloneLogRecords(records)) })
 		}
 	}
 	if o.metrics != nil {
@@ -316,7 +333,7 @@ func (o *Observer) export(spans []Span) {
 		for _, span := range spans {
 			metrics = append(metrics, metricsForSpan(span)...)
 		}
-		if dropped := o.stats.dropped.Load(); dropped > 0 {
+		if dropped := o.counterDelta(&o.stats.dropped, &o.stats.droppedReported); dropped > 0 {
 			metrics = append(metrics, Metric{
 				Name:      MetricSpansDropped,
 				Kind:      MetricKindCounter,
@@ -324,8 +341,11 @@ func (o *Observer) export(spans []Span) {
 				Timestamp: o.clock.Now(),
 			})
 		}
+		if failures := o.counterDelta(&o.stats.failures, &o.stats.failuresReported); failures > 0 {
+			metrics = append(metrics, Metric{Name: MetricExportFailures, Kind: MetricKindCounter, Value: failures, Timestamp: o.clock.Now()})
+		}
 		if len(metrics) > 0 {
-			o.call("metrics", func() error { return o.metrics.ExportMetrics(ctx, cloneMetrics(metrics)) })
+			o.exportCall("metrics", context.Background(), func(ctx context.Context) error { return o.metrics.ExportMetrics(ctx, cloneMetrics(metrics)) })
 		}
 	}
 }
@@ -357,7 +377,10 @@ func (o *Observer) RecordFeedback(ctx context.Context, record FeedbackRecord) er
 
 	filtered := o.feedback(record)
 	if filtered.RunID == "" {
-		o.stats.filtered.Add(1)
+		o.stats.feedbackFiltered.Add(1)
+		return nil
+	}
+	if o.feedbackEx == nil && o.repository == nil {
 		return nil
 	}
 	o.stats.feedbacks.Add(1)
@@ -365,16 +388,13 @@ func (o *Observer) RecordFeedback(ctx context.Context, record FeedbackRecord) er
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	exportCtx, cancel := o.exportContextFrom(ctx)
-	defer cancel()
-
 	if o.feedbackEx != nil {
-		o.call("feedback", func() error {
+		o.exportCall("feedback", ctx, func(exportCtx context.Context) error {
 			return o.feedbackEx.ExportFeedback(exportCtx, []FeedbackRecord{filtered.Clone()})
 		})
 	}
 	if o.repository != nil {
-		o.call("repository feedback", func() error {
+		o.exportCall("repository feedback", ctx, func(exportCtx context.Context) error {
 			return o.repository.AppendFeedback(exportCtx, []FeedbackRecord{filtered.Clone()})
 		})
 	}
@@ -392,6 +412,7 @@ func (o *Observer) Stats() Stats {
 		SpansFiltered:    o.stats.filtered.Load(),
 		ExportFailures:   o.stats.failures.Load(),
 		FeedbackExported: o.stats.feedbacks.Load(),
+		FeedbackFiltered: o.stats.feedbackFiltered.Load(),
 	}
 }
 
@@ -403,7 +424,10 @@ func (o *Observer) Close() error {
 		return nil
 	}
 	o.closeOnce.Do(func() {
+		o.emissionMu.Lock()
+		o.closed = true
 		close(o.done)
+		o.emissionMu.Unlock()
 		o.wg.Wait()
 	})
 	return nil
@@ -427,6 +451,17 @@ func (o *Observer) call(name string, export func() error) {
 	o.report(fmt.Errorf("lebro/obsv: %s export failed: %w", name, err))
 }
 
+func (o *Observer) exportCall(name string, parent context.Context, export func(context.Context) error) {
+	ctx, cancel := o.exportContextFrom(parent)
+	defer cancel()
+	o.call(name, func() error { return export(ctx) })
+}
+
+func (o *Observer) counterDelta(counter, reported *atomic.Int64) int64 {
+	current := counter.Load()
+	return current - reported.Swap(current)
+}
+
 // report hands an error to the ErrorHandler, containing a panic from the handler
 // itself so a faulty handler cannot escalate an export failure.
 func (o *Observer) report(err error) {
@@ -435,10 +470,6 @@ func (o *Observer) report(err error) {
 	}
 	defer func() { _ = recover() }()
 	o.onError(err)
-}
-
-func (o *Observer) exportContext() (context.Context, context.CancelFunc) {
-	return o.exportContextFrom(context.Background())
 }
 
 func (o *Observer) exportContextFrom(parent context.Context) (context.Context, context.CancelFunc) {
