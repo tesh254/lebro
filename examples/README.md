@@ -109,6 +109,15 @@ in-memory transport, so no network or API key is required):
 go run ./examples/mcp-client
 ```
 
+Run the HTTP server example (serves an agent, a workflow, and durable threads
+over HTTP, streams a run as Server-Sent Events, and prints the generated
+OpenAPI contract; the server runs in-process through `httptest` on an ephemeral
+loopback port, so no fixed port and no API key are required):
+
+```sh
+go run ./examples/http-server
+```
+
 Run the supervised delegation example (a supervisor agent selects a named
 subagent and delegates a focused task to it; no network or API key required):
 

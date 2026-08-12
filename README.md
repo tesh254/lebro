@@ -18,6 +18,7 @@ using `lebro.Message`, `lebro.NewToolRegistry`, and `lebro.NewMemoryStore`.
 lebro/                   public API façade and module documentation
 internal/runtime/        model, tools, schema, workflow, storage, vector, and RAG runtime
 jsonschema/              optional JSON Schema compiler implementation
+httpapi/                 optional HTTP server and generated OpenAPI contract
 internal/testkit/        deterministic provider fixtures and contract suites for tests
 examples/                runnable feature-focused examples
 docs/                    installation and release guides
@@ -1039,6 +1040,83 @@ Run the streaming example (no network or API key required):
 
 ```sh
 go run ./examples/streaming
+```
+
+## Embeddable HTTP server and OpenAPI contract
+
+`httpapi` serves registered agents and workflows over HTTP and publishes the
+resulting contract as an OpenAPI 3.1 document. It is optional and depends only
+on the standard library, so an application that does not serve HTTP never
+compiles it in — and one that does gains no third-party dependency.
+
+Only explicitly registered primitives are routable. `NewServer` returns a server
+with no agents and no workflows; each is registered with `ExposeAgent` or
+`ExposeWorkflow`, so a primitive that was not registered cannot be reached by
+guessing an identifier.
+
+```go
+server := httpapi.NewServer(httpapi.ServerConfig{
+    Title:   "my-app",
+    Version: "1.0.0",
+    Store:   store, // optional: enables thread routes and thread-bound runs
+})
+_ = server.ExposeAgent(agent)
+_ = server.ExposeWorkflow(workflow)
+
+_ = http.ListenAndServe(":8080", server.Handler())
+```
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Readiness and exposed primitive counts |
+| `GET /agents`, `GET /workflows` | Enumerate what is exposed |
+| `POST /agents/{id}/runs` | Run an agent to completion |
+| `POST /agents/{id}/runs/stream` | Run an agent, streaming Server-Sent Events |
+| `POST /workflows/{id}/runs` | Run a workflow to completion |
+| `GET /threads/{id}`, `GET /threads/{id}/messages` | Read durable conversations |
+| `GET /openapi.json` | The generated contract |
+
+Requests supply user text only. Message roles are fixed server-side, so a client
+cannot inject a system prompt or forge an assistant turn: the agent's configured
+instructions remain the only system message. Thread identifiers come from the
+path or the `thread_id` query parameter, never from a request body, so one
+caller cannot address another's conversation by naming it in a payload.
+
+Failures are reported as stable `ErrorCode` values derived from the runtime's
+normalized error kinds — `provider_failure` (502), `invalid_input` (400),
+`step_limit_exhausted` (502), `cancelled` (499), and so on — with a fixed public
+message. Internal error text never reaches the response body.
+
+The stream route emits Server-Sent Events whose names reuse the `RunEventType`
+vocabulary, and always terminates with exactly one terminal event, so a client
+can distinguish a completed run from a dropped connection. The terminal event
+carries the run's total token usage, summed across every model call. Closing the
+connection cancels the run.
+
+A request to a route that exists but not for that method is answered `405` with
+an `Allow` header, rather than a `404` that would suggest the resource does not
+exist. `HEAD` is served for every `GET` route.
+
+Streamed deltas pass through a `Redactor` first. A nil `Redactor` selects
+`DefaultRedactor`, which strips model-supplied tool-call arguments while passing
+assistant text and structured output through — a zero-valued configuration
+streams less rather than more. `PassthroughRedactor` opts out deliberately.
+
+Authentication is deliberately absent: `ServerConfig.Middleware` wraps the
+router, and the package stays neutral about the scheme. Workflow resume is not
+exposed, matching the MCP server, because no durable atomic resume claim exists
+yet.
+
+`Server.OpenAPI` generates the document from the same route table that builds
+the router, so a served route cannot be missing from it. Exposed agents and
+workflows are named in their operations' descriptions, and each workflow's
+declared input schema is embedded in its request body, so the published contract
+is as precise as the runtime validation.
+
+Run the HTTP server example (no network or API key required):
+
+```sh
+go run ./examples/http-server
 ```
 
 ## Examples
