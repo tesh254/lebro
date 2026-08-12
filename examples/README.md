@@ -115,3 +115,11 @@ subagent and delegates a focused task to it; no network or API key required):
 ```sh
 go run ./examples/supervised-delegation
 ```
+
+Run the RAG retrieval example (chunks and indexes documents, retrieves by
+semantic query, and lets an agent use retrieval as an ordinary tool; uses a
+deterministic local embedder, so no network or API key is required):
+
+```sh
+go run ./examples/rag-retrieval
+```

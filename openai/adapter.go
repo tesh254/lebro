@@ -144,7 +144,7 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return lebro.ModelResponse{}, m.classifyResponseError(resp)
+		return lebro.ModelResponse{}, m.classifyResponseError(reqCtx, resp)
 	}
 
 	payload, err := io.ReadAll(resp.Body)
@@ -251,8 +251,19 @@ func (m *Model) classifyTransportError(ctx context.Context, err error) error {
 	return m.transportError("HTTP request failed", err)
 }
 
-func (m *Model) classifyResponseError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
+// classifyResponseError maps an HTTP error response to a normalized
+// *lebro.ModelError.
+//
+// A body read that fails because the request was canceled or its deadline
+// elapsed is classified as cancellation or timeout rather than as the HTTP
+// status. The status is real, but the caller asked to stop, so reporting a
+// retryable server error would both break errors.Is(err, context.Canceled) and
+// invite a retry of a request nobody is waiting for.
+func (m *Model) classifyResponseError(ctx context.Context, resp *http.Response) error {
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil && (ctx.Err() != nil || errors.Is(readErr, context.Canceled) || errors.Is(readErr, context.DeadlineExceeded)) {
+		return m.classifyTransportError(ctx, readErr)
+	}
 	var parsed chatErrorBody
 	_ = json.Unmarshal(body, &parsed)
 
@@ -494,7 +505,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		classified := m.classifyResponseError(resp)
+		classified := m.classifyResponseError(reqCtx, resp)
 		_ = resp.Body.Close()
 		cancel()
 		return nil, classified

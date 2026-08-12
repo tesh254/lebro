@@ -129,6 +129,24 @@ type (
 	VectorMetadataFilter       = runtime.VectorMetadataFilter
 	SimilarityQuery            = runtime.SimilarityQuery
 	SimilarityResult           = runtime.SimilarityResult
+	Document                   = runtime.Document
+	Chunk                      = runtime.Chunk
+	Chunker                    = runtime.Chunker
+	CharacterChunker           = runtime.CharacterChunker
+	CharacterChunkerConfig     = runtime.CharacterChunkerConfig
+	EmbeddingModel             = runtime.EmbeddingModel
+	Indexer                    = runtime.Indexer
+	IndexerConfig              = runtime.IndexerConfig
+	IndexResult                = runtime.IndexResult
+	Retriever                  = runtime.Retriever
+	RetrievalQuery             = runtime.RetrievalQuery
+	RetrievedChunk             = runtime.RetrievedChunk
+	VectorRetriever            = runtime.VectorRetriever
+	VectorRetrieverConfig      = runtime.VectorRetrieverConfig
+	RetrievalTool              = runtime.RetrievalTool
+	RetrievalToolConfig        = runtime.RetrievalToolConfig
+	RAGError                   = runtime.RAGError
+	RAGErrorKind               = runtime.RAGErrorKind
 	RunEvent                   = runtime.RunEvent
 	RunEventType               = runtime.RunEventType
 	RunListener                = runtime.RunListener
@@ -238,6 +256,20 @@ const (
 	ModelErrorTransport         = runtime.ModelErrorTransport
 	ModelErrorMalformedResponse = runtime.ModelErrorMalformedResponse
 	ModelErrorUnknown           = runtime.ModelErrorUnknown
+
+	RAGErrorInvalidDocument = runtime.RAGErrorInvalidDocument
+	RAGErrorChunking        = runtime.RAGErrorChunking
+	RAGErrorEmbedding       = runtime.RAGErrorEmbedding
+	RAGErrorIndexing        = runtime.RAGErrorIndexing
+	RAGErrorRetrieval       = runtime.RAGErrorRetrieval
+
+	ChunkMetadataDocumentID = runtime.ChunkMetadataDocumentID
+	ChunkMetadataSource     = runtime.ChunkMetadataSource
+	ChunkMetadataChunkIndex = runtime.ChunkMetadataChunkIndex
+
+	DefaultChunkSize          = runtime.DefaultChunkSize
+	DefaultEmbeddingBatchSize = runtime.DefaultEmbeddingBatchSize
+	DefaultRetrievalTopK      = runtime.DefaultRetrievalTopK
 )
 
 var (
@@ -296,6 +328,12 @@ var (
 	ErrVectorAlreadyExists    = runtime.ErrVectorAlreadyExists
 	ErrVectorInvalidDimension = runtime.ErrVectorInvalidDimension
 	ErrVectorInvalidInput     = runtime.ErrVectorInvalidInput
+
+	ErrRAGInvalidDocument = runtime.ErrRAGInvalidDocument
+	ErrRAGChunking        = runtime.ErrRAGChunking
+	ErrRAGEmbedding       = runtime.ErrRAGEmbedding
+	ErrRAGIndexing        = runtime.ErrRAGIndexing
+	ErrRAGRetrieval       = runtime.ErrRAGRetrieval
 )
 
 // DefaultRetryable reports whether a handler error is eligible for retry
@@ -369,6 +407,45 @@ func NewSQLiteVectorStore(dsn string) (*SQLiteVectorStore, error) {
 func NewPostgresVectorStore(dsn string, opts PostgresVectorStoreOptions) (*PostgresVectorStore, error) {
 	return runtime.NewPostgresVectorStore(dsn, opts)
 }
+
+// NewCharacterChunker returns a fixed-width, optionally overlapping rune-window
+// chunker. Size and Overlap are measured in runes, so a multi-byte character is
+// never split across chunks; Overlap must be less than Size.
+func NewCharacterChunker(config CharacterChunkerConfig) (*CharacterChunker, error) {
+	return runtime.NewCharacterChunker(config)
+}
+
+// NewIndexer builds the ingestion pipeline that chunks a document, embeds its
+// chunks, and upserts them into a vector index. Call EnsureIndex once before
+// the first Ingest. Ingestion is idempotent for an unchanged document because
+// chunk IDs derive from the document ID and ordinal position.
+func NewIndexer(config IndexerConfig) (*Indexer, error) {
+	return runtime.NewIndexer(config)
+}
+
+// NewVectorRetriever returns a Retriever that embeds a natural-language query
+// and searches a vector index. Its configured metadata filter is merged into
+// every query and takes precedence on key collisions, so a configured scope
+// cannot be widened by a caller.
+func NewVectorRetriever(config VectorRetrieverConfig) (*VectorRetriever, error) {
+	return runtime.NewVectorRetriever(config)
+}
+
+// NewRetrievalTool exposes a Retriever as an ordinary schema-backed Tool that a
+// model can select inside the existing bounded tool loop. Register the result in
+// a ToolRegistry and list its ID in the agent's definition.
+//
+// It adds no implicit agent behavior: retrieval happens only when the model
+// calls the tool. The metadata filter and result-count cap are fixed at
+// construction and are not model-settable, so a model chooses what to search
+// for but not what it may read.
+func NewRetrievalTool(config RetrievalToolConfig) (*RetrievalTool, error) {
+	return runtime.NewRetrievalTool(config)
+}
+
+// ChunkID renders the stable identifier for a chunk at the given ordinal
+// position within a document, matching what Chunker implementations assign.
+func ChunkID(documentID string, index int) string { return runtime.ChunkID(documentID, index) }
 
 func NewAgent(config AgentConfig) (*Agent, error) {
 	return runtime.NewAgent(config)

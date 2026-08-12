@@ -6,6 +6,55 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Document ingestion, embeddings, and retrieval tools. Retrieval-augmented
+  generation is assembled from provider-neutral contracts — `Document`, `Chunk`,
+  `Chunker`, `EmbeddingModel`, and `Retriever` — that persist through the
+  existing optional `VectorStore`. `NewIndexer` runs the ingestion pipeline:
+  it chunks a document, embeds the chunks in batches, and upserts them with
+  their provenance. Chunk IDs are `"<DocumentID>#<Index>"`, so re-ingesting an
+  unchanged document replaces its records rather than duplicating them.
+  `NewCharacterChunker` is the initial chunking strategy, measuring `Size` and
+  `Overlap` in runes so a multi-byte character is never split across chunks.
+  `NewVectorRetriever` answers a natural-language query by embedding it and
+  searching the index, returning stable source metadata on every hit
+  (`DocumentID`, `Source`, and `Index`, recorded under the reserved metadata
+  keys `document_id`, `source`, and `chunk_index`); a document whose own
+  metadata uses a reserved key is rejected rather than silently overwritten.
+  `NewRetrievalTool` exposes a `Retriever` as an ordinary schema-backed `Tool`,
+  so an agent selects retrieval through ordinary model tool-calling inside the
+  existing bounded loop — no implicit context injection and no hidden agent
+  behavior. Retrieval scope is configuration rather than a model's choice: the
+  metadata filter is fixed at construction and is not model-settable, a
+  model-supplied `top_k` is clamped (falling back from `MaxTopK` to `TopK` to
+  `DefaultRetrievalTopK`, so the bound holds even when neither is configured),
+  and a caller filter naming an enforced key loses to the configured value.
+  Ingestion is lossless: content that is not valid UTF-8 is rejected rather than
+  silently rewritten by rune conversion. Agent and workflow packages never
+  reference RAG types, so the core runtime remains usable with no RAG or vector
+  dependency. New public types: `Document`, `Chunk`, `Chunker`,
+  `CharacterChunker`, `CharacterChunkerConfig`, `EmbeddingModel`, `Indexer`,
+  `IndexerConfig`, `IndexResult`, `Retriever`, `RetrievalQuery`,
+  `RetrievedChunk`, `VectorRetriever`, `VectorRetrieverConfig`, `RetrievalTool`,
+  `RetrievalToolConfig`, `RAGError`, `RAGErrorKind`. New error kinds:
+  `RAGErrorInvalidDocument`, `RAGErrorChunking`, `RAGErrorEmbedding`,
+  `RAGErrorIndexing`, `RAGErrorRetrieval`, with matching
+  `ErrRAGInvalidDocument`, `ErrRAGChunking`, `ErrRAGEmbedding`,
+  `ErrRAGIndexing`, and `ErrRAGRetrieval` sentinels (all `errors.Is`-compatible,
+  with `errors.As` reaching the wrapped `*ModelError` or `ErrVector*` cause). A
+  runnable example is in `examples/rag-retrieval`.
+
+- OpenAI-compatible embeddings adapter. `openai.NewEmbedder` implements
+  `lebro.EmbeddingModel` against any OpenAI-compatible `/embeddings` endpoint,
+  reusing the chat adapter's error classification so one retry policy covers
+  both. `Dimension` is required and every response is checked against it, so a
+  misconfigured dimension surfaces as an error instead of a corrupt index. The
+  adapter reorders the response by each item's declared index rather than
+  trusting wire order, and rejects a response whose count, indices, or vector
+  widths do not match the request, so a provider that drops or truncates an item
+  fails loudly rather than writing misaligned vectors. `RequestDimension` opts
+  into sending the `dimensions` parameter for models that support reduction.
+  New public types: `openai.Embedder`, `openai.EmbedderConfig`.
+
 - Supervised agent delegation. `NewSubagent` exposes an `Agent` (or any
   `Workflow`) as a named, schema-backed capability that a supervising agent can
   delegate focused work to. A `Subagent` implements `Tool`, so registering one
@@ -263,3 +312,14 @@ All notable changes to this project are documented in this file.
   `Generate` and emits a single delta per step. The OpenAI-compatible adapter
   implements `StreamingModel` over Server-Sent Events, mapping text deltas,
   usage, finish reasons, and error events into the neutral protocol.
+
+### Fixed
+
+- OpenAI adapters no longer report a canceled or timed-out request as an HTTP
+  status error. When a request is canceled while the error body of a failed
+  response is still being read, both the chat and embeddings adapters classified
+  the failure from the status code alone, so an abandoned request surfaced as a
+  retryable `ModelErrorUnavailable` and `errors.Is(err, context.Canceled)` did
+  not hold. The shared classifier now routes a read failure caused by
+  cancellation or an elapsed deadline through the transport classifier, matching
+  the behavior callers already get when the request itself is interrupted.
