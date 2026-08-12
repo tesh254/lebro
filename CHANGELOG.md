@@ -6,6 +6,47 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Dataset evaluation, scorers, and experiment runs. The new optional `evals`
+  package runs a versioned dataset against an agent or workflow, scores every
+  case, and persists per-case results so two runs can be compared before a
+  release. Nothing in the root module imports it, so an application that does
+  not evaluate never compiles it in, and it adds no dependency beyond the lebro
+  module and the standard library. `evals.Dataset.Version` is a content hash over
+  the ordered, canonicalized cases rather than a caller-supplied label, so "the
+  same dataset version" is a verifiable fact: editing, adding, or reordering a
+  case changes the version, while reformatting a case's JSON input does not.
+  `Target` is what a dataset runs against — `NewAgentTarget` adapts any
+  `lebro.Workflow`, which `*lebro.Agent` implements, and `NewWorkflowTarget`
+  adapts a JSON-step workflow such as `*lebro.LinearWorkflow`, so one dataset
+  serves both kinds without a caller-written adapter; a case carries both an
+  `Input` and `Messages`, and a target that cannot invoke a case reports
+  `ErrTargetUnsupportedCase` rather than silently reshaping it. Deterministic
+  rule scorers ship first and need no provider: `NewExactMatch`, `NewContains`,
+  `NewRegexp`, `NewJSONEquals`, and `NewNumericRange`, each validating its
+  configuration at construction so an unusable pattern or an inverted range is a
+  setup error rather than a per-case surprise. `NewModelScorer` grades behind the
+  existing model protocol with a caller-supplied `lebro.Model`, so no provider
+  dependency enters the module; it decodes the verdict's score through a pointer
+  so a grader that scored 0 stays distinguishable from one that answered
+  nothing, and a model failure is reported as a scorer failure rather than a
+  zero score, because an unreachable judge must not manufacture a regression. A
+  scorer that errors or panics is recorded in `CaseResult.ScorerFailures` and
+  leaves the target's own `Status` and `Output` untouched, with
+  `ExperimentRecord` counting `TargetFailures` and `ScorerFailures` separately:
+  "did the thing under test work?" and "could we measure it?" are different
+  findings. A panicking scorer is recovered, so one bad judge cannot abandon the
+  run or blind the other scorers on that case. Cases are dispatched across a
+  bounded worker pool, but results are ordered by dataset position, so a stored
+  record never depends on worker scheduling. `Compare` reports per-scorer and
+  per-case deltas and returns `ErrDatasetVersionMismatch` when two records
+  disagree on dataset ID or version, since comparing different question sets
+  would read as a quality change while really being a change of subject; it names
+  the cases whose pass state moved because two offsetting per-case changes cancel
+  out in an aggregate mean. Results persist through `evals.Repository`,
+  deliberately separate from `lebro.Store` so evaluation data can live in another
+  database and an evaluation write can never join the transaction that persists a
+  workflow step; `MemoryRepository` ships for tests and single-process use and
+  returns caller-owned copies. See `examples/evals-dataset`.
 - Typed Go client for the HTTP API. `httpapi.Client` calls a lebro HTTP server
   with the same result and stream contracts the in-process primitives use, so an
   application that moves an agent out of process changes how it constructs the
