@@ -65,6 +65,38 @@
 // request context, which cancels the run, drains the provider stream, and
 // releases the run goroutine.
 //
+// # Typed client
+//
+// Client calls a server of this shape with the same result and stream
+// contracts, so an application that moves an agent out of process changes how
+// it constructs the call rather than how it reads the answer:
+//
+//	client, err := httpapi.NewClient(httpapi.ClientConfig{
+//	    BaseURL: "https://api.example.com",
+//	    Header:  func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+token) },
+//	})
+//	result, err := client.Run(ctx, "assistant", httpapi.RunRequest{
+//	    Messages: []httpapi.MessageInput{{Content: "hello"}},
+//	})
+//
+// The client decodes the wire types this package defines, so the contract it
+// speaks cannot drift from the one the server serves. Streamed runs return a
+// ClientStream whose Events, Cancel, Wait, and Drain mirror lebro.StreamRun;
+// Cancel closes the connection, which the server observes as a disconnect and
+// turns into a cancelled run.
+//
+// Failures reach the caller as *APIError, carrying the server's ErrorCode and
+// unwrapping to the lebro sentinel that classifies it: a remote tool failure
+// matches errors.Is(err, lebro.ErrAgentToolFailure) exactly as a local one
+// does. Codes with no runtime counterpart — a malformed request, a method
+// mismatch — carry the code alone rather than claiming a sentinel that cannot
+// occur locally.
+//
+// ContractVersion names the wire contract both sides speak.
+// Client.CheckCompatibility compares it against the server's published version
+// and reports ErrIncompatibleContract on a major mismatch. It is not called
+// automatically: a run should not pay for a round trip it did not ask for.
+//
 // # Generated contract
 //
 // OpenAPI returns an OpenAPI 3.1 document generated from the same route table

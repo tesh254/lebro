@@ -6,6 +6,42 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Typed Go client for the HTTP API. `httpapi.Client` calls a lebro HTTP server
+  with the same result and stream contracts the in-process primitives use, so an
+  application that moves an agent out of process changes how it constructs the
+  call rather than how it reads the answer. It ships in the `httpapi` package
+  and decodes the same wire types the server serves, so the client's contract
+  cannot drift from the server's; `TestCompatClientCoversEveryRoute` fails if a
+  route gains no client method. `NewClient` takes a base URL, an optional
+  `*http.Client` for TLS, proxy, and pooling concerns, and a `Header` hook for
+  authentication — the package ships no scheme, matching
+  `ServerConfig.Middleware` on the serving side. Methods cover every route:
+  `Run`, `RunStream`, `RunWorkflow`, `Health`, `ListAgents`, `ListWorkflows`,
+  `GetThread`, `ListMessages`, and `OpenAPI`, with `WithThread` binding a run to
+  a durable conversation and `WithCursor` and `WithLimit` paging a thread.
+  Streamed runs return a `ClientStream` whose `Events`, `Cancel`, `Wait`, and
+  `Drain` deliberately mirror `lebro.StreamRun`, so remote and local streaming
+  read the same; the terminal event is consumed by the stream and surfaces
+  through `Wait` rather than arriving on `Events`, so a caller cannot mistake it
+  for another delta or miss it by breaking out of the loop early. `Cancel`
+  closes the connection, which the server observes as a disconnect and turns
+  into a cancelled run, and it releases the reader goroutine even when the
+  caller abandons the stream without draining it. A stream that ends without a
+  terminal event reports `ErrStreamIncomplete` rather than an empty success,
+  because a dropped connection and a run that failed are different facts.
+  Failures arrive as `*APIError` carrying the server's `ErrorCode` and
+  unwrapping to the lebro sentinel that classifies it, so
+  `errors.Is(err, lebro.ErrAgentToolFailure)` holds for a remote tool failure
+  exactly as for a local one, and a cancelled run additionally matches
+  `context.Canceled`; codes with no runtime counterpart carry the code alone
+  rather than claiming a sentinel that cannot occur locally. `ContractVersion`
+  names the wire contract, is published in the generated document as
+  `info.x-lebro-contract-version`, and `Client.CheckCompatibility` compares
+  major versions and reports `ErrIncompatibleContract` on a mismatch — called
+  explicitly, never on every request, so a run does not pay for a round trip it
+  did not ask for. The compatibility suite drives the real server through the
+  real client rather than hand-written fixtures. See `examples/http-client`.
+
 - Embeddable HTTP server and generated OpenAPI contract. The new optional
   `httpapi` package serves registered agents and workflows over HTTP and
   publishes the contract as an OpenAPI 3.1 document. It is absent from the core
