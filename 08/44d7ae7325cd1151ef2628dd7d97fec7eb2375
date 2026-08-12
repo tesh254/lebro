@@ -1,0 +1,24 @@
+CHANGELOG.md
+  s_0d5d4c397c521e::t_dc0e7acf3269ee 315-325
+openai/main_test.go
+  s_0d5d4c397c521e::t_15a8d6a1491427 1-25
+openai/embeddings_test.go
+  s_0d5d4c397c521e::t_f158f4fe459e9a 502-507
+  s_0d5d4c397c521e::t_da7c11053a1c8c 526-527,531,533
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0844d7ae7325cd1151ef2628dd7d97fec7eb2375",
+  "prompts": {},
+  "sessions": {
+    "s_0d5d4c397c521e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "438c2b27-4a46-4e89-af57-57f16a0bfd30",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
