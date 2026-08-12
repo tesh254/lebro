@@ -576,14 +576,9 @@ func (e *bufferReusingEmbedder) Embed(_ context.Context, inputs []string) ([][]f
 	if e.buffer == nil {
 		e.buffer = make([]float32, e.dimension)
 	}
+	// vectorFor returns a fully zeroed slice of the same length, so this
+	// overwrites every coordinate: no previous call's value survives.
 	copy(e.buffer, e.vectorFor(e.calls))
-	// Zero the coordinates this call does not own, so the buffer holds exactly
-	// one basis vector rather than accumulating every previous call's.
-	for i := range e.buffer {
-		if i != e.calls%e.dimension {
-			e.buffer[i] = 0
-		}
-	}
 	vectors := make([][]float32, len(inputs))
 	for i := range inputs {
 		vectors[i] = e.buffer
