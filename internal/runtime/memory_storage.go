@@ -586,7 +586,12 @@ func deleteSchedule(ctx context.Context, s *memoryState, id ScheduleID) error {
 	if _, ok := s.schedules[id]; !ok {
 		return ErrNotFound
 	}
+	// Remove the schedule's execution history with it so a schedule recreated
+	// under the same ID does not inherit the old executions, matching the SQL
+	// adapters' ON DELETE CASCADE.
 	delete(s.schedules, id)
+	delete(s.executions, id)
+	delete(s.executionIDs, id)
 	return nil
 }
 func saveScheduleExecution(ctx context.Context, s *memoryState, v ScheduleExecutionRecord) error {
@@ -605,11 +610,11 @@ func saveScheduleExecution(ctx context.Context, s *memoryState, v ScheduleExecut
 	if s.executionIDs[v.ScheduleID] == nil {
 		s.executionIDs[v.ScheduleID] = map[string]struct{}{}
 	}
-	if _, ok := s.executionIDs[v.ScheduleID][v.ID]; ok {
+	if _, ok := s.executionIDs[v.ScheduleID][string(v.ID)]; ok {
 		return fmt.Errorf("lebro: schedule execution already exists")
 	}
 	s.executions[v.ScheduleID] = append(s.executions[v.ScheduleID], cloneScheduleExecutionRecord(v))
-	s.executionIDs[v.ScheduleID][v.ID] = struct{}{}
+	s.executionIDs[v.ScheduleID][string(v.ID)] = struct{}{}
 	return nil
 }
 func listScheduleExecutions(ctx context.Context, s memoryState, id ScheduleID, p PageRequest) (Page[ScheduleExecutionRecord], error) {

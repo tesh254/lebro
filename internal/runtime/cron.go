@@ -128,8 +128,14 @@ func parseCronField(field string, min, max int) (mask uint64, star bool, err err
 				return 0, false, fmt.Errorf("step must be positive, got %d", step)
 			}
 		}
-		for v := lo; v <= hi; v += step {
+		// Stop before incrementing when the remaining range is smaller than the
+		// step so a very large step cannot overflow v and loop unboundedly.
+		for v := lo; v <= hi; {
 			mask |= 1 << uint(v)
+			if step > hi-v {
+				break
+			}
+			v += step
 		}
 	}
 	return mask, false, nil

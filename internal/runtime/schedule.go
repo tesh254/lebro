@@ -77,14 +77,14 @@ type ScheduleRecord struct {
 // Status, and, for failures, the error string. StartedAt and FinishedAt bracket
 // the run; FinishedAt is nil for a record persisted before the run returned.
 type ScheduleExecutionRecord struct {
-	ID           string             `json:"id"`
-	ScheduleID   ScheduleID         `json:"schedule_id"`
-	RunID        RunID              `json:"run_id,omitempty"`
-	Status       ScheduleExecStatus `json:"status"`
-	ScheduledFor time.Time          `json:"scheduled_for"`
-	StartedAt    time.Time          `json:"started_at"`
-	FinishedAt   *time.Time         `json:"finished_at,omitempty"`
-	Error        string             `json:"error,omitempty"`
+	ID           ScheduleExecutionID `json:"id"`
+	ScheduleID   ScheduleID          `json:"schedule_id"`
+	RunID        RunID               `json:"run_id,omitempty"`
+	Status       ScheduleExecStatus  `json:"status"`
+	ScheduledFor time.Time           `json:"scheduled_for"`
+	StartedAt    time.Time           `json:"started_at"`
+	FinishedAt   *time.Time          `json:"finished_at,omitempty"`
+	Error        string              `json:"error,omitempty"`
 }
 
 // ScheduleFilter narrows a ListSchedules query. A zero value returns every

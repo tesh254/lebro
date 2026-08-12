@@ -16,6 +16,7 @@ type (
 	ToolID                      = runtime.ToolID
 	WorkflowID                  = runtime.WorkflowID
 	ScheduleID                  = runtime.ScheduleID
+	ScheduleExecutionID         = runtime.ScheduleExecutionID
 	Role                        = runtime.Role
 	Message                     = runtime.Message
 	AgentDefinition             = runtime.AgentDefinition
@@ -248,6 +249,7 @@ const (
 	ResourceKindMessage          = runtime.ResourceKindMessage
 	ResourceKindWorkflowRun      = runtime.ResourceKindWorkflowRun
 	ResourceKindWorkflowSnapshot = runtime.ResourceKindWorkflowSnapshot
+	ResourceKindSchedule         = runtime.ResourceKindSchedule
 
 	SubagentErrorInvalidInput = runtime.SubagentErrorInvalidInput
 	SubagentErrorRunFailed    = runtime.SubagentErrorRunFailed
@@ -326,6 +328,7 @@ var (
 	ErrNotFound              = runtime.ErrNotFound
 	ErrConflict              = runtime.ErrConflict
 	ErrInvalidPage           = runtime.ErrInvalidPage
+	ErrSchedulerRunning      = runtime.ErrSchedulerRunning
 	ErrProviderNotFound      = runtime.ErrProviderNotFound
 	ErrProviderAlreadyExists = runtime.ErrProviderAlreadyExists
 

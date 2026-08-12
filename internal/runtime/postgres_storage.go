@@ -150,6 +150,7 @@ var postgresSchemaMigrations = []string{
 		UNIQUE (schedule_id, id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule_seq ON schedule_executions(schedule_id, seq)`,
+	`CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(next_fire_at) WHERE paused = FALSE AND next_fire_at IS NOT NULL`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -790,7 +791,7 @@ func (r *postgresRepositories) SaveScheduleExecution(ctx context.Context, v Sche
 		return err
 	}
 	var found string
-	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM schedule_executions WHERE schedule_id = $1 AND id = $2`, v.ScheduleID, v.ID).Scan(&found); {
+	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM schedule_executions WHERE schedule_id = $1 AND id = $2`, v.ScheduleID, string(v.ID)).Scan(&found); {
 	case err == nil:
 		return errors.New("lebro: schedule execution already exists")
 	case !errors.Is(err, sql.ErrNoRows):
@@ -801,7 +802,7 @@ func (r *postgresRepositories) SaveScheduleExecution(ctx context.Context, v Sche
 		runID = string(v.RunID)
 	}
 	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		v.ID, v.ScheduleID, runID, string(v.Status), v.ScheduledFor.UTC(), v.StartedAt.UTC(), postgresNullableTime(v.FinishedAt), v.Error); err != nil {
+		string(v.ID), v.ScheduleID, runID, string(v.Status), v.ScheduledFor.UTC(), v.StartedAt.UTC(), postgresNullableTime(v.FinishedAt), v.Error); err != nil {
 		return fmt.Errorf("lebro: save schedule execution %q: %w", v.ID, postgresError(err))
 	}
 	return nil

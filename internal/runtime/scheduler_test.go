@@ -296,7 +296,9 @@ func TestSchedulerStartStop(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := NewMemoryStore()
-	past := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	// Derive the past due instant from the wall clock so the test does not
+	// depend on a hardcoded calendar date being in the past.
+	past := time.Now().Add(-time.Hour).UTC()
 	if err := store.Schedules().SaveSchedule(ctx, ScheduleRecord{
 		ID: "sched-1", WorkflowID: "wf-1", Spec: "@every 1h", NextFireAt: &past, CreatedAt: past, UpdatedAt: past,
 	}); err != nil {
@@ -342,6 +344,153 @@ func TestSchedulerStartStop(t *testing.T) {
 	s.Stop() // idempotent
 }
 
+// TestSchedulerExecutionIDsSurviveRestart guards the fix for reused execution
+// IDs: two schedulers constructed over the same store (a restart) must produce
+// non-colliding execution IDs so the second scheduler can persist its history.
+func TestSchedulerExecutionIDsSurviveRestart(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+
+	arm := func(due time.Time) {
+		if err := store.Schedules().SaveSchedule(ctx, ScheduleRecord{
+			ID: "sched-1", WorkflowID: "wf-1", Spec: "0 * * * *", NextFireAt: &due, CreatedAt: due, UpdatedAt: due,
+		}); err != nil {
+			t.Fatalf("SaveSchedule: %v", err)
+		}
+	}
+
+	fire1 := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	arm(fire1)
+	var runs int64
+	// First scheduler process.
+	s1 := newTestScheduler(t, store, WorkflowMap{"wf-1": countingWorkflow(t, "wf-1", &runs, nil)}, NewFixedClock(fire1))
+	if _, err := s1.Tick(ctx, fire1); err != nil {
+		t.Fatalf("Tick 1: %v", err)
+	}
+
+	// Restart: a brand-new scheduler (fresh idSource) over the same store. Its
+	// first execution ID must not collide with s1's persisted history.
+	fire2 := fire1.Add(time.Hour)
+	arm(fire2)
+	s2 := newTestScheduler(t, store, WorkflowMap{"wf-1": countingWorkflow(t, "wf-1", &runs, nil)}, NewFixedClock(fire2))
+	result, err := s2.Tick(ctx, fire2)
+	if err != nil {
+		t.Fatalf("Tick 2 after restart: %v", err)
+	}
+	if result.Fired != 1 {
+		t.Fatalf("Fired after restart = %d, want 1", result.Fired)
+	}
+	execs := listExecutions(t, store, "sched-1")
+	if len(execs) != 2 {
+		t.Fatalf("history = %d entries, want 2 (%+v)", len(execs), execs)
+	}
+	if execs[0].ID == execs[1].ID {
+		t.Fatalf("execution IDs collided across restart: %q", execs[0].ID)
+	}
+}
+
+// TestSchedulerCatchUpCapAdvancesToLatest guards the fix for MaxCatchUp: with a
+// cap smaller than the number of overdue occurrences, the recorded missed count
+// is capped but the run still fires the latest occurrence and NextFireAt
+// advances past the whole backlog.
+func TestSchedulerCatchUpCapAdvancesToLatest(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewMemoryStore()
+	firstDue := time.Date(2026, 8, 12, 5, 0, 0, 0, time.UTC)
+	tickAt := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	if err := store.Schedules().SaveSchedule(ctx, ScheduleRecord{
+		ID: "sched-1", WorkflowID: "wf-1", Spec: "0 * * * *", NextFireAt: &firstDue, CreatedAt: firstDue, UpdatedAt: firstDue,
+	}); err != nil {
+		t.Fatalf("SaveSchedule: %v", err)
+	}
+	var runs int64
+	s, err := NewScheduler(SchedulerConfig{
+		Store:      store,
+		Resolver:   WorkflowMap{"wf-1": countingWorkflow(t, "wf-1", &runs, nil)},
+		Clock:      NewFixedClock(tickAt),
+		IDSource:   &sequentialIDSource{},
+		MaxCatchUp: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	result, err := s.Tick(ctx, tickAt)
+	if err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	// Occurrences 05,06,07,08,09 are missed (5 total) but only 2 are recorded;
+	// the latest occurrence (10:00) runs once.
+	if result.Fired != 1 || result.Missed != 2 {
+		t.Fatalf("Fired = %d, Missed = %d, want 1 and 2", result.Fired, result.Missed)
+	}
+	if atomic.LoadInt64(&runs) != 1 {
+		t.Fatalf("runs = %d, want 1", runs)
+	}
+	// The run that fired must be for the latest due occurrence (10:00), not the
+	// occurrence just past the cap. A capped walk that also stopped advancing
+	// would record the run against an earlier occurrence.
+	execs := listExecutions(t, store, "sched-1")
+	var ran *ScheduleExecutionRecord
+	for i := range execs {
+		if execs[i].Status == ScheduleExecSucceeded {
+			ran = &execs[i]
+		}
+	}
+	if ran == nil {
+		t.Fatalf("no succeeded execution recorded (%+v)", execs)
+	}
+	if !ran.ScheduledFor.Equal(tickAt) {
+		t.Fatalf("run scheduled_for = %s, want %s (latest occurrence)", ran.ScheduledFor, tickAt)
+	}
+	got, _ := store.Schedules().GetSchedule(ctx, "sched-1")
+	if got.NextFireAt == nil || !got.NextFireAt.Equal(tickAt.Add(time.Hour)) {
+		t.Fatalf("NextFireAt = %v, want %v (advanced past backlog)", got.NextFireAt, tickAt.Add(time.Hour))
+	}
+}
+
+// TestSchedulerDeleteRemovesHistory guards that deleting a schedule with
+// execution history succeeds and that a schedule recreated under the same ID
+// starts with empty history.
+func TestSchedulerDeleteRemovesHistory(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	for name, store := range scheduleStores(t) {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+			if err := store.Schedules().SaveSchedule(ctx, ScheduleRecord{
+				ID: "sched-1", WorkflowID: "wf-1", Spec: "0 * * * *", NextFireAt: &now, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("SaveSchedule: %v", err)
+			}
+			finished := now.Add(time.Second)
+			if err := store.ScheduleExecutions().SaveScheduleExecution(ctx, ScheduleExecutionRecord{
+				ID: "e-1", ScheduleID: "sched-1", Status: ScheduleExecSucceeded, ScheduledFor: now, StartedAt: now, FinishedAt: &finished,
+			}); err != nil {
+				t.Fatalf("SaveScheduleExecution: %v", err)
+			}
+			// Delete must succeed despite the child history row.
+			if err := store.Schedules().DeleteSchedule(ctx, "sched-1"); err != nil {
+				t.Fatalf("DeleteSchedule with history: %v", err)
+			}
+			// Recreate under the same ID: history must be empty.
+			if err := store.Schedules().SaveSchedule(ctx, ScheduleRecord{
+				ID: "sched-1", WorkflowID: "wf-1", Spec: "0 * * * *", NextFireAt: &now, CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("recreate: %v", err)
+			}
+			page, err := store.ScheduleExecutions().ListScheduleExecutions(ctx, "sched-1", PageRequest{})
+			if err != nil {
+				t.Fatalf("ListScheduleExecutions: %v", err)
+			}
+			if len(page.Records) != 0 {
+				t.Fatalf("recreated schedule inherited history: %+v", page.Records)
+			}
+		})
+	}
+}
+
 func TestSchedulerConcurrentInflightTracking(t *testing.T) {
 	t.Parallel()
 	// Guards against a data race in the inflight map under -race.
@@ -352,9 +501,9 @@ func TestSchedulerConcurrentInflightTracking(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s.markInflight("x")
-			_ = s.isInflight("x")
-			s.clearInflight("x")
+			if s.claimInflight("x") {
+				s.clearInflight("x")
+			}
 		}()
 	}
 	wg.Wait()

@@ -41,7 +41,7 @@ func newTestPostgresStore(t *testing.T) *PostgresStore {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
-	for _, table := range []string{"workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
+	for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
 		if _, err := store.db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 			t.Fatalf("drop %s: %v", table, err)
 		}
@@ -200,7 +200,7 @@ func TestPostgresStoreMigrationFailuresLeaveDatabaseSafe(t *testing.T) {
 		store := newTestPostgresStore(t)
 		// Drop all lebro tables so the conflicting threads table is the only
 		// schema artifact when Migrate runs.
-		for _, table := range []string{"workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
+		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
 			if _, err := store.db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 				t.Fatalf("drop %s: %v", table, err)
 			}
@@ -353,7 +353,7 @@ func postgresDropAll(t *testing.T, dsn string) (func(), error) {
 		return nil, err
 	}
 	ctx := context.Background()
-	for _, table := range []string{"workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
+	for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
 		if _, err := store.db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 			_ = store.Close()
 			return nil, fmt.Errorf("drop %s: %w", table, err)

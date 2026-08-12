@@ -766,15 +766,30 @@ func (r *sqliteRepositories) DeleteSchedule(ctx context.Context, id ScheduleID) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	result, err := r.q.ExecContext(ctx, `DELETE FROM schedules WHERE id = ?`, id)
+	// The schedule_executions foreign key has no ON DELETE CASCADE (the schema
+	// migration is append-only and predates it), so the child history is
+	// removed first. Both deletes run in one transaction so a schedule with
+	// history is never left half-deleted.
+	var missing bool
+	err := r.withAutoTx(ctx, func(q sqlQueryer) error {
+		if _, err := q.ExecContext(ctx, `DELETE FROM schedule_executions WHERE schedule_id = ?`, id); err != nil {
+			return fmt.Errorf("lebro: delete schedule executions %q: %w", id, sqliteError(err))
+		}
+		result, err := q.ExecContext(ctx, `DELETE FROM schedules WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("lebro: delete schedule %q: %w", id, sqliteError(err))
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("lebro: delete schedule %q: %w", id, sqliteError(err))
+		}
+		missing = n == 0
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("lebro: delete schedule %q: %w", id, sqliteError(err))
+		return err
 	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("lebro: delete schedule %q: %w", id, sqliteError(err))
-	}
-	if n == 0 {
+	if missing {
 		return ErrNotFound
 	}
 	return nil
@@ -794,14 +809,14 @@ func (r *sqliteRepositories) SaveScheduleExecution(ctx context.Context, v Schedu
 		return err
 	}
 	var found string
-	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM schedule_executions WHERE schedule_id = ? AND id = ?`, v.ScheduleID, v.ID).Scan(&found); {
+	switch err := r.q.QueryRowContext(ctx, `SELECT id FROM schedule_executions WHERE schedule_id = ? AND id = ?`, v.ScheduleID, string(v.ID)).Scan(&found); {
 	case err == nil:
 		return errors.New("lebro: schedule execution already exists")
 	case !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("lebro: check schedule execution %q: %w", v.ID, sqliteError(err))
 	}
 	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		v.ID, v.ScheduleID, sqliteNullableString(string(v.RunID)), string(v.Status), sqliteTime(v.ScheduledFor), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), v.Error); err != nil {
+		string(v.ID), v.ScheduleID, sqliteNullableString(string(v.RunID)), string(v.Status), sqliteTime(v.ScheduledFor), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), v.Error); err != nil {
 		return fmt.Errorf("lebro: save schedule execution %q: %w", v.ID, sqliteError(err))
 	}
 	return nil

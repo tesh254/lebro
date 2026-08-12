@@ -199,24 +199,31 @@ func (s *Scheduler) fireSchedule(ctx context.Context, now time.Time, schedule Sc
 	}
 
 	// The occurrence that runs this tick is the latest due one; earlier due
-	// occurrences are recorded as missed.
+	// occurrences are collected as missed. The missed records are persisted in
+	// the same transaction as the advance below so a retry after a crash cannot
+	// duplicate them.
 	scheduledFor := firstDue
+	var missed []ScheduleExecutionRecord
 	if parseErr == nil {
-		latest, err := s.recordMissed(ctx, schedule, firstDue, now, compiled, result)
-		if err != nil {
-			return err
-		}
-		scheduledFor = latest
+		scheduledFor, missed = s.collectMissed(schedule, firstDue, now, compiled)
 	}
 
-	// Concurrency: under Skip, a still-running prior run drops this fire.
-	if schedule.Concurrency.normalized() == ConcurrencySkip && s.isInflight(schedule.ID) {
-		exec := s.newExecution(schedule.ID, "", ScheduleExecSkipped, scheduledFor, now, &now, "")
-		if err := s.advance(ctx, schedule, compiled, parseErr, now, exec, result); err != nil {
-			return err
+	// Concurrency: under Skip, atomically claim the schedule. If a prior run is
+	// still in flight the claim fails and this fire is skipped; otherwise the
+	// claim marks it in flight for the run below. The claim is released after
+	// the run (or immediately for the skip path).
+	claimed := false
+	if schedule.Concurrency.normalized() == ConcurrencySkip {
+		if !s.claimInflight(schedule.ID) {
+			exec := s.newExecution(schedule.ID, "", ScheduleExecSkipped, scheduledFor, now, &now, "")
+			if err := s.advance(ctx, schedule, compiled, parseErr, now, exec, missed, result); err != nil {
+				return err
+			}
+			result.Skipped++
+			return nil
 		}
-		result.Skipped++
-		return nil
+		claimed = true
+		defer s.clearInflight(schedule.ID)
 	}
 
 	if parseErr != nil {
@@ -231,14 +238,14 @@ func (s *Scheduler) fireSchedule(ctx context.Context, now time.Time, schedule Sc
 	if !ok {
 		msg := fmt.Sprintf("no workflow registered for %q", schedule.WorkflowID)
 		exec := s.newExecution(schedule.ID, "", ScheduleExecFailed, scheduledFor, now, &now, msg)
-		if err := s.advance(ctx, schedule, compiled, parseErr, now, exec, result); err != nil {
+		if err := s.advance(ctx, schedule, compiled, parseErr, now, exec, missed, result); err != nil {
 			return err
 		}
 		result.Fired++
 		return nil
 	}
 
-	runID, runErr := s.runWorkflow(ctx, schedule, workflow)
+	runID, runErr := s.runWorkflow(ctx, schedule, workflow, claimed)
 	finished := s.clock.Now().UTC()
 	status := ScheduleExecSucceeded
 	errMsg := ""
@@ -247,18 +254,23 @@ func (s *Scheduler) fireSchedule(ctx context.Context, now time.Time, schedule Sc
 		errMsg = runErr.Error()
 	}
 	exec := s.newExecution(schedule.ID, runID, status, scheduledFor, now, &finished, errMsg)
-	if err := s.advance(ctx, schedule, compiled, parseErr, now, exec, result); err != nil {
+	if err := s.advance(ctx, schedule, compiled, parseErr, now, exec, missed, result); err != nil {
 		return err
 	}
 	result.Fired++
 	return nil
 }
 
-// runWorkflow marks the schedule in flight for the duration of the run so an
-// overlapping tick under ConcurrencySkip observes it, then runs the workflow.
-func (s *Scheduler) runWorkflow(ctx context.Context, schedule ScheduleRecord, workflow *LinearWorkflow) (RunID, error) {
-	s.markInflight(schedule.ID)
-	defer s.clearInflight(schedule.ID)
+// runWorkflow runs the workflow for a due schedule. When the schedule was not
+// already claimed under ConcurrencySkip, it marks the schedule in flight for
+// the run duration so a concurrent tick observes it; claimed is true when the
+// caller already holds the claim (ConcurrencySkip path) and must not double
+// mark or clear it.
+func (s *Scheduler) runWorkflow(ctx context.Context, schedule ScheduleRecord, workflow *LinearWorkflow, claimed bool) (RunID, error) {
+	if !claimed {
+		s.markInflight(schedule.ID)
+		defer s.clearInflight(schedule.ID)
+	}
 
 	input := WorkflowRunInput{Input: append(json.RawMessage(nil), schedule.Input...)}
 	if len(schedule.Metadata) > 0 {
@@ -271,42 +283,33 @@ func (s *Scheduler) runWorkflow(ctx context.Context, schedule ScheduleRecord, wo
 	return runResult.ID, err
 }
 
-// recordMissed records every due occurrence between firstDue and the latest
-// occurrence at or before now as missed, and returns that latest occurrence —
-// the one that actually runs this tick. When the schedule is due exactly once
-// (the common case) nothing is recorded and firstDue is returned unchanged.
-//
-// The walk is bounded by MaxCatchUp so a schedule idle across a long outage
-// records at most that many missed entries; when the cap is hit the latest
-// reachable occurrence is used and the remaining backlog is dropped (logged via
-// the returned count, not replayed). A negative MaxCatchUp disables recording
-// but still advances to the latest occurrence so no backlog of runs replays.
-func (s *Scheduler) recordMissed(ctx context.Context, schedule ScheduleRecord, firstDue, now time.Time, compiled CronSchedule, result *TickResult) (time.Time, error) {
-	latest := firstDue
-	// Walk forward from firstDue. Each next fire still at or before now is a
-	// later due occurrence; the previous one it superseded was missed.
-	for count := 0; s.maxCatchUp < 0 || count < s.maxCatchUp; count++ {
+// collectMissed returns the latest due occurrence at or before now (the one
+// that actually runs this tick) and the missed-execution records for the
+// earlier due occurrences. The walk to the latest occurrence is unbounded so a
+// long outage still advances correctly; only the number of recorded missed
+// entries is capped at MaxCatchUp (a negative MaxCatchUp records none). When
+// the schedule is due exactly once, latest is firstDue and missed is empty.
+func (s *Scheduler) collectMissed(schedule ScheduleRecord, firstDue, now time.Time, compiled CronSchedule) (latest time.Time, missed []ScheduleExecutionRecord) {
+	latest = firstDue
+	for {
 		next, ok := compiled.Next(latest)
 		if !ok || next.After(now) {
 			break
 		}
-		if s.maxCatchUp >= 0 {
-			exec := s.newExecution(schedule.ID, "", ScheduleExecMissed, latest, now, &now, "")
-			if err := s.store.ScheduleExecutions().SaveScheduleExecution(ctx, exec); err != nil {
-				return latest, fmt.Errorf("lebro: scheduler: record missed occurrence: %w", err)
-			}
-			result.Missed++
-			result.Executions = append(result.Executions, exec)
+		// latest is superseded by a later due occurrence, so it was missed.
+		if s.maxCatchUp >= 0 && len(missed) < s.maxCatchUp {
+			missed = append(missed, s.newExecution(schedule.ID, "", ScheduleExecMissed, latest, now, &now, ""))
 		}
 		latest = next
 	}
-	return latest, nil
+	return latest, missed
 }
 
-// advance persists the execution record and the schedule with LastFireAt set to
-// the occurrence just processed and NextFireAt advanced to the first fire
-// strictly after now (nil when the spec is exhausted).
-func (s *Scheduler) advance(ctx context.Context, schedule ScheduleRecord, compiled CronSchedule, parseErr error, now time.Time, exec ScheduleExecutionRecord, result *TickResult) error {
+// advance persists the missed records, the terminal execution record, and the
+// schedule with LastFireAt set to the occurrence just processed and NextFireAt
+// advanced to the first fire strictly after now (nil when the spec is
+// exhausted) — all in one transaction.
+func (s *Scheduler) advance(ctx context.Context, schedule ScheduleRecord, compiled CronSchedule, parseErr error, now time.Time, exec ScheduleExecutionRecord, missed []ScheduleExecutionRecord, result *TickResult) error {
 	scheduledFor := exec.ScheduledFor
 	var nextFire *time.Time
 	if parseErr == nil {
@@ -318,7 +321,7 @@ func (s *Scheduler) advance(ctx context.Context, schedule ScheduleRecord, compil
 	updated.LastFireAt = &scheduledFor
 	updated.NextFireAt = nextFire
 	updated.UpdatedAt = now
-	return s.persist(ctx, updated, exec, result)
+	return s.persist(ctx, updated, exec, missed, result)
 }
 
 // advanceCleared persists the execution and a schedule whose NextFireAt is
@@ -329,18 +332,24 @@ func (s *Scheduler) advanceCleared(ctx context.Context, schedule ScheduleRecord,
 	updated.LastFireAt = &scheduledFor
 	updated.NextFireAt = nil
 	updated.UpdatedAt = now
-	if err := s.persist(ctx, updated, exec, result); err != nil {
+	if err := s.persist(ctx, updated, exec, nil, result); err != nil {
 		return err
 	}
 	result.Fired++
 	return nil
 }
 
-// persist writes the execution record and the updated schedule atomically so a
-// crash cannot leave a schedule advanced without its history entry, or a
-// history entry without the advance.
-func (s *Scheduler) persist(ctx context.Context, schedule ScheduleRecord, exec ScheduleExecutionRecord, result *TickResult) error {
+// persist writes the missed records, the terminal execution record, and the
+// updated schedule in one transaction so a crash cannot leave a schedule
+// advanced without its history entries, or history entries without the advance,
+// and a retry cannot duplicate the missed records.
+func (s *Scheduler) persist(ctx context.Context, schedule ScheduleRecord, exec ScheduleExecutionRecord, missed []ScheduleExecutionRecord, result *TickResult) error {
 	err := s.store.Transaction(ctx, func(txCtx context.Context, repos Repositories) error {
+		for _, m := range missed {
+			if err := repos.ScheduleExecutions().SaveScheduleExecution(txCtx, m); err != nil {
+				return err
+			}
+		}
 		if err := repos.ScheduleExecutions().SaveScheduleExecution(txCtx, exec); err != nil {
 			return err
 		}
@@ -349,13 +358,22 @@ func (s *Scheduler) persist(ctx context.Context, schedule ScheduleRecord, exec S
 	if err != nil {
 		return fmt.Errorf("lebro: scheduler: persist schedule %q: %w", schedule.ID, err)
 	}
+	result.Missed += len(missed)
+	result.Executions = append(result.Executions, missed...)
 	result.Executions = append(result.Executions, exec)
 	return nil
 }
 
+// newExecution builds an execution record with a globally unique, durable ID
+// derived from the schedule, the scheduled occurrence, and the status. This is
+// stable across process restarts (unlike a per-scheduler sequential source,
+// which would repeat IDs after a restart and collide with persisted history)
+// and unique because a schedule has at most one execution of a given status at
+// a given occurrence instant.
 func (s *Scheduler) newExecution(scheduleID ScheduleID, runID RunID, status ScheduleExecStatus, scheduledFor, startedAt time.Time, finishedAt *time.Time, errMsg string) ScheduleExecutionRecord {
+	id := fmt.Sprintf("%s-%d-%s", scheduleID, scheduledFor.UTC().UnixNano(), status)
 	return ScheduleExecutionRecord{
-		ID:           string(s.idSource.NewRunID()),
+		ID:           ScheduleExecutionID(id),
 		ScheduleID:   scheduleID,
 		RunID:        runID,
 		Status:       status,
@@ -366,11 +384,18 @@ func (s *Scheduler) newExecution(scheduleID ScheduleID, runID RunID, status Sche
 	}
 }
 
-func (s *Scheduler) isInflight(id ScheduleID) bool {
+// claimInflight atomically marks the schedule in flight and reports whether the
+// claim succeeded. It fails (returns false) when the schedule is already in
+// flight, so the check-and-mark that ConcurrencySkip relies on is a single
+// atomic operation even when two ticks race on the same schedule.
+func (s *Scheduler) claimInflight(id ScheduleID) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.inflight[id]
-	return ok
+	if _, ok := s.inflight[id]; ok {
+		return false
+	}
+	s.inflight[id] = struct{}{}
+	return true
 }
 
 func (s *Scheduler) markInflight(id ScheduleID) {
@@ -426,7 +451,20 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) loop(ctx context.Context, done chan struct{}) {
-	defer close(done)
+	// When the loop exits — including because the parent context passed to Start
+	// was cancelled without a Stop call — clear the lifecycle state so the
+	// scheduler can be started again. The identity check ensures a loop that is
+	// being torn down does not clobber the state of a newer loop that a
+	// concurrent Start already installed.
+	defer func() {
+		s.startMu.Lock()
+		if s.done == done {
+			s.cancel = nil
+			s.done = nil
+		}
+		s.startMu.Unlock()
+		close(done)
+	}()
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
