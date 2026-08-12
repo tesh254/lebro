@@ -1,0 +1,65 @@
+evals/scorer_test.go
+  s_3b47fbdf580b2c::t_aefa2bf68ce61d 1-93,98-372
+  s_3b47fbdf580b2c::t_bad57ace52b925 94-97
+evals/target.go
+  s_3b47fbdf580b2c::t_4830230bd0f9d9 203-206
+  s_3b47fbdf580b2c::t_464015b73b5159 1-108,115-202,207-245
+  s_3b47fbdf580b2c::t_f461676edae54a 109-114
+evals/dataset_test.go
+  s_3b47fbdf580b2c::t_a6eaee6db3ffae 1-108,111-246
+  s_3b47fbdf580b2c::t_bad57ace52b925 109-110
+evals/compare_test.go
+  s_3b47fbdf580b2c::t_e4de1d0f9b00df 1-272
+evals/dataset.go
+  s_3b47fbdf580b2c::t_8b49c4dfcc6ab0 1-236
+evals/experiment_test.go
+  s_3b47fbdf580b2c::t_21a3c24ca3313f 1-612,616-651
+  s_3b47fbdf580b2c::t_ea92b212474fd0 613-615
+evals/main_test.go
+  s_3b47fbdf580b2c::t_608e170d2358ba 1-15
+evals/store.go
+  s_3b47fbdf580b2c::t_135cdbbbfb4e47 1-170
+examples/README.md
+  s_3b47fbdf580b2c::t_1521304d4787f7 144-152
+evals/target_test.go
+  s_3b47fbdf580b2c::t_1203adc6a67099 216-269
+  s_3b47fbdf580b2c::t_72d1f37f698934 1-215,270-284
+examples/evals-dataset/main.go
+  s_3b47fbdf580b2c::t_75674a59440216 1-239
+README.md
+  s_3b47fbdf580b2c::t_245f2169724385 22
+  s_3b47fbdf580b2c::t_31fe779197d2cd 1207-1291
+evals/doc.go
+  s_3b47fbdf580b2c::t_25fe871531faa8 1-56
+evals/model_scorer.go
+  s_3b47fbdf580b2c::t_ab4ccaa9e6aaec 1-244
+evals/compare.go
+  s_3b47fbdf580b2c::t_84a302ee64cee5 1-28,36-49,51,59-193
+  s_3b47fbdf580b2c::t_464015b73b5159 29-35,50,52-58
+evals/errors.go
+  s_3b47fbdf580b2c::t_c536833659424d 1-33
+evals/experiment.go
+  s_3b47fbdf580b2c::t_1aa8de6e3bca46 485-486
+  s_3b47fbdf580b2c::t_464015b73b5159 40,43-45
+  s_3b47fbdf580b2c::t_598301f683e383 1-39,41-42,46-484,487-495
+evals/model_scorer_test.go
+  s_3b47fbdf580b2c::t_1c0918a19cfc34 18-20,26-28,32-34
+  s_3b47fbdf580b2c::t_837b0899a16fe2 1-7,9-17,21-25,29-31,35-77,80,82-83,86,89-237,239-257,260-289,291-336,344
+  s_3b47fbdf580b2c::t_11b2d2d46a9e24 8,78-79,81,84-85,87-88,238,258-259,290,337-343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2e3efbcfd0ff27ad4b17eb4b17ca82491111a61b",
+  "prompts": {},
+  "sessions": {
+    "s_3b47fbdf580b2c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6a228f54-bf9e-4224-8663-4a49a1b259d5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
