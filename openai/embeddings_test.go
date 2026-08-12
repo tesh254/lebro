@@ -499,6 +499,12 @@ func stalledErrorBodyURL(t *testing.T, cancel context.CancelFunc) string {
 		t.Fatalf("listen error = %v", err)
 	}
 
+	// release is closed by cleanup, not by the serving goroutine: the goroutine
+	// has to stay parked while the client's body read is pending, so it cannot be
+	// the thing that unblocks itself. done reports that it has actually exited,
+	// so cleanup can join it and neither the goroutine nor the connection leaks
+	// into the rest of the run.
+	release := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -517,12 +523,14 @@ func stalledErrorBodyURL(t *testing.T, cancel context.CancelFunc) string {
 		// the transport classifier already handled.
 		time.Sleep(50 * time.Millisecond)
 		cancel()
-		// Hold the connection until the test tears the listener down.
-		<-done
+		// Hold the connection open so the client stays blocked on the read.
+		<-release
 	}()
 
 	t.Cleanup(func() {
+		close(release)
 		_ = listener.Close()
+		<-done
 	})
 	return "http://" + listener.Addr().String()
 }

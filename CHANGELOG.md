@@ -55,17 +55,6 @@ All notable changes to this project are documented in this file.
   into sending the `dimensions` parameter for models that support reduction.
   New public types: `openai.Embedder`, `openai.EmbedderConfig`.
 
-### Fixed
-
-- OpenAI adapters no longer report a canceled or timed-out request as an HTTP
-  status error. When a request is canceled while the error body of a failed
-  response is still being read, both the chat and embeddings adapters classified
-  the failure from the status code alone, so an abandoned request surfaced as a
-  retryable `ModelErrorUnavailable` and `errors.Is(err, context.Canceled)` did
-  not hold. The shared classifier now routes a read failure caused by
-  cancellation or an elapsed deadline through the transport classifier, matching
-  the behavior callers already get when the request itself is interrupted.
-
 - Supervised agent delegation. `NewSubagent` exposes an `Agent` (or any
   `Workflow`) as a named, schema-backed capability that a supervising agent can
   delegate focused work to. A `Subagent` implements `Tool`, so registering one
@@ -323,3 +312,14 @@ All notable changes to this project are documented in this file.
   `Generate` and emits a single delta per step. The OpenAI-compatible adapter
   implements `StreamingModel` over Server-Sent Events, mapping text deltas,
   usage, finish reasons, and error events into the neutral protocol.
+
+### Fixed
+
+- OpenAI adapters no longer report a canceled or timed-out request as an HTTP
+  status error. When a request is canceled while the error body of a failed
+  response is still being read, both the chat and embeddings adapters classified
+  the failure from the status code alone, so an abandoned request surfaced as a
+  retryable `ModelErrorUnavailable` and `errors.Is(err, context.Canceled)` did
+  not hold. The shared classifier now routes a read failure caused by
+  cancellation or an elapsed deadline through the transport classifier, matching
+  the behavior callers already get when the request itself is interrupted.
