@@ -1,0 +1,47 @@
+voice/contracts.go
+  s_e8cfedff8f4cd1::t_4cd7a22d80d340 1-140
+voice/voice_test.go
+  s_e8cfedff8f4cd1::t_d28f645b44ce2e 1-103,108-374
+  s_e8cfedff8f4cd1::t_23f02e18edf0a2 104-106
+voice/mapper.go
+  s_e8cfedff8f4cd1::t_ee052f05759d43 1-48
+voice/main_test.go
+  s_e8cfedff8f4cd1::t_34d602208265de 1-15
+examples/README.md
+  s_e8cfedff8f4cd1::t_e188f3527ac58e 179-187
+README.md
+  s_e8cfedff8f4cd1::t_f524799acee914 1576-1628
+  s_e8cfedff8f4cd1::t_b81cdf170dfc1c 23
+voice/stream.go
+  s_e8cfedff8f4cd1::t_a1bc6f624e5603 39-49,53-55
+  s_e8cfedff8f4cd1::t_ae3165b1588d37 1-38,50-52,56-117
+examples/voice/main.go
+  s_e8cfedff8f4cd1::t_43ef90b7b268e4 1-160
+CHANGELOG.md
+  s_e8cfedff8f4cd1::t_38cc53ae46d95d 9-31
+voice/errors.go
+  s_e8cfedff8f4cd1::t_40f4c7b2b4dd1e 1-98
+voice/session.go
+  s_e8cfedff8f4cd1::t_90f1fa4ecba663 175-177
+  s_e8cfedff8f4cd1::t_6692b564eb7b45 1-99,101-174,178-183,185-196
+  s_e8cfedff8f4cd1::t_41553ca94ead4a 100
+  s_e8cfedff8f4cd1::t_525595aa385c55 184
+voice/doc.go
+  s_e8cfedff8f4cd1::t_7e7891440cbf95 1-78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c73911238c32e464d5b77f530760dbe01af6dd25",
+  "prompts": {},
+  "sessions": {
+    "s_e8cfedff8f4cd1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf307c9f-722c-4a31-b651-d12093520ca3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
