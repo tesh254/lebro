@@ -1,0 +1,25 @@
+voice/stream.go
+  s_e8cfedff8f4cd1::t_5418b7d591e5c7 75-78
+  s_e8cfedff8f4cd1::t_1dcec1adec5de4 106-109
+voice/session.go
+  s_e8cfedff8f4cd1::t_f06a89b961cf9c 159-162
+  s_e8cfedff8f4cd1::t_f73df8c1fcf03d 181-183,193-198
+voice/voice_test.go
+  s_e8cfedff8f4cd1::t_33942224e0a0b6 369-414
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "7819c9a2c762099dc16e8ea4455412b630cf219f",
+  "prompts": {},
+  "sessions": {
+    "s_e8cfedff8f4cd1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cf307c9f-722c-4a31-b651-d12093520ca3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
