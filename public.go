@@ -98,6 +98,10 @@ type (
 	FanOutInputMapper           = runtime.FanOutInputMapper
 	FanOutBranchResult          = runtime.FanOutBranchResult
 	FanOutJoinResult            = runtime.FanOutJoinResult
+	Map                         = runtime.Map
+	ForEach                     = runtime.ForEach
+	ForEachItemResult           = runtime.ForEachItemResult
+	ForEachResult               = runtime.ForEachResult
 	AgentStep                   = runtime.AgentStep
 	ToolStep                    = runtime.ToolStep
 	LinearWorkflowConfig        = runtime.LinearWorkflowConfig

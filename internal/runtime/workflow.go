@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -80,6 +82,27 @@ type StepDefinition struct {
 	Branches      []Branch
 	Default       string
 	FanOut        *FanOut
+	Map           *Map
+	ForEach       *ForEach
+}
+
+// Map is a declarative transform step. Fields maps output property names to
+// dotted paths in the current JSON value; "." selects the whole value. Map
+// never invokes user code, making its decisions safe to replay from a saved
+// workflow definition.
+type Map struct {
+	// Path selects one value from the current input. It is mutually exclusive
+	// with Fields and is useful when the next step accepts an array or scalar.
+	Path   string
+	Fields map[string]string
+}
+
+// ForEach runs Steps for every element of the current JSON array. Results are
+// returned as an array in input order, even when MaxParallel is greater than
+// one. A value of zero or one runs sequentially.
+type ForEach struct {
+	Steps       []Step
+	MaxParallel int
 }
 
 // BranchPredicate evaluates whether a named branch should be selected at a
@@ -163,6 +186,24 @@ type FanOutJoinResult struct {
 	StepID   StepID               `json:"step_id"`
 	Status   RunStatus            `json:"status"`
 	Branches []FanOutBranchResult `json:"branches"`
+}
+
+// ForEachItemResult records durable completion state for one foreach item.
+// Index is the original input position, so result ordering never depends on
+// worker scheduling.
+type ForEachItemResult struct {
+	Index   int                  `json:"index"`
+	Status  RunStatus            `json:"status"`
+	Output  json.RawMessage      `json:"output,omitempty"`
+	Failure *WorkflowFailureData `json:"failure,omitempty"`
+}
+
+// ForEachResult records a completed foreach barrier and its item outcomes in
+// input order. It is persisted with workflow snapshots.
+type ForEachResult struct {
+	StepID StepID              `json:"step_id"`
+	Status RunStatus           `json:"status"`
+	Items  []ForEachItemResult `json:"items"`
 }
 
 // Step pairs a declared step with its handler.
@@ -431,6 +472,7 @@ type WorkflowRunResult struct {
 	Suspend  *SuspendResult
 	Path     []StepID
 	FanOut   []FanOutJoinResult
+	ForEach  []ForEachResult
 }
 
 // DecodeOutput unmarshals the final step output into the caller-provided value.
@@ -667,10 +709,9 @@ func (w *LinearWorkflow) ValidateInput(input json.RawMessage) error {
 
 // workflowSnapshotSchemaVersion is the envelope version the linear workflow
 // executor writes on every snapshot. Readers tolerate 0 (legacy/unspecified),
-// 1 (pre-suspend), 2 (pre-branch), and 3 (pre-fan-out); the fan-out release
-// writes 4 and adds the optional FanOut field so completed fan-out join
-// records are durable.
-const workflowSnapshotSchemaVersion = 4
+// 1 (pre-suspend), 2 (pre-branch), 3 (pre-fan-out), and 4 (pre-foreach).
+// Version 5 adds durable per-item foreach state.
+const workflowSnapshotSchemaVersion = 5
 
 // workflowSnapshotEnvelope is the JSON state persisted at each successful step
 // boundary. It carries the current step's output and the ordered completed
@@ -687,6 +728,7 @@ type workflowSnapshotEnvelope struct {
 	Suspend *suspendEnvelope   `json:"suspend,omitempty"`
 	Path    []StepID           `json:"path,omitempty"`
 	FanOut  []FanOutJoinResult `json:"fan_out,omitempty"`
+	ForEach []ForEachResult    `json:"for_each,omitempty"`
 }
 
 // suspendEnvelope carries the validated resume contract and opaque caller
@@ -774,7 +816,7 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	emitter.emit(runID, 0, "", RunEventStarted)
 
 	frames := []stepFrame{{steps: w.steps, index: 0}}
-	return w.executeFrames(ctx, anchor, emitter, runID, metadata, current, completedOutputs, frames, nil, nil, 0, input.RetryOverrides, input.ThreadID)
+	return w.executeFrames(ctx, anchor, emitter, runID, metadata, current, completedOutputs, frames, nil, nil, nil, 0, input.RetryOverrides, input.ThreadID)
 }
 
 // stepFrame is one level of the execution stack. The top frame holds the
@@ -802,7 +844,7 @@ type stepFrame struct {
 //
 // On suspend the returned WorkflowRunResult has Status RunStatusSuspended and
 // Suspend populated. On terminal success the run is persisted as Succeeded.
-func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, emitter *runEmitter, runID RunID, metadata map[string]string, current json.RawMessage, completedOutputs []json.RawMessage, frames []stepFrame, path []StepID, fanOutResults []FanOutJoinResult, position int, retryOverrides map[StepID]RetryPolicy, threadID ThreadID) (WorkflowRunResult, error) {
+func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, emitter *runEmitter, runID RunID, metadata map[string]string, current json.RawMessage, completedOutputs []json.RawMessage, frames []stepFrame, path []StepID, fanOutResults []FanOutJoinResult, forEachResults []ForEachResult, position int, retryOverrides map[StepID]RetryPolicy, threadID ThreadID) (WorkflowRunResult, error) {
 	lastStepID := StepID("")
 	lastPosition := 0
 
@@ -855,6 +897,80 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
 
 			frames = append(frames, stepFrame{steps: selected.steps, index: 0})
+			continue
+		}
+
+		if step.mapPath != "" || len(step.mapFields) > 0 {
+			stepStart := emitter.emitStepStarted(runID, position, stepID)
+			if err := validateStepValue(step.inputSchema, ValidationTargetStepInput, current); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: err}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			output, err := executeMap(step.mapPath, step.mapFields, current)
+			if err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: err}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			if err := validateStepValue(step.outputSchema, ValidationTargetStepOutput, output); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepOutput, Step: position, StepID: stepID, Err: err}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			if err := w.persistStep(ctx, anchor, path, position, stepID, output, completedOutputs, forEachResults); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow map step %q: %w", stepID, err)}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
+			current, completedOutputs, lastStepID, lastPosition = cloneRawMessage(output), append(completedOutputs, cloneRawMessage(output)), stepID, position
+			frames[top].index++
+			continue
+		}
+
+		if step.forEach != nil {
+			stepStart := emitter.emitStepStarted(runID, position, stepID)
+			if err := validateStepValue(step.inputSchema, ValidationTargetStepInput, current); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: err}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			output, foreachResult, foreachErr := w.executeForEach(ctx, emitter, runID, metadata, current, position, stepID, step.forEach, retryOverrides, threadID)
+			forEachResults = append(forEachResults, foreachResult)
+			if foreachErr != nil {
+				emitter.emitStepFinished(runID, position, stepID, stepStart, foreachErr)
+				if foreachErr.Kind == WorkflowErrorCancelled {
+					emitter.terminal(runID, position, stepID, RunEventCancelled, RunStatusCancelled, foreachErr)
+					w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusCancelled, foreachErr)
+					result, err := w.cancelled(runID, metadata, path, fanOutResults, position, stepID, foreachErr.Err)
+					result.ForEach = cloneForEachResults(forEachResults)
+					return result, err
+				}
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, foreachErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, foreachErr)
+				result, err := w.fail(runID, metadata, path, fanOutResults, foreachErr)
+				result.ForEach = cloneForEachResults(forEachResults)
+				return result, err
+			}
+			if err := w.persistForEachStep(ctx, anchor, path, position, stepID, output, completedOutputs, forEachResults); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow foreach step %q: %w", stepID, err)}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
+			current, completedOutputs, lastStepID, lastPosition = cloneRawMessage(output), append(completedOutputs, cloneRawMessage(output)), stepID, position
+			frames[top].index++
 			continue
 		}
 
@@ -942,7 +1058,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			if runErr.kind == retrySuspended {
 				suspendErr := runErr.cause.(*SuspendError)
 				signal := suspendErr.Signal
-				if perr := w.persistSuspend(ctx, anchor, path, fanOutResults, position, stepID, completedOutputs, signal); perr != nil {
+				if perr := w.persistSuspend(ctx, anchor, path, fanOutResults, forEachResults, position, stepID, completedOutputs, signal); perr != nil {
 					stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow suspend at step %q: %w", stepID, perr)}
 					emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 					emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
@@ -972,7 +1088,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			return w.fail(runID, metadata, path, fanOutResults, stepErr)
 		}
 
-		if perr := w.persistStep(ctx, anchor, path, position, stepID, output, completedOutputs); perr != nil {
+		if perr := w.persistStep(ctx, anchor, path, position, stepID, output, completedOutputs, forEachResults); perr != nil {
 			stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow step %q: %w", stepID, perr)}
 			emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
 			emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
@@ -1002,6 +1118,7 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 		Metadata: metadata,
 		Path:     cloneStepIDs(path),
 		FanOut:   cloneFanOutJoinResults(fanOutResults),
+		ForEach:  cloneForEachResults(forEachResults),
 	}, nil
 }
 
@@ -1183,7 +1300,7 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 	emitter.emitResumed(run.ID, resumePosition, resumeStepID)
 
 	completedOutputs := cloneRawOutputs(envelope.Outputs)
-	return w.executeFrames(ctx, anchor, emitter, run.ID, mergedMetadata, resumeInput, completedOutputs, frames, cloneStepIDs(envelope.Path), cloneFanOutJoinResults(envelope.FanOut), envelope.Step, nil, run.ThreadID)
+	return w.executeFrames(ctx, anchor, emitter, run.ID, mergedMetadata, resumeInput, completedOutputs, frames, cloneStepIDs(envelope.Path), cloneFanOutJoinResults(envelope.FanOut), cloneForEachResults(envelope.ForEach), envelope.Step, nil, run.ThreadID)
 }
 
 // loadSuspendSnapshot lists snapshots for runID across all pages and returns
@@ -1305,7 +1422,7 @@ func (w *LinearWorkflow) persistTerminalBestEffort(anchor runAnchor, path []Step
 // the suspending step; FinishedAt stays nil because the run is resumable.
 // When no Store is bound the suspend is in-memory only and the caller still
 // receives a suspended WorkflowRunResult.
-func (w *LinearWorkflow) persistSuspend(ctx context.Context, anchor runAnchor, path []StepID, fanOutResults []FanOutJoinResult, position int, stepID StepID, completed []json.RawMessage, signal SuspendSignal) error {
+func (w *LinearWorkflow) persistSuspend(ctx context.Context, anchor runAnchor, path []StepID, fanOutResults []FanOutJoinResult, forEachResults []ForEachResult, position int, stepID StepID, completed []json.RawMessage, signal SuspendSignal) error {
 	if w.store == nil || isNilInterface(w.store) {
 		return nil
 	}
@@ -1318,8 +1435,9 @@ func (w *LinearWorkflow) persistSuspend(ctx context.Context, anchor runAnchor, p
 			Contract: cloneRawMessage(signal.Contract),
 			Payload:  cloneRawMessage(signal.Payload),
 		},
-		Path:   cloneStepIDs(path),
-		FanOut: cloneFanOutJoinResults(fanOutResults),
+		Path:    cloneStepIDs(path),
+		FanOut:  cloneFanOutJoinResults(fanOutResults),
+		ForEach: cloneForEachResults(forEachResults),
 	}
 	state, err := json.Marshal(envelope)
 	if err != nil {
@@ -1389,7 +1507,10 @@ func (w *LinearWorkflow) persistFanOutStep(ctx context.Context, anchor runAnchor
 	if w.store == nil || isNilInterface(w.store) {
 		return nil
 	}
-	stepOutputs := append(cloneRawOutputs(completed), cloneRawMessage(output))
+	stepOutputs := cloneRawOutputs(completed)
+	if len(output) > 0 {
+		stepOutputs = append(stepOutputs, cloneRawMessage(output))
+	}
 	envelope := workflowSnapshotEnvelope{
 		Step:    position,
 		StepID:  stepID,
@@ -1426,6 +1547,35 @@ func (w *LinearWorkflow) persistFanOutStep(ctx context.Context, anchor runAnchor
 	})
 }
 
+func (w *LinearWorkflow) persistForEachStep(ctx context.Context, anchor runAnchor, path []StepID, position int, stepID StepID, output json.RawMessage, completed []json.RawMessage, results []ForEachResult) error {
+	if w.store == nil || isNilInterface(w.store) {
+		return nil
+	}
+	stepOutputs := cloneRawOutputs(completed)
+	if len(output) > 0 {
+		stepOutputs = append(stepOutputs, cloneRawMessage(output))
+	}
+	state, err := json.Marshal(workflowSnapshotEnvelope{Step: position, StepID: stepID, Output: cloneRawMessage(output), Outputs: cloneRawOutputs(stepOutputs), Path: cloneStepIDs(path), ForEach: cloneForEachResults(results)})
+	if err != nil {
+		return fmt.Errorf("lebro: encode workflow foreach snapshot: %w", err)
+	}
+	now := w.clock.Now()
+	snapshot := WorkflowSnapshotRecord{ID: fmt.Sprintf("%s-snapshot-%d", anchor.runID, position), RunID: anchor.runID, Sequence: int64(position), SchemaVersion: workflowSnapshotSchemaVersion, State: state, CreatedAt: now}
+	updated := w.baseRunRecord(anchor)
+	updated.Status = RunStatusRunning
+	updated.CurrentStep = position
+	updated.CurrentStepID = stepID
+	updated.StepOutputs = stepOutputs
+	updated.Path = cloneStepIDs(path)
+	updated.UpdatedAt = now
+	return w.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		if err := repos.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, snapshot); err != nil {
+			return err
+		}
+		return repos.WorkflowRuns().SaveWorkflowRun(ctx, updated)
+	})
+}
+
 // persistStep writes a snapshot at the completed step boundary and updates
 // the run record inside a single Store.Transaction so the boundary is
 // atomic. The updated run record carries the anchor's stable fields (input,
@@ -1433,7 +1583,7 @@ func (w *LinearWorkflow) persistFanOutStep(ctx context.Context, anchor runAnchor
 // outputs through the current step, so a process stop after a committed
 // step leaves a resumable, inspectable Running record. When no Store is
 // bound it is a no-op.
-func (w *LinearWorkflow) persistStep(ctx context.Context, anchor runAnchor, path []StepID, position int, stepID StepID, output json.RawMessage, completed []json.RawMessage) error {
+func (w *LinearWorkflow) persistStep(ctx context.Context, anchor runAnchor, path []StepID, position int, stepID StepID, output json.RawMessage, completed []json.RawMessage, forEachResults []ForEachResult) error {
 	if w.store == nil || isNilInterface(w.store) {
 		return nil
 	}
@@ -1444,6 +1594,7 @@ func (w *LinearWorkflow) persistStep(ctx context.Context, anchor runAnchor, path
 		Output:  cloneRawMessage(output),
 		Outputs: cloneRawOutputs(stepOutputs),
 		Path:    cloneStepIDs(path),
+		ForEach: cloneForEachResults(forEachResults),
 	}
 	state, err := json.Marshal(envelope)
 	if err != nil {
@@ -1586,6 +1737,20 @@ func cloneFanOutJoinResults(results []FanOutJoinResult) []FanOutJoinResult {
 	return cloned
 }
 
+func cloneForEachResults(results []ForEachResult) []ForEachResult {
+	if len(results) == 0 {
+		return nil
+	}
+	cloned := make([]ForEachResult, len(results))
+	for i, result := range results {
+		cloned[i] = ForEachResult{StepID: result.StepID, Status: result.Status, Items: make([]ForEachItemResult, len(result.Items))}
+		for j, item := range result.Items {
+			cloned[i].Items[j] = ForEachItemResult{Index: item.Index, Status: item.Status, Output: cloneRawMessage(item.Output), Failure: cloneWorkflowFailureData(item.Failure)}
+		}
+	}
+	return cloned
+}
+
 func cloneFanOutBranchResults(results []FanOutBranchResult) []FanOutBranchResult {
 	if len(results) == 0 {
 		return nil
@@ -1651,6 +1816,9 @@ type compiledStep struct {
 	branches      []compiledBranch
 	defaultBranch string
 	fanOut        *compiledFanOut
+	mapFields     map[string]string
+	mapPath       string
+	forEach       *compiledForEach
 }
 
 // compiledBranch is the compiled form of a Branch. entryID is the StepID of
@@ -1677,6 +1845,11 @@ type compiledFanOutBranch struct {
 	name        string
 	inputMapper FanOutInputMapper
 	steps       []compiledStep
+}
+
+type compiledForEach struct {
+	steps       []compiledStep
+	maxParallel int
 }
 
 func newCompiledStep(compiler SchemaCompiler, step Step) (compiledStep, error) {
@@ -1739,6 +1912,28 @@ func newCompiledStep(compiler SchemaCompiler, step Step) (compiledStep, error) {
 		}
 		cs.fanOut = compiledFO
 	}
+	if step.Definition.Map != nil {
+		cs.mapPath = step.Definition.Map.Path
+		cs.mapFields = make(map[string]string, len(step.Definition.Map.Fields))
+		for k, v := range step.Definition.Map.Fields {
+			cs.mapFields[k] = v
+		}
+	}
+	if step.Definition.ForEach != nil {
+		compiled := &compiledForEach{maxParallel: step.Definition.ForEach.MaxParallel}
+		if compiled.maxParallel < 1 {
+			compiled.maxParallel = 1
+		}
+		compiled.steps = make([]compiledStep, 0, len(step.Definition.ForEach.Steps))
+		for _, child := range step.Definition.ForEach.Steps {
+			result, err := newCompiledStep(compiler, child)
+			if err != nil {
+				return cs, fmt.Errorf("lebro: compile foreach step %q: %w", child.Definition.ID, err)
+			}
+			compiled.steps = append(compiled.steps, result)
+		}
+		cs.forEach = compiled
+	}
 	if len(step.Definition.InputSchema) > 0 {
 		if !json.Valid(step.Definition.InputSchema) {
 			return cs, errors.New("input schema must be valid JSON")
@@ -1797,8 +1992,24 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 			return fmt.Errorf("lebro: workflow step ID %q is already registered", step.Definition.ID)
 		}
 		seen[step.Definition.ID] = struct{}{}
+		controlCount := 0
+		if len(step.Definition.Branches) > 0 {
+			controlCount++
+		}
+		if step.Definition.FanOut != nil {
+			controlCount++
+		}
+		if step.Definition.Map != nil {
+			controlCount++
+		}
+		if step.Definition.ForEach != nil {
+			controlCount++
+		}
 		if len(step.Definition.Branches) > 0 && step.Definition.FanOut != nil {
 			return fmt.Errorf("lebro: workflow step %q cannot declare both Branches and FanOut", step.Definition.ID)
+		}
+		if controlCount > 1 {
+			return fmt.Errorf("lebro: workflow step %q cannot combine Branches, FanOut, Map, or ForEach", step.Definition.ID)
 		}
 		if len(step.Definition.Branches) > 0 {
 			if step.Handler != nil && !isNilInterface(step.Handler) {
@@ -1884,6 +2095,57 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 					return err
 				}
 			}
+		} else if step.Definition.Map != nil {
+			if step.Handler != nil && !isNilInterface(step.Handler) {
+				return fmt.Errorf("lebro: workflow map step %q must not declare a Handler", step.Definition.ID)
+			}
+			if len(step.Definition.SuspendSchema) > 0 || step.Definition.Retry != nil {
+				return fmt.Errorf("lebro: workflow map step %q must not declare SuspendSchema or Retry", step.Definition.ID)
+			}
+			if len(step.Definition.InputSchema) > 0 || len(step.Definition.OutputSchema) > 0 {
+				*hasSchema = true
+			}
+			if step.Definition.Map.Path != "" && len(step.Definition.Map.Fields) > 0 {
+				return fmt.Errorf("lebro: workflow map step %q cannot declare both Path and Fields", step.Definition.ID)
+			}
+			if step.Definition.Map.Path == "" && len(step.Definition.Map.Fields) == 0 {
+				return fmt.Errorf("lebro: workflow map step %q has no Path or Fields", step.Definition.ID)
+			}
+			if path := step.Definition.Map.Path; path != "" && path != "." && (strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") || strings.Contains(path, "..")) {
+				return fmt.Errorf("lebro: workflow map step %q has invalid Path %q", step.Definition.ID, path)
+			}
+			for key, path := range step.Definition.Map.Fields {
+				if key == "" || path == "" {
+					return fmt.Errorf("lebro: workflow map step %q has empty field name or path", step.Definition.ID)
+				}
+				if path != "." && (strings.HasPrefix(path, ".") || strings.HasSuffix(path, ".") || strings.Contains(path, "..")) {
+					return fmt.Errorf("lebro: workflow map step %q field %q has invalid path %q", step.Definition.ID, key, path)
+				}
+			}
+		} else if step.Definition.ForEach != nil {
+			if step.Handler != nil && !isNilInterface(step.Handler) {
+				return fmt.Errorf("lebro: workflow foreach step %q must not declare a Handler", step.Definition.ID)
+			}
+			if len(step.Definition.OutputSchema) > 0 || len(step.Definition.SuspendSchema) > 0 || step.Definition.Retry != nil {
+				return fmt.Errorf("lebro: workflow foreach step %q must not declare OutputSchema, SuspendSchema, or Retry", step.Definition.ID)
+			}
+			if len(step.Definition.InputSchema) > 0 {
+				*hasSchema = true
+			}
+			if step.Definition.ForEach.MaxParallel < 0 {
+				return fmt.Errorf("lebro: workflow foreach step %q MaxParallel must be >= 0", step.Definition.ID)
+			}
+			if len(step.Definition.ForEach.Steps) == 0 {
+				return fmt.Errorf("lebro: workflow foreach step %q has no steps", step.Definition.ID)
+			}
+			for _, child := range step.Definition.ForEach.Steps {
+				if len(child.Definition.Branches) > 0 || child.Definition.FanOut != nil || child.Definition.Map != nil || child.Definition.ForEach != nil {
+					return fmt.Errorf("lebro: workflow foreach step %q cannot contain child control-flow step %q", step.Definition.ID, child.Definition.ID)
+				}
+			}
+			if err := validateStepTree(step.Definition.ForEach.Steps, seen, hasSchema); err != nil {
+				return err
+			}
 		} else {
 			if step.Handler == nil || isNilInterface(step.Handler) {
 				return fmt.Errorf("lebro: workflow step %q handler is required", step.Definition.ID)
@@ -1940,6 +2202,19 @@ func cloneStepDefinition(def StepDefinition) StepDefinition {
 			fo.Branches = branches
 		}
 		def.FanOut = &fo
+	}
+	if def.Map != nil {
+		mapped := *def.Map
+		mapped.Fields = make(map[string]string, len(def.Map.Fields))
+		for k, v := range def.Map.Fields {
+			mapped.Fields[k] = v
+		}
+		def.Map = &mapped
+	}
+	if def.ForEach != nil {
+		foreach := *def.ForEach
+		foreach.Steps = append([]Step(nil), def.ForEach.Steps...)
+		def.ForEach = &foreach
 	}
 	return def
 }
@@ -2340,6 +2615,144 @@ func buildFanOutJoinedOutput(results []FanOutBranchResult) []map[string]any {
 		}
 	}
 	return out
+}
+
+func executeMap(path string, fields map[string]string, input json.RawMessage) (json.RawMessage, error) {
+	var root any
+	if err := json.Unmarshal(input, &root); err != nil {
+		return nil, fmt.Errorf("lebro: decode map input: %w", err)
+	}
+	if path != "" {
+		value, err := mapPathValue(root, path)
+		if err != nil {
+			return nil, fmt.Errorf("lebro: map path %q: %w", path, err)
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, fmt.Errorf("lebro: encode map output: %w", err)
+		}
+		return encoded, nil
+	}
+	output := make(map[string]any, len(fields))
+	for key, path := range fields {
+		value, err := mapPathValue(root, path)
+		if err != nil {
+			return nil, fmt.Errorf("lebro: map field %q path %q: %w", key, path, err)
+		}
+		output[key] = value
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: encode map output: %w", err)
+	}
+	return encoded, nil
+}
+
+func mapPathValue(root any, path string) (any, error) {
+	value := root
+	if path == "." {
+		return value, nil
+	}
+	for _, part := range splitMapPath(path) {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, errors.New("is not an object")
+		}
+		var found bool
+		value, found = object[part]
+		if !found {
+			return nil, errors.New("does not exist")
+		}
+	}
+	return value, nil
+}
+
+func splitMapPath(path string) []string {
+	var parts []string
+	for _, part := range strings.Split(path, ".") {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
+}
+
+func (w *LinearWorkflow) executeForEach(ctx context.Context, emitter *runEmitter, runID RunID, metadata map[string]string, input json.RawMessage, position int, stepID StepID, foreach *compiledForEach, retryOverrides map[StepID]RetryPolicy, threadID ThreadID) (json.RawMessage, ForEachResult, *WorkflowError) {
+	var items []json.RawMessage
+	if trimmed := bytes.TrimSpace(input); len(trimmed) == 0 || trimmed[0] != '[' {
+		return nil, ForEachResult{}, &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: errors.New("lebro: foreach input must be a JSON array")}
+	}
+	if err := json.Unmarshal(input, &items); err != nil {
+		return nil, ForEachResult{}, &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: errors.New("lebro: foreach input must be a JSON array")}
+	}
+	outputs := make([]json.RawMessage, len(items))
+	errs := make([]*WorkflowError, len(items))
+	sem := make(chan struct{}, foreach.maxParallel)
+	var wg sync.WaitGroup
+	for index, item := range items {
+		wg.Add(1)
+		go func(index int, item json.RawMessage) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				errs[index] = &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: ctx.Err()}
+				return
+			}
+			defer func() { <-sem }()
+			current := cloneRawMessage(item)
+			for _, child := range foreach.steps {
+				if err := ctx.Err(); err != nil {
+					errs[index] = &WorkflowError{Kind: WorkflowErrorCancelled, Step: position, StepID: stepID, Err: err}
+					return
+				}
+				if err := validateStepValue(child.inputSchema, ValidationTargetStepInput, current); err != nil {
+					errs[index] = &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: child.definition.ID, Err: err}
+					return
+				}
+				childStart := emitter.emitFanOutBranchStepStarted(runID, position, child.definition.ID, fmt.Sprintf("%d", index))
+				stepCtx := withWorkflowInvocation(ctx, runID, position, child.definition.ID, threadID, metadata)
+				output, outcome := w.runStepWithRetry(stepCtx, child, position, child.definition.ID, childStart, current, resolveRetryPolicy(child.retry, retryOverrides, child.definition.ID), emitter, runID)
+				if outcome != nil {
+					kind := WorkflowErrorStepFailed
+					switch outcome.kind {
+					case retryCancelled:
+						kind = WorkflowErrorCancelled
+					case retryPanicked:
+						kind = WorkflowErrorStepPanicked
+					case retryInvalidOutput, retrySuspended:
+						kind = WorkflowErrorInvalidStepOutput
+					}
+					errs[index] = &WorkflowError{Kind: kind, Step: position, StepID: child.definition.ID, Err: outcome.cause}
+					emitter.emitFanOutBranchStepFinished(runID, position, child.definition.ID, fmt.Sprintf("%d", index), childStart, errs[index])
+					return
+				}
+				emitter.emitFanOutBranchStepFinished(runID, position, child.definition.ID, fmt.Sprintf("%d", index), childStart, nil)
+				current = cloneRawMessage(output)
+			}
+			outputs[index] = current
+		}(index, item)
+	}
+	wg.Wait()
+	result := ForEachResult{StepID: stepID, Status: RunStatusSucceeded, Items: make([]ForEachItemResult, len(items))}
+	for index, itemErr := range errs {
+		result.Items[index] = ForEachItemResult{Index: index, Status: RunStatusSucceeded, Output: cloneRawMessage(outputs[index])}
+		if itemErr != nil {
+			result.Status = RunStatusFailed
+			result.Items[index].Status = RunStatusFailed
+			result.Items[index].Failure = &WorkflowFailureData{Kind: itemErr.Kind, Step: itemErr.Step, StepID: itemErr.StepID, Message: failureMessage(itemErr)}
+		}
+	}
+	for _, itemErr := range errs {
+		if itemErr != nil {
+			return nil, result, itemErr
+		}
+	}
+	output, err := json.Marshal(outputs)
+	if err != nil {
+		return nil, result, &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: encode foreach output: %w", err)}
+	}
+	return output, result, nil
 }
 
 // executeFanOutBranch runs one fan-out branch's steps sequentially and returns
