@@ -167,3 +167,12 @@ so no network or API key is required):
 ```sh
 go run ./examples/workflow-schedule
 ```
+
+Run the channels example (receives a signed platform webhook through the
+generic HMAC channel adapter, runs an agent, streams the reply back to the
+conversation, and shows the exchange persisted to one durable thread; the
+webhook is signed and served in-process, so no network or API key is required):
+
+```sh
+go run ./examples/channels
+```

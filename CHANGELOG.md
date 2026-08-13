@@ -6,6 +6,32 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Messaging channel adapters. A new optional `channels` package connects agents
+  to conversational platforms: a platform delivers an inbound message to a
+  webhook, the agent runs through the ordinary streaming pipeline, and the
+  streamed reply is delivered back to the same conversation. It is off by
+  default — nothing in the root module imports it, and the root module gains no
+  provider dependency. The package supplies the provider-neutral edges and
+  leaves the platform-specific edges to an `Adapter` (`Platform`, `Verify`,
+  `Decode`, `Send`); `NewWebhookAdapter` is a generic HMAC-SHA256 webhook
+  adapter that needs no platform SDK. A `Server`, built with `NewServer` and
+  populated with `ExposeAgent(agent, adapters...)`, routes each agent-adapter
+  pair at `/agents/{id}/channels/{platform}/webhook`. An inbound message maps
+  deterministically to a durable thread through a `ThreadMapper`
+  (`NamespaceThreadMapper` by default), so every message in one conversation
+  lands on one persisted transcript; the sender is mapped onto a
+  `lebro.Identity` and carried on the run context so a configured `Policy`
+  authorizes the run, and inbound content is always a user turn. Redelivery is
+  made safe by a `Deduplicator`, scoped per agent-platform route:
+  `StoreDeduplicator` persists a marker per key through a `Store` (the default
+  whenever a store is configured) so redelivery is recognized across a restart,
+  and `MemoryDeduplicator` keeps a bounded in-process window. The
+  webhook handler returns status codes a platform's retry logic can act on. The
+  public surface adds the `channels` package (`Server`, `Config`, `ExposeAgent`,
+  `Adapter`, `InboundMessage`, `OutboundMessage`, `ChannelIdentity`,
+  `ConversationRef`, `TextFormat`, `ThreadMapper`, `NamespaceThreadMapper`,
+  `Deduplicator`, `MemoryDeduplicator`, `StoreDeduplicator`, `NewWebhookAdapter`,
+  and their config types); no new module dependency is introduced.
 - Local Studio-style developer UI. A new optional `studio` package serves a
   local UI for exercising agents, tools, workflows, threads, and run traces
   without writing one-off debugging programs. It is off by default: nothing in
