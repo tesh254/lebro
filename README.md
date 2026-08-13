@@ -19,6 +19,7 @@ lebro/                   public API façade and module documentation
 internal/runtime/        model, tools, schema, workflow, storage, vector, and RAG runtime
 jsonschema/              optional JSON Schema compiler implementation
 httpapi/                 optional HTTP server and generated OpenAPI contract
+studio/                  optional local Studio-style developer UI
 evals/                   optional datasets, scorers, and experiment runs
 internal/testkit/        deterministic provider fixtures and contract suites for tests
 examples/                runnable feature-focused examples
@@ -1281,6 +1282,72 @@ Run the client example (no network or API key required):
 
 ```sh
 go run ./examples/http-client
+```
+
+## Local Studio-style developer UI
+
+The optional `studio` package serves a local developer UI for exercising
+agents, tools, workflows, threads, and run traces — so iterating on a primitive
+does not mean writing a one-off debugging program. It is off by default:
+nothing in the root module imports it, and the UI is unreachable until a caller
+builds its handler or calls `studio.Start`. UI state is never a runtime
+requirement; the agents and workflows a program runs behave identically whether
+or not a Studio is attached.
+
+A Studio composes the surfaces lebro already has rather than reimplementing
+them. Agent runs, workflow runs, streaming, and thread reads are served by
+`httpapi`, mounted under `/api`. Ordered run events — the run, step, model, and
+tool spans that record what happened and in what order, including tool calls,
+their results, and the path a workflow took — are read from an observability
+`Repository` through the small `studio.TraceLister` contract, which
+`obsv.MemoryRepository` satisfies with no adapter. The web UI is served as a
+static bundle; a build with no bundle serves a placeholder page so the API is
+still usable.
+
+```go
+// QueueSize: -1 exports spans synchronously, so a run's trace is queryable the
+// moment the run returns; the default buffers on a background goroutine.
+observer, _ := obsv.New(obsv.Config{Repository: repository, QueueSize: -1})
+
+agent, _ := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "assistant", Name: "Assistant"},
+    Model:      model,
+    Listener:   observer, // feeds the trace views
+    Store:      store,
+})
+
+studioServer, _ := studio.New(studio.Config{
+    Agents:    []*lebro.Agent{agent},
+    Workflows: []*lebro.LinearWorkflow{workflow},
+    Store:     store,
+    Traces:    repository,
+})
+
+// Serve for a browser, off until explicitly started:
+_ = studio.Start(ctx, "127.0.0.1:4111", studio.Config{ /* ... */ })
+```
+
+The API mounted under `/api` exposes `GET /api/agents`, `POST
+/api/agents/{id}/runs` (and `/runs/stream`), `GET /api/workflows`, `POST
+/api/workflows/{id}/runs`, `GET /api/threads/{id}`, and Studio's read-only
+`GET /api/studio/traces` and `GET /api/studio/traces/{id}`. The trace-detail
+route returns a run's spans as a timeline ordered by start time, so a client
+renders the events top to bottom.
+
+The developer UI itself — a TanStack Start application replicating the feel of a
+modern agent studio — lives in the separate `lebro-studio` project; its build
+output is embedded into `studio/dist` to serve it from here. A from-source build
+has an empty `studio/dist` and serves a placeholder page. To embed the real UI —
+required before packaging a release — build it and copy the bundle in:
+
+```sh
+make studio-ui LEBRO_STUDIO_UI=/path/to/lebro-studio
+```
+
+Run the Studio example (no network or API key required):
+
+```sh
+go run ./examples/studio
 ```
 
 ## Dataset evaluation, scorers, and experiment runs

@@ -6,6 +6,28 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Local Studio-style developer UI. A new optional `studio` package serves a
+  local UI for exercising agents, tools, workflows, threads, and run traces
+  without writing one-off debugging programs. It is off by default: nothing in
+  the root module imports it, and the UI is unreachable until a caller builds
+  `Studio.Handler` or calls `studio.Start`, so UI state is never a runtime
+  requirement. A `Studio`, built with `studio.New`, composes the surfaces lebro
+  already has rather than reimplementing them — agent runs, workflow runs,
+  streaming, and thread reads are served by `httpapi` mounted under `/api`, and
+  ordered run events (the run, step, model, and tool spans that record what
+  happened and in what order, including tool calls, their results, and the path
+  a workflow took) are read from an observability `Repository` through the new
+  `studio.TraceLister` contract, which `obsv.MemoryRepository` satisfies with no
+  adapter. Studio adds read-only `GET /api/studio/traces` and `GET
+  /api/studio/traces/{id}`; the trace-detail route returns a run's spans as a
+  timeline ordered by start time so a client renders the events top to bottom.
+  The web UI is served as a static bundle embedded at build time, with a
+  placeholder page when no bundle is present, so a from-source build still
+  serves a usable API. `studio.Start` owns a listener and shuts down cleanly on
+  context cancellation. The public surface adds the `studio` package (`Config`,
+  `Studio`, `New`, `Start`, `TraceLister`, and the trace response types); no new
+  module dependency is introduced. The developer UI itself lives in the separate
+  `lebro-studio` project.
 - Human approval gates for protected workflow steps. A new `ApprovalGate`,
   built with `NewApprovalGate`, wraps a protected `StepHandler` (typically a
   `ToolStep`) in two generated steps: a request step that suspends the run with
