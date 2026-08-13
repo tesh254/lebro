@@ -429,6 +429,76 @@ func (r *postgresRepositories) AppendMessages(ctx context.Context, vs []MessageR
 	return r.withAutoTx(ctx, insert)
 }
 
+func (r *postgresRepositories) UpdateMessages(ctx context.Context, vs []MessageRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(vs) == 0 {
+		return nil
+	}
+	seen := make(map[ThreadID]map[string]struct{}, len(vs))
+	return r.withAutoTx(ctx, func(q sqlQueryer) error {
+		for _, v := range vs {
+			if v.ID == "" || v.ThreadID == "" {
+				return errors.New("lebro: message and thread IDs are required")
+			}
+			if err := v.Message.Validate(); err != nil {
+				return fmt.Errorf("lebro: message %q: %w", v.ID, err)
+			}
+			if err := validateJSON(v.Metadata); err != nil {
+				return fmt.Errorf("lebro: message metadata: %w", err)
+			}
+			if err := validateRecord(v); err != nil {
+				return fmt.Errorf("lebro: message: %w", err)
+			}
+			if seen[v.ThreadID] == nil {
+				seen[v.ThreadID] = map[string]struct{}{}
+			}
+			if _, duplicate := seen[v.ThreadID][v.ID]; duplicate {
+				return fmt.Errorf("lebro: duplicate message %q", v.ID)
+			}
+			seen[v.ThreadID][v.ID] = struct{}{}
+			message, err := json.Marshal(v.Message)
+			if err != nil {
+				return fmt.Errorf("lebro: encode message %q: %w", v.ID, err)
+			}
+			result, err := q.ExecContext(ctx, `UPDATE messages SET message = $1, metadata = $2 WHERE id = $3 AND thread_id = $4`, string(message), postgresJSON(v.Metadata), v.ID, v.ThreadID)
+			if err != nil {
+				return fmt.Errorf("lebro: update message %q: %w", v.ID, postgresError(err))
+			}
+			n, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("lebro: update message %q: %w", v.ID, postgresError(err))
+			}
+			if n == 0 {
+				return ErrNotFound
+			}
+		}
+		return nil
+	})
+}
+
+func (r *postgresRepositories) DeleteMessages(ctx context.Context, id ThreadID, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := r.threadExists(ctx, id); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, messageID := range ids {
+		if messageID == "" {
+			return errors.New("lebro: message ID is required")
+		}
+	}
+	if _, err := r.q.ExecContext(ctx, `DELETE FROM messages WHERE thread_id = $1 AND id = ANY($2)`, id, ids); err != nil {
+		return fmt.Errorf("lebro: delete messages: %w", postgresError(err))
+	}
+	return nil
+}
+
 // withAutoTx wraps multi-statement operations in a transaction when the
 // repositories are standalone (backed by *sql.DB). When they are already
 // inside a caller's Transaction (backed by *sql.Tx) fn runs directly.

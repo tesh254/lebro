@@ -219,6 +219,27 @@ func (r *guardedMessageRepository) AppendMessages(ctx context.Context, records [
 	return r.inner.AppendMessages(ctx, records)
 }
 
+func (r *guardedMessageRepository) UpdateMessages(ctx context.Context, records []MessageRecord) error {
+	seen := make(map[ThreadID]struct{}, len(records))
+	for _, record := range records {
+		if _, ok := seen[record.ThreadID]; ok {
+			continue
+		}
+		seen[record.ThreadID] = struct{}{}
+		if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindMessage, ID: string(record.ThreadID)}); err != nil {
+			return err
+		}
+	}
+	return r.inner.UpdateMessages(ctx, records)
+}
+
+func (r *guardedMessageRepository) DeleteMessages(ctx context.Context, id ThreadID, ids []string) error {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindMessage, ID: string(id)}); err != nil {
+		return err
+	}
+	return r.inner.DeleteMessages(ctx, id, ids)
+}
+
 func (r *guardedMessageRepository) ListMessages(ctx context.Context, id ThreadID, page PageRequest) (Page[MessageRecord], error) {
 	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindMessage, ID: string(id)}); err != nil {
 		return Page[MessageRecord]{}, err

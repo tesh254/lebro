@@ -127,6 +127,24 @@ func (s *MemoryStore) AppendMessages(ctx context.Context, records []MessageRecor
 	}
 	return err
 }
+func (s *MemoryStore) UpdateMessages(ctx context.Context, records []MessageRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := updateMessages(ctx, &s.state, records)
+	if err == nil && len(records) > 0 {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) DeleteMessages(ctx context.Context, id ThreadID, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := deleteMessages(ctx, &s.state, id, ids)
+	if err == nil && len(ids) > 0 {
+		s.version++
+	}
+	return err
+}
 func (s *MemoryStore) ListMessages(ctx context.Context, id ThreadID, page PageRequest) (Page[MessageRecord], error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -242,6 +260,20 @@ func (r *memoryRepositories) UpdateThread(ctx context.Context, v ThreadRecord) e
 func (r *memoryRepositories) AppendMessages(ctx context.Context, v []MessageRecord) error {
 	err := appendMessages(ctx, &r.state, v)
 	if err == nil && len(v) > 0 {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) UpdateMessages(ctx context.Context, v []MessageRecord) error {
+	err := updateMessages(ctx, &r.state, v)
+	if err == nil && len(v) > 0 {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) DeleteMessages(ctx context.Context, id ThreadID, ids []string) error {
+	err := deleteMessages(ctx, &r.state, id, ids)
+	if err == nil && len(ids) > 0 {
 		r.dirty = true
 	}
 	return err
@@ -400,6 +432,79 @@ func listMessages(ctx context.Context, s memoryState, id ThreadID, p PageRequest
 		return Page[MessageRecord]{}, ErrNotFound
 	}
 	return paginate(s.messages[id], p, cloneMessageRecord)
+}
+func updateMessages(ctx context.Context, s *memoryState, vs []MessageRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	seen := make(map[ThreadID]map[string]struct{}, len(vs))
+	for _, v := range vs {
+		if v.ID == "" || v.ThreadID == "" {
+			return errors.New("lebro: message and thread IDs are required")
+		}
+		if err := v.Message.Validate(); err != nil {
+			return err
+		}
+		if err := validateJSON(v.Metadata); err != nil {
+			return fmt.Errorf("lebro: message metadata: %w", err)
+		}
+		if err := validateRecord(v); err != nil {
+			return fmt.Errorf("lebro: message: %w", err)
+		}
+		if seen[v.ThreadID] == nil {
+			seen[v.ThreadID] = map[string]struct{}{}
+		}
+		if _, ok := seen[v.ThreadID][v.ID]; ok {
+			return fmt.Errorf("lebro: duplicate message %q", v.ID)
+		}
+		seen[v.ThreadID][v.ID] = struct{}{}
+		found := false
+		for _, existing := range s.messages[v.ThreadID] {
+			if existing.ID == v.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrNotFound
+		}
+	}
+	for _, v := range vs {
+		for i, existing := range s.messages[v.ThreadID] {
+			if existing.ID == v.ID {
+				v.CreatedAt = existing.CreatedAt
+				s.messages[v.ThreadID][i] = cloneMessageRecord(v)
+				break
+			}
+		}
+	}
+	return nil
+}
+func deleteMessages(ctx context.Context, s *memoryState, id ThreadID, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := s.threads[id]; !ok {
+		return ErrNotFound
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	remove := make(map[string]struct{}, len(ids))
+	for _, messageID := range ids {
+		if messageID == "" {
+			return errors.New("lebro: message ID is required")
+		}
+		remove[messageID] = struct{}{}
+	}
+	kept := s.messages[id][:0]
+	for _, message := range s.messages[id] {
+		if _, ok := remove[message.ID]; !ok {
+			kept = append(kept, message)
+		}
+	}
+	s.messages[id] = kept
+	return nil
 }
 func saveWorkflowRun(ctx context.Context, s *memoryState, v WorkflowRunRecord) error {
 	if err := ctx.Err(); err != nil {

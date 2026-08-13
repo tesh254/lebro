@@ -88,6 +88,41 @@ func storageContractRepository(t *testing.T, newStore StoreFactory) {
 	if len(second.Records) != 1 || second.Records[0].ID != "message-3" || second.NextCursor != "" {
 		t.Fatalf("second page = %#v, want final message only", second)
 	}
+	if err := store.Messages().UpdateMessages(ctx, []runtime.MessageRecord{{
+		ID: "message-1", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleUser, Content: "updated"}, Metadata: json.RawMessage(`{"version":2}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.Messages().ListMessages(ctx, "thread-1", runtime.PageRequest{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Records) != 1 || updated.Records[0].Message.Content != "updated" || !updated.Records[0].CreatedAt.Equal(now) {
+		t.Fatalf("updated message = %#v, want changed content and original timestamp", updated)
+	}
+	if err := store.Messages().DeleteMessages(ctx, "thread-1", []string{"message-2", "missing"}); err != nil {
+		t.Fatal(err)
+	}
+	remaining, err := store.Messages().ListMessages(ctx, "thread-1", runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining.Records) != 2 || remaining.Records[0].ID != "message-1" || remaining.Records[1].ID != "message-3" {
+		t.Fatalf("remaining messages = %#v", remaining)
+	}
+	if err := store.Messages().UpdateMessages(ctx, []runtime.MessageRecord{
+		{ID: "message-1", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleUser, Content: "should roll back"}},
+		{ID: "missing", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleUser, Content: "missing"}},
+	}); !errors.Is(err, runtime.ErrNotFound) {
+		t.Fatalf("batch update error = %v, want ErrNotFound", err)
+	}
+	afterRollback, err := store.Messages().ListMessages(ctx, "thread-1", runtime.PageRequest{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterRollback.Records[0].Message.Content != "updated" {
+		t.Fatalf("partial batch update persisted: %#v", afterRollback)
+	}
 
 	// Message IDs are scoped per thread: the same ID may be appended to a
 	// different thread.
