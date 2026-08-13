@@ -156,6 +156,11 @@ type ThreadRepository interface {
 // MessageRepository owns ordered messages within a thread.
 type MessageRepository interface {
 	AppendMessages(context.Context, []MessageRecord) error
+	// UpdateMessages replaces existing messages without changing their thread,
+	// sequence position, or creation timestamp.
+	UpdateMessages(context.Context, []MessageRecord) error
+	// DeleteMessages removes messages from one thread. Missing IDs are ignored.
+	DeleteMessages(context.Context, ThreadID, []string) error
 	ListMessages(context.Context, ThreadID, PageRequest) (Page[MessageRecord], error)
 }
 

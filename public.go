@@ -178,6 +178,11 @@ type (
 	VectorRetrieverConfig       = runtime.VectorRetrieverConfig
 	RetrievalTool               = runtime.RetrievalTool
 	RetrievalToolConfig         = runtime.RetrievalToolConfig
+	ThreadHistory               = runtime.ThreadHistory
+	ThreadHistoryConfig         = runtime.ThreadHistoryConfig
+	ThreadHistoryScope          = runtime.ThreadHistoryScope
+	ThreadHistoryQuery          = runtime.ThreadHistoryQuery
+	ThreadHistoryHit            = runtime.ThreadHistoryHit
 	RAGError                    = runtime.RAGError
 	RAGErrorKind                = runtime.RAGErrorKind
 	RunEvent                    = runtime.RunEvent
@@ -603,6 +608,12 @@ func NewIndexer(config IndexerConfig) (*Indexer, error) {
 // cannot be widened by a caller.
 func NewVectorRetriever(config VectorRetrieverConfig) (*VectorRetriever, error) {
 	return runtime.NewVectorRetriever(config)
+}
+
+// NewThreadHistory keeps durable thread messages and their semantic index in
+// sync while enforcing tenant and owner scope on retrieval.
+func NewThreadHistory(config ThreadHistoryConfig) (*ThreadHistory, error) {
+	return runtime.NewThreadHistory(config)
 }
 
 // NewRetrievalTool exposes a Retriever as an ordinary schema-backed Tool that a

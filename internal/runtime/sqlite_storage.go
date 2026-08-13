@@ -424,6 +424,83 @@ func (r *sqliteRepositories) AppendMessages(ctx context.Context, vs []MessageRec
 	return r.withAutoTx(ctx, insert)
 }
 
+func (r *sqliteRepositories) UpdateMessages(ctx context.Context, vs []MessageRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(vs) == 0 {
+		return nil
+	}
+	seen := make(map[ThreadID]map[string]struct{}, len(vs))
+	return r.withAutoTx(ctx, func(q sqlQueryer) error {
+		for _, v := range vs {
+			if v.ID == "" || v.ThreadID == "" {
+				return errors.New("lebro: message and thread IDs are required")
+			}
+			if err := v.Message.Validate(); err != nil {
+				return fmt.Errorf("lebro: message %q: %w", v.ID, err)
+			}
+			if err := validateJSON(v.Metadata); err != nil {
+				return fmt.Errorf("lebro: message metadata: %w", err)
+			}
+			if err := validateRecord(v); err != nil {
+				return fmt.Errorf("lebro: message: %w", err)
+			}
+			if seen[v.ThreadID] == nil {
+				seen[v.ThreadID] = map[string]struct{}{}
+			}
+			if _, duplicate := seen[v.ThreadID][v.ID]; duplicate {
+				return fmt.Errorf("lebro: duplicate message %q", v.ID)
+			}
+			seen[v.ThreadID][v.ID] = struct{}{}
+			message, err := json.Marshal(v.Message)
+			if err != nil {
+				return fmt.Errorf("lebro: encode message %q: %w", v.ID, err)
+			}
+			result, err := q.ExecContext(ctx, `UPDATE messages SET message = ?, metadata = ? WHERE id = ? AND thread_id = ?`, string(message), sqliteJSON(v.Metadata), v.ID, v.ThreadID)
+			if err != nil {
+				return fmt.Errorf("lebro: update message %q: %w", v.ID, sqliteError(err))
+			}
+			n, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("lebro: update message %q: %w", v.ID, sqliteError(err))
+			}
+			if n == 0 {
+				return ErrNotFound
+			}
+		}
+		return nil
+	})
+}
+
+func (r *sqliteRepositories) DeleteMessages(ctx context.Context, id ThreadID, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := r.threadExists(ctx, id); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	for _, messageID := range ids {
+		if messageID == "" {
+			return errors.New("lebro: message ID is required")
+		}
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, id)
+	for i, messageID := range ids {
+		placeholders[i] = "?"
+		args = append(args, messageID)
+	}
+	if _, err := r.q.ExecContext(ctx, `DELETE FROM messages WHERE thread_id = ? AND id IN (`+strings.Join(placeholders, ", ")+`)`, args...); err != nil {
+		return fmt.Errorf("lebro: delete messages: %w", sqliteError(err))
+	}
+	return nil
+}
+
 // withAutoTx runs fn against the same queryer the repositories already use.
 // When the repositories are standalone (backed by *sql.DB) it wraps fn in a
 // BEGIN IMMEDIATE transaction so multi-statement operations like chunked
