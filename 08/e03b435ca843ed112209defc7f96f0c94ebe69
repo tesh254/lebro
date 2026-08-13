@@ -1,0 +1,59 @@
+channels/server_test.go
+  s_4c4257a180fa01::t_561a0d8e3c0fe1 276-279,281,289,292
+  s_4c4257a180fa01::t_437eb738c80b79 235-275,280,282-288,290-291,293-309
+channels/dedup.go
+  s_4c4257a180fa01::t_c4dca3fddf256d 10
+  s_4c4257a180fa01::t_75f002f562c2f6 81-88,90-95,99,104,106-110,114-116,127-129,133-138,142-144,146-165,168-174,176-187,189
+channels/contracts.go
+  s_4c4257a180fa01::t_41391890e3a72c 39-52,54
+channels/webhook_adapter_test.go
+  s_4c4257a180fa01::t_ab2b1bf2317647 137-144
+channels/handler.go
+  s_4c4257a180fa01::t_f90e3e2ce5e948 171-183,185
+  s_4c4257a180fa01::t_7ccb55d13656af 40,47-49,51
+  s_4c4257a180fa01::t_bfb03924079fe1 86-88
+channels/doc.go
+  s_4c4257a180fa01::t_ee47ae3ee2070e 65-76
+CHANGELOG.md
+  s_4c4257a180fa01::t_20d7122b11f2ac 25-28
+channels/mapper.go
+  s_4c4257a180fa01::t_4a1cbbc765feaf 52-55,57-66
+  s_4c4257a180fa01::t_62ec8af5eb4764 44-48
+channels/webhook_adapter.go
+  s_4c4257a180fa01::t_b026180093fd1b 218-224
+examples/channels/main.go
+  s_4c4257a180fa01::t_a21d28917e5387 68-89,94
+  s_4c4257a180fa01::t_e4836bd1a3fb30 126-136
+  s_4c4257a180fa01::t_df43c9e11f30cc 16
+channels/server.go
+  s_4c4257a180fa01::t_41f7122edc7a51 62,67-72
+  s_4c4257a180fa01::t_dd33db7cac1492 202-209,211-212,225,227-228
+  s_4c4257a180fa01::t_9955730ec83d4a 7-8
+  s_4c4257a180fa01::t_a764257a76389c 81-87,89,94
+  s_4c4257a180fa01::t_d6605120cc4387 178
+  s_4c4257a180fa01::t_b41ef5718ea635 54-57
+  s_4c4257a180fa01::t_8446b4b93051af 132-138,145,153-155,162-163
+  s_4c4257a180fa01::t_45b991ada582bf 246-275,277-281
+channels/mapper_test.go
+  s_4c4257a180fa01::t_97820a123b72ca 59-62,71-95
+channels/dedup_test.go
+  s_4c4257a180fa01::t_809eb8eeec7277 132-152
+README.md
+  s_4c4257a180fa01::t_b823ee5d5c7080 1527-1529,1533
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "08e03b435ca843ed112209defc7f96f0c94ebe69",
+  "prompts": {},
+  "sessions": {
+    "s_4c4257a180fa01": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "877d391f-2b1c-4778-9cb3-9d1b422e2aca",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
