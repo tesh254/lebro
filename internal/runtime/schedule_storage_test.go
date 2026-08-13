@@ -41,6 +41,8 @@ func TestScheduleRepositoryContract(t *testing.T) {
 				Concurrency: ConcurrencySkip,
 				Input:       json.RawMessage(`{"k":"v"}`),
 				Metadata:    json.RawMessage(`{"tenant":"acme"}`),
+				WakeRunID:   "run-1",
+				WakeToken:   "token-1",
 				NextFireAt:  &next,
 				CreatedAt:   now,
 				UpdatedAt:   now,
@@ -52,7 +54,7 @@ func TestScheduleRepositoryContract(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetSchedule: %v", err)
 			}
-			if got.Spec != schedule.Spec || got.Concurrency != ConcurrencySkip {
+			if got.Spec != schedule.Spec || got.Concurrency != ConcurrencySkip || got.WakeRunID != schedule.WakeRunID || got.WakeToken != schedule.WakeToken {
 				t.Fatalf("GetSchedule mismatch: %+v", got)
 			}
 			if got.NextFireAt == nil || !got.NextFireAt.Equal(next) {

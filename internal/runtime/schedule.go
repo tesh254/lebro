@@ -48,9 +48,10 @@ const (
 	ScheduleExecMissed ScheduleExecStatus = "missed"
 )
 
-// ScheduleRecord is the durable definition of a recurring workflow trigger.
-// Spec is the cron or "@every" expression (see ParseCronSpec). WorkflowID names
-// the workflow to run; the Scheduler resolves it to a bound LinearWorkflow.
+// ScheduleRecord is the durable definition of a workflow trigger. Spec is the
+// cron or "@every" expression (see ParseCronSpec); "@once" is reserved for
+// internal durable workflow wakeups. WorkflowID names the workflow to run; the
+// Scheduler resolves it to a bound LinearWorkflow.
 // Input and Metadata are the raw JSON payload and metadata passed to each run;
 // both may be nil. NextFireAt is the next instant at which the schedule is due;
 // it is nil for a schedule that has no future fire (an exhausted or
@@ -67,8 +68,13 @@ type ScheduleRecord struct {
 	Metadata    json.RawMessage   `json:"metadata,omitempty"`
 	NextFireAt  *time.Time        `json:"next_fire_at,omitempty"`
 	LastFireAt  *time.Time        `json:"last_fire_at,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	// WakeRunID marks this as an internal one-shot workflow wakeup. Scheduler
+	// resumes that exact run instead of starting a new one. WakeToken fences a
+	// stale wakeup after the run has suspended again.
+	WakeRunID RunID     `json:"wake_run_id,omitempty"`
+	WakeToken string    `json:"wake_token,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // ScheduleExecutionRecord is one entry in a schedule's execution history. It

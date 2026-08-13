@@ -86,6 +86,21 @@ type StepDefinition struct {
 	ForEach       *ForEach
 	DoWhile       *DoWhile
 	DoUntil       *DoUntil
+	Sleep         *Sleep
+	SleepUntil    *SleepUntil
+}
+
+// Sleep pauses a durable workflow for Duration. The input value is passed to
+// the following step unchanged once the scheduler wakes the run.
+type Sleep struct {
+	Duration time.Duration
+}
+
+// SleepUntil pauses a durable workflow until At. At is normalized to UTC when
+// the wait is persisted; a time in the past resumes on the scheduler's next
+// tick.
+type SleepUntil struct {
+	At time.Time
 }
 
 // Map is a declarative transform step. Fields maps output property names to
@@ -626,6 +641,16 @@ var ErrInvalidResumeInput = errors.New("lebro: workflow resume input invalid")
 // .Store cannot resume.
 var ErrWorkflowResumeRequiresStore = errors.New("lebro: workflow resume requires a bound store")
 
+// ErrWorkflowSleepRequiresScheduler is returned by Resume for a durable sleep
+// boundary. Sleep steps resume only through a Scheduler so their wake token
+// remains fenced and retries stay idempotent.
+var ErrWorkflowSleepRequiresScheduler = errors.New("lebro: workflow sleep resumes via scheduler")
+
+// errWorkflowWakeupStale is internal: a wakeup from an earlier sleep found a
+// terminal run or a newer suspend boundary. Scheduler records it as a harmless
+// completed one-shot execution.
+var errWorkflowWakeupStale = errors.New("lebro: workflow wakeup is stale")
+
 // LinearWorkflowConfig describes a linear workflow composed of ordered, typed
 // steps. Definition is required; Steps must contain at least one entry.
 // SchemaCompiler is required when any step declares an input or output schema.
@@ -750,8 +775,8 @@ func (w *LinearWorkflow) ValidateInput(input json.RawMessage) error {
 // executor writes on every snapshot. Readers tolerate 0 (legacy/unspecified),
 // 1 (pre-suspend), 2 (pre-branch), 3 (pre-fan-out), and 4 (pre-foreach).
 // Version 5 adds durable per-item foreach state. Version 6 adds loop
-// checkpoints.
-const workflowSnapshotSchemaVersion = 6
+// checkpoints. Version 7 adds durable sleep wakeup state.
+const workflowSnapshotSchemaVersion = 7
 
 const maxLoopIterations = int(^uint32(0) - 1)
 
@@ -788,6 +813,14 @@ type workflowSnapshotEnvelope struct {
 type suspendEnvelope struct {
 	Contract json.RawMessage `json:"contract,omitempty"`
 	Payload  json.RawMessage `json:"payload,omitempty"`
+	Wake     *wakeEnvelope   `json:"wake,omitempty"`
+}
+
+// wakeEnvelope fences a scheduled resume to one exact suspend snapshot.
+// Retrying an old wakeup after a later suspend therefore cannot advance a run.
+type wakeEnvelope struct {
+	At    time.Time `json:"at"`
+	Token string    `json:"token"`
 }
 
 // runAnchor captures the stable run fields at start time so every persistence
@@ -1103,6 +1136,42 @@ func (w *LinearWorkflow) executeFrames(ctx context.Context, anchor runAnchor, em
 			continue
 		}
 
+		if step.definition.Sleep != nil || step.definition.SleepUntil != nil {
+			stepStart := emitter.emitStepStarted(runID, position, stepID)
+			// Sleep is pass-through, so both schemas intentionally gate current.
+			if err := validateStepValue(step.inputSchema, ValidationTargetStepInput, current); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepInput, Step: position, StepID: stepID, Err: err}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			if err := validateStepValue(step.outputSchema, ValidationTargetStepOutput, current); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorInvalidStepOutput, Step: position, StepID: stepID, Err: err}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			at := w.clock.Now().UTC()
+			if step.definition.Sleep != nil {
+				at = at.Add(step.definition.Sleep.Duration)
+			} else {
+				at = step.definition.SleepUntil.At.UTC()
+			}
+			token := fmt.Sprintf("%s-wake-%d", runID, position)
+			if err := w.persistSleep(ctx, anchor, path, fanOutResults, forEachResults, position, stepID, completedOutputs, current, at, token); err != nil {
+				stepErr := &WorkflowError{Kind: WorkflowErrorStepFailed, Step: position, StepID: stepID, Err: fmt.Errorf("lebro: persist workflow sleep at step %q: %w", stepID, err)}
+				emitter.emitStepFinished(runID, position, stepID, stepStart, stepErr)
+				emitter.terminal(runID, position, stepID, RunEventFailed, RunStatusFailed, stepErr)
+				w.persistTerminalBestEffort(anchor, path, lastPosition, lastStepID, fanOutResults, completedOutputs, RunStatusFailed, stepErr)
+				return w.fail(runID, metadata, path, fanOutResults, stepErr)
+			}
+			emitter.emitStepFinished(runID, position, stepID, stepStart, nil)
+			emitter.emitSuspended(runID, position, stepID)
+			return WorkflowRunResult{ID: runID, Status: RunStatusSuspended, Metadata: metadata, Suspend: &SuspendResult{Step: position, StepID: stepID, Payload: cloneRawMessage(current)}, Path: cloneStepIDs(path), FanOut: cloneFanOutJoinResults(fanOutResults), ForEach: cloneForEachResults(forEachResults)}, nil
+		}
+
 		stepStart := emitter.emitStepStarted(runID, position, stepID)
 
 		if err := validateStepValue(step.inputSchema, ValidationTargetStepInput, current); err != nil {
@@ -1326,6 +1395,9 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 	if err != nil {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: err}
 	}
+	if envelope.Suspend != nil && envelope.Suspend.Wake != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrWorkflowSleepRequiresScheduler}
+	}
 
 	resumeInput := cloneRawMessage(input.Input)
 	// Validate the resume input structurally against the suspending step's
@@ -1386,6 +1458,49 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 
 	completedOutputs := cloneRawOutputs(envelope.Outputs)
 	return w.executeFrames(ctx, anchor, emitter, run.ID, mergedMetadata, resumeInput, completedOutputs, frames, cloneStepIDs(envelope.Path), cloneFanOutJoinResults(envelope.FanOut), cloneForEachResults(envelope.ForEach), envelope.Step, nil, run.ThreadID)
+}
+
+// resumeWake resumes a sleep boundary only when token identifies the currently
+// persisted wait. It is intentionally scheduler-only; callers use Resume for
+// explicit human/input suspension.
+func (w *LinearWorkflow) resumeWake(ctx context.Context, runID RunID, token string) (WorkflowRunResult, error) {
+	if w == nil || w.store == nil || isNilInterface(w.store) {
+		return WorkflowRunResult{}, errWorkflowWakeupStale
+	}
+	if err := ctx.Err(); err != nil {
+		return WorkflowRunResult{}, err
+	}
+	run, err := w.store.WorkflowRuns().GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return WorkflowRunResult{}, err
+	}
+	if run.WorkflowID != w.definition.ID || run.Status != RunStatusSuspended {
+		return WorkflowRunResult{}, errWorkflowWakeupStale
+	}
+	_, envelope, err := w.loadSuspendSnapshot(ctx, runID)
+	if err != nil {
+		return WorkflowRunResult{}, err
+	}
+	if envelope.Suspend == nil || envelope.Suspend.Wake == nil || envelope.Suspend.Wake.Token != token {
+		return WorkflowRunResult{}, errWorkflowWakeupStale
+	}
+	if derr := authorize(ctx, w.policy, ActionWorkflowRun, Resource{Kind: ResourceKindWorkflow, ID: string(w.definition.ID)}); derr != nil {
+		return WorkflowRunResult{}, derr
+	}
+	frames, ok := w.resumeFrames(envelope.Path, envelope.StepID)
+	if !ok {
+		return WorkflowRunResult{}, fmt.Errorf("lebro: cannot resolve resume frame for sleep step %q", envelope.StepID)
+	}
+	metadata := decodeMetadata(run.Metadata)
+	anchor := runAnchor{runID: run.ID, input: WorkflowRunInput{Input: cloneRawMessage(run.Input), ThreadID: run.ThreadID, Metadata: metadata}, metadata: metadata, startedAt: run.StartedAt}
+	emitter := newRunEmitter(ctx, w.listener, w.clock, w.idSource)
+	resumePosition := envelope.Step + 1
+	var resumeStepID StepID
+	if top := len(frames) - 1; top >= 0 && frames[top].index < len(frames[top].steps) {
+		resumeStepID = frames[top].steps[frames[top].index].definition.ID
+	}
+	emitter.emitResumed(run.ID, resumePosition, resumeStepID)
+	return w.executeFrames(ctx, anchor, emitter, run.ID, metadata, cloneRawMessage(envelope.Suspend.Payload), cloneRawOutputs(envelope.Outputs), frames, cloneStepIDs(envelope.Path), cloneFanOutJoinResults(envelope.FanOut), cloneForEachResults(envelope.ForEach), envelope.Step, nil, run.ThreadID)
 }
 
 // loadSuspendSnapshot lists snapshots for runID across all pages and returns
@@ -1549,6 +1664,34 @@ func (w *LinearWorkflow) persistSuspend(ctx context.Context, anchor runAnchor, p
 			return err
 		}
 		return repos.WorkflowRuns().SaveWorkflowRun(ctx, updated)
+	})
+}
+
+// persistSleep makes the suspended snapshot and its one-shot scheduler wakeup
+// visible in one transaction. A restarted process therefore sees both or
+// neither; the scheduler's token check makes a retry harmless.
+func (w *LinearWorkflow) persistSleep(ctx context.Context, anchor runAnchor, path []StepID, fanOutResults []FanOutJoinResult, forEachResults []ForEachResult, position int, stepID StepID, completed []json.RawMessage, input json.RawMessage, at time.Time, token string) error {
+	if w.store == nil || isNilInterface(w.store) {
+		return errors.New("lebro: durable sleep requires a bound store")
+	}
+	envelope := workflowSnapshotEnvelope{Step: position, StepID: stepID, Outputs: cloneRawOutputs(completed), Suspend: &suspendEnvelope{Payload: cloneRawMessage(input), Wake: &wakeEnvelope{At: at, Token: token}}, Path: cloneStepIDs(path), FanOut: cloneFanOutJoinResults(fanOutResults), ForEach: cloneForEachResults(forEachResults)}
+	state, err := json.Marshal(envelope)
+	if err != nil {
+		return fmt.Errorf("lebro: encode workflow sleep snapshot: %w", err)
+	}
+	now := w.clock.Now().UTC()
+	snapshot := WorkflowSnapshotRecord{ID: fmt.Sprintf("%s-snapshot-%d", anchor.runID, position), RunID: anchor.runID, Sequence: workflowTerminalSnapshotSequence(position), SchemaVersion: workflowSnapshotSchemaVersion, State: state, CreatedAt: now}
+	updated := w.baseRunRecord(anchor)
+	updated.Status, updated.CurrentStep, updated.CurrentStepID, updated.StepOutputs, updated.Path, updated.UpdatedAt = RunStatusSuspended, position, stepID, cloneRawOutputs(completed), cloneStepIDs(path), now
+	wakeup := ScheduleRecord{ID: ScheduleID(fmt.Sprintf("%s-wake-%d", anchor.runID, position)), WorkflowID: w.definition.ID, Spec: "@once", WakeRunID: anchor.runID, WakeToken: token, NextFireAt: &at, CreatedAt: now, UpdatedAt: now}
+	return w.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		if err := repos.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, snapshot); err != nil {
+			return err
+		}
+		if err := repos.WorkflowRuns().SaveWorkflowRun(ctx, updated); err != nil {
+			return err
+		}
+		return repos.Schedules().SaveSchedule(ctx, wakeup)
 	})
 }
 
@@ -2136,6 +2279,12 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 		if step.Definition.DoUntil != nil {
 			controlCount++
 		}
+		if step.Definition.Sleep != nil {
+			controlCount++
+		}
+		if step.Definition.SleepUntil != nil {
+			controlCount++
+		}
 		if len(step.Definition.Branches) > 0 && step.Definition.FanOut != nil {
 			return fmt.Errorf("lebro: workflow step %q cannot declare both Branches and FanOut", step.Definition.ID)
 		}
@@ -2270,7 +2419,7 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 				return fmt.Errorf("lebro: workflow foreach step %q has no steps", step.Definition.ID)
 			}
 			for _, child := range step.Definition.ForEach.Steps {
-				if len(child.Definition.Branches) > 0 || child.Definition.FanOut != nil || child.Definition.Map != nil || child.Definition.ForEach != nil || child.Definition.DoWhile != nil || child.Definition.DoUntil != nil {
+				if len(child.Definition.Branches) > 0 || child.Definition.FanOut != nil || child.Definition.Map != nil || child.Definition.ForEach != nil || child.Definition.DoWhile != nil || child.Definition.DoUntil != nil || child.Definition.Sleep != nil || child.Definition.SleepUntil != nil {
 					return fmt.Errorf("lebro: workflow foreach step %q cannot contain child control-flow step %q", step.Definition.ID, child.Definition.ID)
 				}
 			}
@@ -2305,7 +2454,7 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 				return fmt.Errorf("lebro: workflow loop step %q has no steps", step.Definition.ID)
 			}
 			for _, child := range loopSteps {
-				if len(child.Definition.Branches) > 0 || child.Definition.FanOut != nil || child.Definition.Map != nil || child.Definition.ForEach != nil || child.Definition.DoWhile != nil || child.Definition.DoUntil != nil {
+				if len(child.Definition.Branches) > 0 || child.Definition.FanOut != nil || child.Definition.Map != nil || child.Definition.ForEach != nil || child.Definition.DoWhile != nil || child.Definition.DoUntil != nil || child.Definition.Sleep != nil || child.Definition.SleepUntil != nil {
 					return fmt.Errorf("lebro: workflow loop step %q cannot contain child control-flow step %q", step.Definition.ID, child.Definition.ID)
 				}
 				if len(child.Definition.SuspendSchema) > 0 {
@@ -2314,6 +2463,22 @@ func validateStepTree(steps []Step, seen map[StepID]struct{}, hasSchema *bool) e
 			}
 			if err := validateStepTree(loopSteps, seen, hasSchema); err != nil {
 				return err
+			}
+		} else if step.Definition.Sleep != nil || step.Definition.SleepUntil != nil {
+			if step.Handler != nil && !isNilInterface(step.Handler) {
+				return fmt.Errorf("lebro: workflow sleep step %q must not declare a Handler", step.Definition.ID)
+			}
+			if len(step.Definition.SuspendSchema) > 0 || step.Definition.Retry != nil {
+				return fmt.Errorf("lebro: workflow sleep step %q must not declare SuspendSchema or Retry", step.Definition.ID)
+			}
+			if step.Definition.Sleep != nil && step.Definition.Sleep.Duration < 0 {
+				return fmt.Errorf("lebro: workflow sleep step %q Duration must be >= 0", step.Definition.ID)
+			}
+			if step.Definition.SleepUntil != nil && step.Definition.SleepUntil.At.IsZero() {
+				return fmt.Errorf("lebro: workflow sleep-until step %q At is required", step.Definition.ID)
+			}
+			if len(step.Definition.InputSchema) > 0 || len(step.Definition.OutputSchema) > 0 {
+				*hasSchema = true
 			}
 		} else {
 			if step.Handler == nil || isNilInterface(step.Handler) {
@@ -2394,6 +2559,14 @@ func cloneStepDefinition(def StepDefinition) StepDefinition {
 		loop := *def.DoUntil
 		loop.Steps = append([]Step(nil), def.DoUntil.Steps...)
 		def.DoUntil = &loop
+	}
+	if def.Sleep != nil {
+		sleep := *def.Sleep
+		def.Sleep = &sleep
+	}
+	if def.SleepUntil != nil {
+		sleepUntil := *def.SleepUntil
+		def.SleepUntil = &sleepUntil
 	}
 	return def
 }
