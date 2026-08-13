@@ -82,50 +82,49 @@ func (s *Studio) handleGetTrace(w http.ResponseWriter, r *http.Request) {
 // ends a child before its parent, so the raw slice is not the order to render.
 //
 // On an exact start-time tie the comparison cannot rely on SpanID, which has no
-// ordering contract, and must not place a child before its parent. It breaks
-// the tie so a parent sorts before its own descendants — a root before a span
-// whose ancestry includes it — and otherwise keeps the incoming order, which a
-// stable sort preserves. The result never renders a child above the span that
-// started it, whatever ID scheme the backend uses.
+// ordering contract, and must not place a child before its parent. It breaks the
+// tie by ancestry alone: an ancestor sorts before its descendant. Spans that are
+// not on the same ancestry line are left in their incoming order, which a stable
+// sort preserves — the comparison does not reorder unrelated branches by depth.
+// The result never renders a span above one of its own ancestors, whatever ID
+// scheme the backend uses.
 func orderSpans(spans []obsv.Span) []obsv.Span {
 	ordered := make([]obsv.Span, len(spans))
 	copy(ordered, spans)
 
-	ancestors := ancestorDepth(ordered)
+	parent := make(map[obsv.SpanID]obsv.SpanID, len(ordered))
+	for _, span := range ordered {
+		parent[span.SpanID] = span.ParentSpanID
+	}
+	// isAncestor reports whether a is an ancestor of b, walking b's parent chain.
+	// The walk is bounded by the span count so a malformed parent cycle cannot
+	// loop forever.
+	isAncestor := func(a, b obsv.SpanID) bool {
+		steps := 0
+		for current := parent[b]; current != ""; current = parent[current] {
+			if current == a {
+				return true
+			}
+			steps++
+			if steps > len(ordered) {
+				break
+			}
+		}
+		return false
+	}
+
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if !ordered[i].Start.Equal(ordered[j].Start) {
 			return ordered[i].Start.Before(ordered[j].Start)
 		}
-		// Shallower spans first, so a parent precedes its descendants when they
-		// share a start instant. Equal depth keeps insertion order via the
-		// stable sort.
-		return ancestors[ordered[i].SpanID] < ancestors[ordered[j].SpanID]
+		// Only an ancestor/descendant pair is reordered; unrelated spans compare
+		// equal and keep their insertion order under the stable sort.
+		if isAncestor(ordered[i].SpanID, ordered[j].SpanID) {
+			return true
+		}
+		return false
 	})
 	return ordered
-}
-
-// ancestorDepth maps each span to the number of ancestors it has within the
-// trace, following ParentSpanID links. A root has depth zero. The walk is
-// bounded by the span count so a malformed parent cycle cannot loop forever.
-func ancestorDepth(spans []obsv.Span) map[obsv.SpanID]int {
-	parent := make(map[obsv.SpanID]obsv.SpanID, len(spans))
-	for _, span := range spans {
-		parent[span.SpanID] = span.ParentSpanID
-	}
-	depth := make(map[obsv.SpanID]int, len(spans))
-	for _, span := range spans {
-		steps := 0
-		for current := span.ParentSpanID; current != ""; current = parent[current] {
-			steps++
-			if steps > len(spans) {
-				// A cycle or a parent outside the trace: stop counting rather
-				// than loop, treating the remaining chain as flat.
-				break
-			}
-		}
-		depth[span.SpanID] = steps
-	}
-	return depth
 }
 
 // summarizeTraces reduces a flat span stream to one summary per trace, sorted

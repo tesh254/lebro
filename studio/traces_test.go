@@ -170,6 +170,42 @@ func TestGetTracePlacesParentBeforeChildOnStartTie(t *testing.T) {
 	}
 }
 
+func TestGetTraceLeavesUnrelatedBranchesInInsertionOrderOnTie(t *testing.T) {
+	// All spans share one start instant. The ordering must place each span
+	// before its own descendant, but must NOT reorder spans by absolute depth.
+	// Here a deep span (childA, depth 2) is recorded before an unrelated shallow
+	// span (rootB, depth 0). An absolute-depth tie-break would pull rootB ahead
+	// of childA; an ancestry-only order leaves the two unrelated spans in their
+	// incoming order.
+	tie := at(1)
+	repo := obsv.NewMemoryRepository()
+	appendSpans(t, repo,
+		obsv.Span{TraceID: "t", SpanID: "rootA", Kind: obsv.SpanKindRun, Name: "rootA", Start: tie, Status: obsv.SpanStatusOK},
+		obsv.Span{TraceID: "t", SpanID: "childA", ParentSpanID: "rootA", Kind: obsv.SpanKindStep, Name: "childA", Start: tie, Status: obsv.SpanStatusOK},
+		obsv.Span{TraceID: "t", SpanID: "grandA", ParentSpanID: "childA", Kind: obsv.SpanKindModel, Name: "grandA", Start: tie, Status: obsv.SpanStatusOK},
+		obsv.Span{TraceID: "t", SpanID: "rootB", Kind: obsv.SpanKindRun, Name: "rootB", Start: tie, Status: obsv.SpanStatusOK},
+	)
+
+	studioServer := newStudio(t, studio.Config{Traces: repo})
+
+	var trace studio.TraceResponse
+	getJSON(t, studioServer, "/api/studio/traces/t", &trace)
+
+	got := []string{}
+	for _, span := range trace.Spans {
+		got = append(got, span.Name)
+	}
+	// Insertion order is preserved: each A-branch span precedes its own
+	// descendant, and unrelated rootB stays last where it was recorded — not
+	// hoisted ahead of the deeper A-branch spans by depth.
+	want := []string{"rootA", "childA", "grandA", "rootB"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("tie order = %v, want %v (unrelated spans must keep insertion order, not sort by depth)", got, want)
+		}
+	}
+}
+
 func TestListTracesKeepsFirstRootAuthoritative(t *testing.T) {
 	// Two parentless spans in one trace: the first root names the trace and
 	// carries its status; a later parentless span must not overwrite them.
