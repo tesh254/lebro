@@ -366,7 +366,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
 		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
 	}
-	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Input: input}); err != nil {
+	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Input: input}); err != nil {
 		if processorCancelled(err) {
 			emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
 			return a.cancelledWithAttempts(runID, nil, metadata, 0, err, nil)
@@ -668,7 +668,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, authErr)
 		return nil, authErr
 	}
-	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Input: input}); err != nil {
+	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Input: input}); err != nil {
 		cancel()
 		if processorCancelled(err) {
 			emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
@@ -818,13 +818,13 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, cause, allAttempts), err: a.cancelledError(step, cause)}
 				return
 			}
-			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
-			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, cause)
 			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: cause}
 			var processorErr *ProcessorError
 			if errors.As(cause, &processorErr) {
 				agentErr = processorAgentError(step, cause)
 			}
+			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, agentErr)
+			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
 		}
