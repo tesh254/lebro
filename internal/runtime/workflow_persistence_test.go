@@ -185,8 +185,8 @@ func TestLinearWorkflowPersistsRunAndSnapshotsAtStepBoundaries(t *testing.T) {
 		if snapshot.SchemaVersion != workflowSnapshotSchemaVersion {
 			t.Fatalf("snapshot %d schema version = %d, want %d", i, snapshot.SchemaVersion, workflowSnapshotSchemaVersion)
 		}
-		if snapshot.Sequence != int64(i+1) {
-			t.Fatalf("snapshot %d sequence = %d, want %d", i, snapshot.Sequence, i+1)
+		if snapshot.Sequence != workflowTerminalSnapshotSequence(i+1) {
+			t.Fatalf("snapshot %d sequence = %d, want %d", i, snapshot.Sequence, workflowTerminalSnapshotSequence(i+1))
 		}
 		var envelope workflowSnapshotEnvelope
 		if err := json.Unmarshal(snapshot.State, &envelope); err != nil {
