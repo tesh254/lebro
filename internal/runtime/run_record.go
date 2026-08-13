@@ -75,6 +75,8 @@ const (
 	// when using a ModelRouter. It carries the Provider ID, model name,
 	// attempt status, and any error.
 	RunEventModelAttemptFinished RunEventType = "model_attempt_finished"
+	// RunEventProcessor records a processor decision without recording content.
+	RunEventProcessor RunEventType = "processor"
 )
 
 // IsTerminal reports whether the event type is a terminal run event.
@@ -136,6 +138,8 @@ type RunEvent struct {
 	Provider              ProviderID
 	ProviderModel         string
 	AttemptStatus         ModelAttemptStatus
+	ProcessorPhase        ProcessorPhase
+	ProcessorAction       ProcessorAction
 	Status                RunStatus
 	Error                 error
 }
@@ -343,6 +347,13 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 		Usage:                 delta.Usage,
 		Error:                 delta.Err,
 	})
+}
+
+func (e *runEmitter) emitProcessor(runID RunID, step int, stepID StepID, phase ProcessorPhase, action ProcessorAction) {
+	if !e.enabled() {
+		return
+	}
+	e.dispatch(RunEvent{Type: RunEventProcessor, RunID: runID, StepID: stepID, Step: step, Timestamp: e.clock.Now(), ProcessorPhase: phase, ProcessorAction: action})
 }
 
 func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, start time.Time, finishReason FinishReason, usage ModelUsage, err error) {

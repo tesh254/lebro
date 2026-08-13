@@ -168,6 +168,13 @@ type (
 	RAGErrorKind                = runtime.RAGErrorKind
 	RunEvent                    = runtime.RunEvent
 	RunEventType                = runtime.RunEventType
+	Processor                   = runtime.Processor
+	ProcessorFunc               = runtime.ProcessorFunc
+	ProcessorContext            = runtime.ProcessorContext
+	ProcessorDecision           = runtime.ProcessorDecision
+	ProcessorPhase              = runtime.ProcessorPhase
+	ProcessorAction             = runtime.ProcessorAction
+	ProcessorError              = runtime.ProcessorError
 	RunListener                 = runtime.RunListener
 	RunRecorder                 = runtime.RunRecorder
 	Clock                       = runtime.Clock
@@ -291,6 +298,17 @@ const (
 	RunEventBranchSelected       = runtime.RunEventBranchSelected
 	RunEventModelAttemptStarted  = runtime.RunEventModelAttemptStarted
 	RunEventModelAttemptFinished = runtime.RunEventModelAttemptFinished
+	RunEventProcessor            = runtime.RunEventProcessor
+
+	ProcessorPhaseInput         = runtime.ProcessorPhaseInput
+	ProcessorPhaseModelRequest  = runtime.ProcessorPhaseModelRequest
+	ProcessorPhaseModelResponse = runtime.ProcessorPhaseModelResponse
+	ProcessorPhaseStreamDelta   = runtime.ProcessorPhaseStreamDelta
+	ProcessorPhaseOutput        = runtime.ProcessorPhaseOutput
+
+	ProcessorContinue  = runtime.ProcessorContinue
+	ProcessorTransform = runtime.ProcessorTransform
+	ProcessorBlock     = runtime.ProcessorBlock
 
 	FanOutFailFast   = runtime.FanOutFailFast
 	FanOutCollectAll = runtime.FanOutCollectAll
@@ -359,7 +377,9 @@ var (
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
 	ErrAgentUnauthorized            = runtime.ErrAgentUnauthorized
 
-	ErrPolicyDenied = runtime.ErrPolicyDenied
+	ErrPolicyDenied     = runtime.ErrPolicyDenied
+	ErrProcessorBlocked = runtime.ErrProcessorBlocked
+	ErrAgentProcessor   = runtime.ErrAgentProcessor
 
 	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
 	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
