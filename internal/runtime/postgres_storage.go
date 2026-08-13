@@ -151,6 +151,11 @@ var postgresSchemaMigrations = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule_seq ON schedule_executions(schedule_id, seq)`,
 	`CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(next_fire_at) WHERE paused = FALSE AND next_fire_at IS NOT NULL`,
+	`CREATE TABLE working_memory_facts (
+		id TEXT NOT NULL UNIQUE, namespace TEXT NOT NULL, owner_id TEXT NOT NULL, key TEXT NOT NULL,
+		value TEXT NOT NULL, version BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (namespace, owner_id, key)
+	)`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -269,6 +274,9 @@ func (s *PostgresStore) Schedules() ScheduleRepository { return &postgresReposit
 func (s *PostgresStore) ScheduleExecutions() ScheduleExecutionRepository {
 	return &postgresRepositories{q: s.db}
 }
+func (s *PostgresStore) WorkingMemory() WorkingMemoryRepository {
+	return &postgresRepositories{q: s.db}
+}
 
 type postgresRepositories struct {
 	q sqlQueryer
@@ -282,6 +290,7 @@ func (r *postgresRepositories) Schedules() ScheduleRepository                 { 
 func (r *postgresRepositories) ScheduleExecutions() ScheduleExecutionRepository {
 	return r
 }
+func (r *postgresRepositories) WorkingMemory() WorkingMemoryRepository { return r }
 
 func (r *postgresRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	if err := ctx.Err(); err != nil {

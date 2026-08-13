@@ -166,6 +166,11 @@ var sqliteSchemaMigrations = []string{
 		UNIQUE (schedule_id, id)
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_schedule_executions_schedule_seq ON schedule_executions(schedule_id, seq)`,
+	`CREATE TABLE working_memory_facts (
+		id TEXT NOT NULL, namespace TEXT NOT NULL, owner_id TEXT NOT NULL, key TEXT NOT NULL,
+		value TEXT NOT NULL, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		PRIMARY KEY (namespace, owner_id, key), UNIQUE (id)
+	)`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -258,6 +263,7 @@ func (s *SQLiteStore) Schedules() ScheduleRepository { return &sqliteRepositorie
 func (s *SQLiteStore) ScheduleExecutions() ScheduleExecutionRepository {
 	return &sqliteRepositories{q: s.db}
 }
+func (s *SQLiteStore) WorkingMemory() WorkingMemoryRepository { return &sqliteRepositories{q: s.db} }
 
 // sqlQueryer is satisfied by both *sql.DB and *sql.Tx so the repositories work
 // standalone and transaction-scoped.
@@ -279,6 +285,7 @@ func (r *sqliteRepositories) Schedules() ScheduleRepository                 { re
 func (r *sqliteRepositories) ScheduleExecutions() ScheduleExecutionRepository {
 	return r
 }
+func (r *sqliteRepositories) WorkingMemory() WorkingMemoryRepository { return r }
 
 func (r *sqliteRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	if err := ctx.Err(); err != nil {
