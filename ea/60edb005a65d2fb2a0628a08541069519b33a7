@@ -1,0 +1,19 @@
+internal/runtime/agent.go
+  s_1606ad34b37432::t_9fcd09c9a0f171 376,663
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ea60edb005a65d2fb2a0628a08541069519b33a7",
+  "prompts": {},
+  "sessions": {
+    "s_1606ad34b37432": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffc0f-75ea-7d90-ad76-6a13fef0d9b5",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
