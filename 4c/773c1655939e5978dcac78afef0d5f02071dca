@@ -1,0 +1,22 @@
+studio/traces_test.go
+  s_807461f080f625::t_a03378dec3c5b8 173,180-182,187-197,202-203,205-208
+  s_807461f080f625::t_b1fd0d88b9f8ad 174-179,183-186,198-201,204
+studio/traces.go
+  s_807461f080f625::t_6d75f756e3a452 85-90,95-96,99-102,104-107,109,113,115-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "4c773c1655939e5978dcac78afef0d5f02071dca",
+  "prompts": {},
+  "sessions": {
+    "s_807461f080f625": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fdf935be-448e-45f4-847a-b6f2ea1ca99c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
