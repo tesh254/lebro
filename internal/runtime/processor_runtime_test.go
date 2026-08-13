@@ -13,6 +13,17 @@ type runtimeProcessor struct {
 	delta    func(ProcessorStreamDeltaRequest) ProcessorStreamDeltaResult
 }
 
+type inputCancellationProcessor struct{}
+
+func (inputCancellationProcessor) Name() string { return "cancel" }
+func (inputCancellationProcessor) ProcessInput(context.Context, ProcessorInputRequest) (ProcessorInputResult, error) {
+	return ProcessorInputResult{}, context.Canceled
+}
+
+type inactiveProcessor struct{}
+
+func (inactiveProcessor) Name() string { return "inactive" }
+
 func (p runtimeProcessor) Name() string { return p.name }
 func (p runtimeProcessor) ProcessInput(_ context.Context, request ProcessorInputRequest) (ProcessorInputResult, error) {
 	if p.input == nil {
@@ -60,6 +71,65 @@ func TestAgentProcessorPipelineTransformsRun(t *testing.T) {
 	}
 	if got := result.Messages[len(result.Messages)-1].Content; got != "safe output" {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestAgentProcessorPipelinePassesRequestToResponseProcessor(t *testing.T) {
+	var got ModelRequest
+	pipeline, err := NewProcessorPipeline(runtimeProcessor{name: "inspect", response: func(request ProcessorModelResponseRequest) ProcessorModelResponseResult {
+		got = request.Request
+		return ProcessorModelResponseResult{Response: request.Response}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: newScriptedModel(textResponse("done")), Processors: pipeline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Messages[len(got.Messages)-1].Content != "hello" {
+		t.Fatalf("response processor request = %#v", got)
+	}
+}
+
+func TestAgentProcessorPipelineCancellationIsRunCancellation(t *testing.T) {
+	pipeline, err := NewProcessorPipeline(inputCancellationProcessor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: newScriptedModel(textResponse("must not run")), Processors: pipeline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
+	if !errors.Is(err, ErrAgentCancelled) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if result.Status != RunStatusCancelled {
+		t.Fatalf("status = %q", result.Status)
+	}
+}
+
+func TestAgentProcessorPipelineSkipsInactivePhaseEvents(t *testing.T) {
+	pipeline, err := NewProcessorPipeline(inactiveProcessor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: newScriptedModel(textResponse("done")), Processors: pipeline, Listener: recorder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range recorder.Events() {
+		if event.Type == RunEventProcessor {
+			t.Fatalf("inactive processor emitted %#v", event)
+		}
 	}
 }
 

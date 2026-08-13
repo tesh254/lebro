@@ -367,6 +367,10 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
 	}
 	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Input: input}); err != nil {
+		if processorCancelled(err) {
+			emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+			return a.cancelledWithAttempts(runID, nil, metadata, 0, err, nil)
+		}
 		agentErr := processorAgentError(0, err)
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
 		return a.fail(runID, input, 0, agentErr)
@@ -415,6 +419,10 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			OutputSchema: cloneModelOutputSchema(outputSchema),
 		}
 		if decision, err := a.process(runCtx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelRequest, ThreadID: input.ThreadID, Metadata: metadata, Request: request}); err != nil {
+			if processorCancelled(err) {
+				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+				return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
+			}
 			agentErr := processorAgentError(step, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
@@ -436,7 +444,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
 			return result, agentErr
 		}
-		if decision, err := a.process(runCtx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelResponse, ThreadID: input.ThreadID, Metadata: metadata, Usage: response.Usage, Response: response}); err != nil {
+		if decision, err := a.process(runCtx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelResponse, ThreadID: input.ThreadID, Metadata: metadata, Usage: response.Usage, Request: request, Response: response}); err != nil {
+			if processorCancelled(err) {
+				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+				return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
+			}
 			agentErr := processorAgentError(step, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
@@ -479,6 +491,10 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				ModelAttempts: allAttempts,
 			}
 			if decision, err := a.process(runCtx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseOutput, ThreadID: input.ThreadID, Metadata: metadata, Usage: response.Usage, Result: result}); err != nil {
+				if processorCancelled(err) {
+					emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+					return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
+				}
 				agentErr := processorAgentError(step, err)
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
@@ -654,6 +670,10 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	}
 	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Input: input}); err != nil {
 		cancel()
+		if processorCancelled(err) {
+			emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+			return nil, a.cancelledError(0, err)
+		}
 		agentErr := processorAgentError(0, err)
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
 		return nil, agentErr
@@ -774,6 +794,11 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			OutputSchema: cloneModelOutputSchema(p.outputSchema),
 		}
 		if decision, err := a.process(p.ctx, p.emitter, p.runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelRequest, ThreadID: p.threadID, Metadata: p.metadata, Request: request}); err != nil {
+			if processorCancelled(err) {
+				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
+				return
+			}
 			agentErr := processorAgentError(step, err)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
@@ -786,7 +811,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		allAttempts = append(allAttempts, attempts...)
 		if streamErr != nil {
 			cause := streamErr
-			if cancelledErr := p.ctx.Err(); errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) || cancelledErr != nil {
+			if cancelledErr := p.ctx.Err(); processorCancelled(streamErr) || cancelledErr != nil {
 				cause = preferContextError(streamErr, cancelledErr)
 				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
@@ -803,7 +828,12 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
 		}
-		if decision, err := a.process(p.ctx, p.emitter, p.runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelResponse, ThreadID: p.threadID, Metadata: p.metadata, Usage: response.Usage, Response: response}); err != nil {
+		if decision, err := a.process(p.ctx, p.emitter, p.runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelResponse, ThreadID: p.threadID, Metadata: p.metadata, Usage: response.Usage, Request: request, Response: response}); err != nil {
+			if processorCancelled(err) {
+				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
+				return
+			}
 			agentErr := processorAgentError(step, err)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
@@ -841,6 +871,11 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			}
 			result := RunResult{ID: p.runID, Status: RunStatusSucceeded, Messages: cloneMessages(transcript), Metadata: p.metadata, ModelAttempts: allAttempts}
 			if decision, err := a.process(p.ctx, p.emitter, p.runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseOutput, ThreadID: p.threadID, Metadata: p.metadata, Usage: response.Usage, Result: result}); err != nil {
+				if processorCancelled(err) {
+					p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
+					p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
+					return
+				}
 				agentErr := processorAgentError(step, err)
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
