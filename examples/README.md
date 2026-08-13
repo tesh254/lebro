@@ -176,3 +176,12 @@ webhook is signed and served in-process, so no network or API key is required):
 ```sh
 go run ./examples/channels
 ```
+
+Run the voice example (transcribes an audio utterance to a user turn through a
+fake recognizer, runs an agent, and synthesizes the reply back to audio through
+a fake synthesizer; the fakes stand in for optional provider adapters, so no
+network, API key, or speech backend is required):
+
+```sh
+go run ./examples/voice
+```

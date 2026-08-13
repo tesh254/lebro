@@ -20,6 +20,7 @@ internal/runtime/        model, tools, schema, workflow, storage, vector, and RA
 jsonschema/              optional JSON Schema compiler implementation
 httpapi/                 optional HTTP server and generated OpenAPI contract
 channels/                optional messaging channel adapters (inbound webhook, streamed reply)
+voice/                   optional speech-to-text and text-to-speech integration points
 studio/                  optional local Studio-style developer UI
 evals/                   optional datasets, scorers, and experiment runs
 internal/testkit/        deterministic provider fixtures and contract suites for tests
@@ -1571,6 +1572,59 @@ returns status codes a platform's retry logic can act on — 401 for a rejected
 signature, 400 for an undecodable body, 200 for a handshake or an
 already-processed delivery, and 500 for a run or delivery failure the platform
 may safely redeliver.
+
+## Voice
+
+`voice` adds optional speech input and output around an agent without changing
+core orchestration. A spoken utterance is transcribed to a canonical user turn,
+the agent runs through the ordinary streaming pipeline, and the final reply is
+synthesized back to audio. The package supplies the provider-neutral edges —
+speech-recognition and synthesis interfaces, streaming with cancellation, and
+translation to and from canonical messages — and leaves the provider-specific
+work to optional adapters. The root module gains no provider dependency.
+
+```go
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "assistant", Name: "Assistant"},
+    Model:      model,
+})
+if err != nil {
+    panic(err)
+}
+
+// recognizer and synthesizer are optional adapters implementing the voice
+// interfaces; either half may be left nil for a listen-only or speak-only setup.
+session, err := voice.NewSession(voice.SessionConfig{
+    Voice: voice.Voice{Recognizer: recognizer, Synthesizer: synthesizer},
+    Agent: agent,
+})
+if err != nil {
+    panic(err)
+}
+
+// One voice turn: transcribe the audio, run the agent, synthesize the reply.
+result, err := session.Turn(ctx, voice.TurnInput{Audio: audio}, func(chunk voice.AudioChunk) error {
+    return play(chunk) // deliver each audio chunk as it arrives
+})
+```
+
+Only a final transcript starts a run, and it always maps to a user turn through
+`TranscriptMessage`, so a speaker's audio cannot forge a system or assistant
+turn; the agent's final assistant turn is projected back to text with
+`AssistantText`, so a spoken reply and a text reply speak the same words.
+Recognition and synthesis stream through `RecognitionStream` and
+`SynthesisStream`, following the agent runtime's stream contract: drain the
+result channel, then `Wait`; `Cancel` (or cancelling the context) stops the
+active transcription, run, or synthesis and joins its goroutine, so an abandoned
+turn leaves nothing running.
+
+Voice provider failures are kept distinct from agent failures: a recognition or
+synthesis fault is a `*voice.VoiceError` (matchable with `ErrRecognition`,
+`ErrSynthesis`, or `ErrUnsupported`), while an agent-run failure keeps its own
+`*lebro.AgentError` and is never wrapped, so a caller separates a provider outage
+from an agent fault with `errors.As`. The package ships no concrete provider; a
+speech backend is an external adapter implementing `Recognizer` and/or
+`Synthesizer`.
 
 ## Examples
 
