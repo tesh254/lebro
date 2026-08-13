@@ -372,8 +372,8 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return a.fail(runID, input, 0, agentErr)
 	} else {
 		input = *decision.Input
-		metadata = cloneMetadata(input.Metadata)
 	}
+	metadata = cloneMetadata(input.Metadata)
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -646,7 +646,6 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 
 	runID := a.idSource.NewRunID()
 	emitter.emit(runID, 0, "", RunEventStarted)
-	metadata := cloneMetadata(input.Metadata)
 
 	if authErr := a.authorizeRun(runCtx); authErr != nil {
 		cancel()
@@ -660,8 +659,8 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		return nil, agentErr
 	} else {
 		input = *decision.Input
-		metadata = cloneMetadata(input.Metadata)
 	}
+	metadata := cloneMetadata(input.Metadata)
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
