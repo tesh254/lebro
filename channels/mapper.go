@@ -41,15 +41,26 @@ type NamespaceThreadMapper struct {
 
 // Map returns the deterministic thread ID, namespace, and owner for a message.
 func (m NamespaceThreadMapper) Map(message InboundMessage) (lebro.ThreadID, string, string) {
-	// The separator is a byte that cannot appear in the individual fields'
-	// intended meaning as a boundary, so ("a","bc") and ("ab","c") hash
-	// differently. A raw concatenation would collide across such splits.
-	sum := sha256.Sum256([]byte(m.Namespace + "\x00" + message.Conversation.Platform + "\x00" + message.Conversation.ID))
+	// Fields are length-prefixed before hashing so no field's contents can
+	// shift a boundary and alias a different split: a raw delimiter fails when a
+	// field legitimately contains that delimiter byte, but a length prefix
+	// cannot be forged from the field's own bytes.
+	sum := sha256.Sum256(lengthPrefixed(m.Namespace, message.Conversation.Platform, message.Conversation.ID))
 	return lebro.ThreadID("ch-" + hex.EncodeToString(sum[:])), m.Namespace, message.Sender.ProviderUserID
 }
 
-// ErrNoConversation is returned by the handler when an inbound message names no
-// conversation, so it cannot be mapped to a thread. It is a client error, not a
-// server fault: an adapter that decodes a message must populate the
-// conversation reference.
+// ErrNoConversation is returned by validateInbound when an inbound message
+// names no conversation, so it cannot be mapped to a thread. It is a client
+// error, not a server fault: an adapter that decodes a message must populate
+// the conversation reference.
 var ErrNoConversation = errors.New("lebro/channels: inbound message has no conversation reference")
+
+// validateInbound checks that a decoded message can be mapped to a thread. The
+// handler rejects a message that fails this with 400, and the returned sentinel
+// lets a caller that decodes messages itself branch on the cause.
+func validateInbound(message InboundMessage) error {
+	if message.Conversation.ID == "" {
+		return ErrNoConversation
+	}
+	return nil
+}

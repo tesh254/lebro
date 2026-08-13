@@ -129,6 +129,27 @@ func TestStoreDeduplicatorConcurrentSameKey(t *testing.T) {
 	}
 }
 
+func TestStoreDeduplicatorScopesByNamespace(t *testing.T) {
+	store := lebro.NewMemoryStore()
+	ctx := context.Background()
+	a, err := channels.NewStoreDeduplicator(channels.StoreDeduplicatorConfig{Store: store, Namespace: "a"})
+	if err != nil {
+		t.Fatalf("NewStoreDeduplicator a: %v", err)
+	}
+	b, err := channels.NewStoreDeduplicator(channels.StoreDeduplicatorConfig{Store: store, Namespace: "b"})
+	if err != nil {
+		t.Fatalf("NewStoreDeduplicator b: %v", err)
+	}
+
+	if seen, _ := a.Seen(ctx, "k"); seen {
+		t.Fatal("first key in namespace a reported as duplicate")
+	}
+	// The same key in a different namespace is a distinct message.
+	if seen, _ := b.Seen(ctx, "k"); seen {
+		t.Fatal("same key in namespace b conflated with namespace a")
+	}
+}
+
 func TestNewStoreDeduplicatorRequiresStore(t *testing.T) {
 	if _, err := channels.NewStoreDeduplicator(channels.StoreDeduplicatorConfig{}); err == nil {
 		t.Fatal("NewStoreDeduplicator with no store returned nil error")

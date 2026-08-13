@@ -36,14 +36,22 @@ type ChannelIdentity struct {
 	Tenant         string
 }
 
-// Identity projects the sender onto the runtime's authenticated-caller value.
-// The provider user key becomes the policy Subject so a Policy authorizes the
-// run against the platform user, and the display name is preserved as an
-// attribute rather than as the subject, which must stay stable.
-func (c ChannelIdentity) Identity() lebro.Identity {
-	identity := lebro.Identity{Subject: c.ProviderUserID, Tenant: c.Tenant}
+// Identity projects the sender onto the runtime's authenticated-caller value
+// for the given platform. The Subject scopes the provider user key by platform,
+// because the same provider user ID on two platforms is two different callers; a
+// bare provider ID as the subject would let a policy conflate them. The platform
+// and display name are also preserved as attributes: platform for a policy that
+// keys on it directly, and display name because the subject must stay stable.
+// The fields are length-prefixed in the subject so a user ID that contains the
+// separator cannot forge a different (platform, user) pair.
+func (c ChannelIdentity) Identity(platform string) lebro.Identity {
+	identity := lebro.Identity{
+		Subject: string(lengthPrefixed(platform, c.ProviderUserID)),
+		Tenant:  c.Tenant,
+	}
+	identity.Attributes = map[string]string{"platform": platform}
 	if c.DisplayName != "" {
-		identity.Attributes = map[string]string{"display_name": c.DisplayName}
+		identity.Attributes["display_name"] = c.DisplayName
 	}
 	return identity
 }

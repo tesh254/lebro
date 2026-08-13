@@ -37,16 +37,18 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		if message.Conversation.ID == "" {
+		if err := validateInbound(message); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 
 		// Deduplicate before running: a redelivery must not produce a second
 		// reply. A message with no provider ID cannot be keyed, so it is always
-		// processed.
+		// processed. The key is scoped to this agent-platform route so an equal
+		// provider ID from a different platform or agent, routed through the same
+		// shared deduplicator, is not mistaken for a redelivery.
 		if message.ProviderMessageID != "" {
-			duplicate, err := s.deduplicator.Seen(r.Context(), message.ProviderMessageID)
+			duplicate, err := s.deduplicator.Seen(r.Context(), b.dedupKey(message.ProviderMessageID))
 			if err != nil {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
@@ -81,8 +83,9 @@ func (s *Server) run(ctx context.Context, b binding, message InboundMessage) err
 	}
 
 	// Carry the platform sender as the authenticated caller so a configured
-	// Policy authorizes the run against the external user.
-	identity := message.Sender.Identity()
+	// Policy authorizes the run against the external user, scoped by platform so
+	// equal user IDs on different platforms are distinct callers.
+	identity := message.Sender.Identity(message.Conversation.Platform)
 	if namespace != "" {
 		if identity.Attributes == nil {
 			identity.Attributes = map[string]string{}
@@ -165,18 +168,21 @@ func (s *Server) ensureThread(ctx context.Context, id lebro.ThreadID, namespace,
 		CreatedAt: now,
 		UpdatedAt: now,
 	})
-	// A concurrent delivery may have created the thread between the Get and the
-	// Create; treat that as success rather than surfacing a spurious conflict.
-	if err != nil && !errors.Is(err, lebro.ErrConflict) {
-		// CreateThread reports a duplicate as a plain error rather than
-		// ErrConflict, so a second creator's "already exists" also lands here;
-		// re-check existence to distinguish it from a real failure.
-		if _, getErr := s.config.Store.Threads().GetThread(ctx, id); getErr == nil {
-			return nil
-		}
-		return err
+	if err == nil {
+		return nil
 	}
-	return nil
+	// The create failed. It may be a benign race — a concurrent delivery created
+	// the thread between the Get and the Create, reported as a plain "already
+	// exists" on the memory and SQLite stores and as ErrConflict on PostgreSQL —
+	// or a genuine failure such as a serialization conflict that left the thread
+	// absent. Re-check existence for *every* error rather than assuming
+	// ErrConflict means the thread now exists: only a present thread is success.
+	// Otherwise the run would proceed and RunStream would lazily create an
+	// unscoped thread, losing the namespace and owner.
+	if _, getErr := s.config.Store.Threads().GetThread(ctx, id); getErr == nil {
+		return nil
+	}
+	return err
 }
 
 // assistantText returns the last assistant turn in a completed run, or empty

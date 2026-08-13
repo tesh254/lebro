@@ -56,8 +56,10 @@ func TestNamespaceThreadMapperSeparatesPlatformsAndNamespaces(t *testing.T) {
 	}
 }
 
-// TestNamespaceThreadMapperResistsBoundaryShift proves the field separator
-// matters: without it, ("ab","c") and ("a","bc") would hash identically.
+// TestNamespaceThreadMapperResistsBoundaryShift proves the length prefix
+// matters: with a raw delimiter, ("ab","c") and ("a","bc") could hash
+// identically, and a field containing the delimiter byte could alias another
+// split.
 func TestNamespaceThreadMapperResistsBoundaryShift(t *testing.T) {
 	a, _, _ := channels.NamespaceThreadMapper{Namespace: "ab"}.Map(
 		channels.InboundMessage{Conversation: channels.ConversationRef{Platform: "p", ID: "c"}})
@@ -65,5 +67,31 @@ func TestNamespaceThreadMapperResistsBoundaryShift(t *testing.T) {
 		channels.InboundMessage{Conversation: channels.ConversationRef{Platform: "bp", ID: "c"}})
 	if a == b {
 		t.Fatal("boundary shift produced a collision")
+	}
+
+	// A conversation ID that contains the NUL byte a naive delimiter would use
+	// must not alias a different platform/ID split.
+	withNul, _, _ := channels.NamespaceThreadMapper{Namespace: "n"}.Map(
+		channels.InboundMessage{Conversation: channels.ConversationRef{Platform: "p", ID: "a\x00b"}})
+	shifted, _, _ := channels.NamespaceThreadMapper{Namespace: "n"}.Map(
+		channels.InboundMessage{Conversation: channels.ConversationRef{Platform: "p\x00a", ID: "b"}})
+	if withNul == shifted {
+		t.Fatal("NUL byte in a field aliased a different split")
+	}
+}
+
+func TestChannelIdentityScopesSubjectByPlatform(t *testing.T) {
+	sender := channels.ChannelIdentity{ProviderUserID: "u1", DisplayName: "Ann"}
+	slack := sender.Identity("slack")
+	teams := sender.Identity("teams")
+
+	if slack.Subject == teams.Subject {
+		t.Fatalf("same user ID on different platforms produced the same subject %q", slack.Subject)
+	}
+	if slack.Attributes["platform"] != "slack" {
+		t.Fatalf("platform attribute = %q, want slack", slack.Attributes["platform"])
+	}
+	if slack.Attributes["display_name"] != "Ann" {
+		t.Fatalf("display_name attribute = %q, want Ann", slack.Attributes["display_name"])
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/tesh254/lebro"
@@ -49,12 +51,25 @@ type Server struct {
 
 	handlerOnce sync.Once
 	handler     http.Handler
+	// building is set under mu once router construction starts, so an
+	// ExposeAgent that blocks on mu during the build is refused rather than
+	// registering a route the snapshot has already missed.
+	building bool
 }
 
 // binding is one registered agent-adapter pair reachable at a webhook path.
 type binding struct {
+	agentID string
 	agent   *lebro.Agent
 	adapter Adapter
+}
+
+// dedupKey scopes a provider message ID to this binding's agent and platform so
+// a shared deduplicator does not conflate equal IDs from different routes. The
+// components are length-prefixed so no component's contents can shift a boundary
+// and alias a different scoping.
+func (b binding) dedupKey(providerMessageID string) string {
+	return string(lengthPrefixed(b.agentID, b.adapter.Platform(), providerMessageID))
 }
 
 // NewServer creates a channel server. When Config.Deduplicator is nil it
@@ -63,13 +78,20 @@ type binding struct {
 // MemoryDeduplicator otherwise. A nil Mapper selects a zero-namespace
 // NamespaceThreadMapper.
 func NewServer(config Config) (*Server, error) {
+	// Interface-valued config fields are treated as unset when they are nil or a
+	// typed nil. Retaining a typed nil here would defeat the default selection
+	// below and panic on the first request instead.
+	if isNilInterface(config.Store) {
+		config.Store = nil
+	}
+
 	mapper := config.Mapper
-	if mapper == nil {
+	if isNilInterface(mapper) {
 		mapper = NamespaceThreadMapper{}
 	}
 
 	deduplicator := config.Deduplicator
-	if deduplicator == nil {
+	if isNilInterface(deduplicator) {
 		if config.Store != nil {
 			var err error
 			deduplicator, err = NewStoreDeduplicator(StoreDeduplicatorConfig{Store: config.Store})
@@ -107,13 +129,20 @@ func (s *Server) ExposeAgent(agent *lebro.Agent, adapters ...Adapter) error {
 	if id == "" {
 		return errors.New("lebro/channels: agent definition ID is required")
 	}
+	// The agent ID is a path segment in the webhook route. Reject a value that
+	// is not a plain segment so an ID carrying ServeMux pattern syntax (for
+	// example "{id}") cannot register a wildcard route that captures other
+	// agents' paths.
+	if err := validateRouteSegment(id); err != nil {
+		return fmt.Errorf("lebro/channels: agent ID %q is not a valid route segment: %w", id, err)
+	}
 	if len(adapters) == 0 {
 		return errors.New("lebro/channels: at least one adapter is required")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.handlerBuilt() {
+	if s.handlerBuilt() || s.building {
 		return fmt.Errorf("lebro/channels: cannot expose agent %q: %w", id, ErrHandlerBuilt)
 	}
 
@@ -121,12 +150,17 @@ func (s *Server) ExposeAgent(agent *lebro.Agent, adapters ...Adapter) error {
 	// list does not leave the agent half-registered.
 	paths := make([]string, 0, len(adapters))
 	for _, adapter := range adapters {
-		if adapter == nil {
+		// A typed-nil adapter is non-nil as an interface, so the plain nil check
+		// alone would pass and Platform() would then panic. Reflect to reject it.
+		if isNilAdapter(adapter) {
 			return fmt.Errorf("lebro/channels: agent %q has a nil adapter", id)
 		}
 		platform := adapter.Platform()
 		if platform == "" {
 			return fmt.Errorf("lebro/channels: agent %q adapter has an empty platform", id)
+		}
+		if err := validateRouteSegment(platform); err != nil {
+			return fmt.Errorf("lebro/channels: platform %q is not a valid route segment: %w", platform, err)
 		}
 		path := webhookPath(id, platform)
 		if _, exists := s.routes[path]; exists {
@@ -141,7 +175,7 @@ func (s *Server) ExposeAgent(agent *lebro.Agent, adapters ...Adapter) error {
 	}
 
 	for i, adapter := range adapters {
-		s.routes[paths[i]] = binding{agent: agent, adapter: adapter}
+		s.routes[paths[i]] = binding{agentID: id, agent: agent, adapter: adapter}
 	}
 	return nil
 }
@@ -165,9 +199,17 @@ func webhookPath(agentID, platform string) string {
 // use.
 func (s *Server) Handler() http.Handler {
 	s.handlerOnce.Do(func() {
-		built := s.buildRouter()
+		// Snapshot the routes and assign the handler under one uninterrupted
+		// hold of the write lock. Taking the lock here — rather than snapshotting
+		// under a separate read lock and assigning under a later write lock —
+		// closes the race where an ExposeAgent that already passed its
+		// handler-built check writes a route between the snapshot and the
+		// assignment, returning nil while leaving that route unrouted. A
+		// concurrent ExposeAgent either commits its route before this lock (and
+		// is included) or blocks and then observes s.building and is refused.
 		s.mu.Lock()
-		s.handler = built
+		s.building = true
+		s.handler = s.buildRouterLocked()
 		s.mu.Unlock()
 	})
 	s.mu.RLock()
@@ -180,19 +222,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.Handler().ServeHTTP(w, r)
 }
 
-// buildRouter constructs the mux from the registered routes and applies
+// buildRouterLocked constructs the mux from the registered routes and applies
 // middleware. Middleware is applied in reverse so the first configured entry
-// ends up outermost.
-func (s *Server) buildRouter() http.Handler {
+// ends up outermost. It must be called with s.mu held.
+func (s *Server) buildRouterLocked() http.Handler {
 	mux := http.NewServeMux()
-	s.mu.RLock()
 	for path, b := range s.routes {
 		binding := b
 		// A webhook is a POST from the platform; registering the method keeps a
 		// GET probe from being routed to the receiver.
 		mux.Handle(http.MethodPost+" "+path, s.webhookHandler(binding))
 	}
-	s.mu.RUnlock()
 
 	var handler http.Handler = mux
 	for i := len(s.config.Middleware) - 1; i >= 0; i-- {
@@ -202,4 +242,40 @@ func (s *Server) buildRouter() http.Handler {
 		handler = s.config.Middleware[i](handler)
 	}
 	return handler
+}
+
+// validateRouteSegment reports whether s is usable as a single webhook path
+// segment. It rejects an empty value, a value containing a slash (which would
+// add or cross segment boundaries), and a value containing net/http ServeMux
+// pattern metacharacters ('{' or '}', which introduce a wildcard). A segment
+// that passes maps to exactly the intended route.
+func validateRouteSegment(s string) error {
+	if s == "" {
+		return errors.New("segment is empty")
+	}
+	if strings.ContainsAny(s, "/{}") {
+		return errors.New("segment contains '/', '{', or '}'")
+	}
+	return nil
+}
+
+// isNilAdapter reports whether an Adapter is nil or a typed nil. A typed-nil
+// interface value is non-nil under a plain == nil comparison, so a method call
+// on it would panic; reflect distinguishes it.
+func isNilAdapter(a Adapter) bool { return isNilInterface(a) }
+
+// isNilInterface reports whether an interface value is nil or wraps a nil
+// pointer, map, slice, channel, or function. It lets configuration validation
+// treat a typed nil as unset rather than panicking on first use.
+func isNilInterface(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }

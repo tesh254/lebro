@@ -134,6 +134,14 @@ func TestWebhookAdapterDecode(t *testing.T) {
 	}
 }
 
+func TestWebhookAdapterDecodeRejectsTrailingContent(t *testing.T) {
+	adapter := newFixedWebhookAdapter(t, []byte("shhh"), time.Unix(1, 0))
+	body := []byte(`{"conversation_id":"c1","text":"hi"}{"conversation_id":"c2","text":"evil"}`)
+	if _, _, err := adapter.Decode(nil, body); err == nil {
+		t.Fatal("Decode accepted a body with a second JSON value after the first")
+	}
+}
+
 func TestWebhookAdapterDecodeTreatsEmptyAsNonMessage(t *testing.T) {
 	adapter := newFixedWebhookAdapter(t, []byte("shhh"), time.Unix(1, 0))
 	if _, ok, err := adapter.Decode(nil, []byte(`{}`)); err != nil || ok {

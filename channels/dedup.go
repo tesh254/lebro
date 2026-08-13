@@ -5,9 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -78,43 +78,42 @@ func (d *MemoryDeduplicator) Seen(_ context.Context, key string) (bool, error) {
 	return false, nil
 }
 
-// StoreDeduplicator persists processed message IDs through a lebro.Store so
-// deduplication survives a restart. It keeps a bounded ring of the most recent
-// keys in a single dedicated thread record per namespace, storing the ring in
-// the thread's metadata. The bound keeps the record from growing without limit;
-// as with MemoryDeduplicator, a redelivery older than the retained window is no
-// longer remembered.
+// StoreDeduplicator persists processed message keys through a lebro.Store so
+// deduplication survives a restart. Each processed key becomes its own marker
+// thread record whose ID is a hash of the key; recording a key is a single
+// CreateThread guarded by the store's per-record uniqueness. This makes the
+// check-and-record atomic on every backend, including a read-committed
+// PostgreSQL where a shared mutable ring would let two concurrent writers each
+// overwrite the other: two concurrent creates of the same marker cannot both
+// succeed, so exactly one caller observes "not seen".
 //
-// The check-and-record runs inside Store.Transaction, so two concurrent
-// deliveries of the same key cannot both proceed: the transaction that commits
-// second observes the first's write and, on a write-write race, retries against
-// the updated record.
+// Unlike MemoryDeduplicator, StoreDeduplicator does not bound its retained
+// window: a marker persists until the store is pruned externally, so a
+// redelivery is recognized however late it arrives. The tradeoff is that the
+// marker set grows with the number of distinct messages processed; deployments
+// that need bounded storage should prune old marker records out of band. Marker
+// IDs are prefixed with "chdedup-" so such pruning can target them.
 type StoreDeduplicator struct {
 	store     lebro.Store
 	namespace string
-	capacity  int
-	// maxRetries bounds transaction retries on a concurrency conflict so a
-	// pathological contention loop cannot run forever.
-	maxRetries int
-	clock      func() time.Time
+	clock     func() time.Time
 }
 
 // StoreDeduplicatorConfig configures a StoreDeduplicator.
 type StoreDeduplicatorConfig struct {
-	// Store persists the dedup record. Required.
+	// Store persists the marker records. Required.
 	Store lebro.Store
-	// Namespace isolates one deployment's dedup record from another's sharing
-	// the same store. It is folded into the record's thread ID.
+	// Namespace isolates one logical scope's markers from another's sharing the
+	// same store. It is folded into every marker ID, so two servers — or two
+	// adapters routed through separate deduplicators — do not treat an equal
+	// provider key as the same message. The channel Server sets this per
+	// agent-platform route.
 	Namespace string
-	// Capacity is the number of recent keys retained. A value below one selects
-	// DefaultDedupCapacity.
-	Capacity int
 }
 
-// DefaultDedupCapacity is the retained-key window used when a
-// StoreDeduplicatorConfig or NewMemoryDeduplicator leaves it unset. It is large
-// enough to cover a platform's redelivery burst and small enough to keep the
-// metadata record modest.
+// DefaultDedupCapacity is the retained-key window used by NewMemoryDeduplicator
+// when it is left unset. StoreDeduplicator does not use it; its retention is
+// bounded only by external pruning.
 const DefaultDedupCapacity = 1024
 
 // NewStoreDeduplicator constructs a StoreDeduplicator. It returns an error when
@@ -124,112 +123,70 @@ func NewStoreDeduplicator(config StoreDeduplicatorConfig) (*StoreDeduplicator, e
 	if config.Store == nil {
 		return nil, errors.New("lebro/channels: StoreDeduplicator requires a Store")
 	}
-	capacity := config.Capacity
-	if capacity < 1 {
-		capacity = DefaultDedupCapacity
-	}
 	return &StoreDeduplicator{
-		store:      config.Store,
-		namespace:  config.Namespace,
-		capacity:   capacity,
-		maxRetries: 8,
-		clock:      time.Now,
+		store:     config.Store,
+		namespace: config.Namespace,
+		clock:     time.Now,
 	}, nil
 }
 
-// dedupState is the bounded ring persisted in the dedup thread's metadata. Keys
-// holds the retained IDs oldest-first; Index mirrors Keys for O(1) membership
-// so a large ring is not scanned linearly on every message.
-type dedupState struct {
-	Keys []string `json:"keys"`
-}
-
-// threadID is the deterministic ID of this deduplicator's record. Folding the
-// namespace into the hash keeps two deployments' rings apart.
-func (d *StoreDeduplicator) threadID() lebro.ThreadID {
-	sum := sha256.Sum256([]byte("dedup\x00" + d.namespace))
+// markerID is the deterministic ID of the marker for one key. Folding the
+// namespace and a separator into the hash keeps two scopes' keys apart and
+// keeps a key that contains the separator from colliding with a different
+// (namespace, key) split.
+func (d *StoreDeduplicator) markerID(key string) lebro.ThreadID {
+	sum := sha256.Sum256(lengthPrefixed(d.namespace, key))
 	return lebro.ThreadID("chdedup-" + hex.EncodeToString(sum[:]))
 }
 
-// Seen reports whether key was already recorded and records it otherwise,
-// atomically, retrying the transaction on a concurrency conflict.
+// Seen reports whether key was already recorded and records it otherwise. The
+// record is a single marker thread created under the store's uniqueness
+// guarantee, so the check and the record are one atomic step.
 func (d *StoreDeduplicator) Seen(ctx context.Context, key string) (bool, error) {
-	id := d.threadID()
-	for attempt := 0; ; attempt++ {
-		var duplicate bool
-		err := d.store.Transaction(ctx, func(ctx context.Context, repos lebro.Repositories) error {
-			record, err := repos.Threads().GetThread(ctx, id)
-			switch {
-			case errors.Is(err, lebro.ErrNotFound):
-				// First message for this namespace: create the ring record and
-				// seed it with this key.
-				now := d.clock().UTC()
-				state := dedupState{Keys: []string{key}}
-				metadata, marshalErr := json.Marshal(state)
-				if marshalErr != nil {
-					return marshalErr
-				}
-				duplicate = false
-				return repos.Threads().CreateThread(ctx, lebro.ThreadRecord{
-					ID:        id,
-					Namespace: d.namespace,
-					Metadata:  metadata,
-					CreatedAt: now,
-					UpdatedAt: now,
-				})
-			case err != nil:
-				return err
-			}
+	id := d.markerID(key)
 
-			state, err := decodeDedupState(record.Metadata)
-			if err != nil {
-				return err
-			}
-			for _, existing := range state.Keys {
-				if existing == key {
-					duplicate = true
-					return nil
-				}
-			}
-			state.Keys = append(state.Keys, key)
-			if len(state.Keys) > d.capacity {
-				state.Keys = state.Keys[len(state.Keys)-d.capacity:]
-			}
-			metadata, err := json.Marshal(state)
-			if err != nil {
-				return err
-			}
-			record.Metadata = metadata
-			record.UpdatedAt = d.clock().UTC()
-			duplicate = false
-			return repos.Threads().UpdateThread(ctx, record)
-		})
-		switch {
-		case err == nil:
-			return duplicate, nil
-		case errors.Is(err, lebro.ErrConflict) && attempt < d.maxRetries:
-			// A concurrent delivery committed first. Retry against the updated
-			// record so this key is checked against the winner's write.
-			continue
-		default:
-			return false, fmt.Errorf("lebro/channels: deduplicate %q: %w", key, err)
-		}
+	// A prior run may already have recorded this key. Checking first turns the
+	// common redelivery case into a read, and distinguishes a genuine duplicate
+	// from a real create failure below.
+	if _, err := d.store.Threads().GetThread(ctx, id); err == nil {
+		return true, nil
+	} else if !errors.Is(err, lebro.ErrNotFound) {
+		return false, fmt.Errorf("lebro/channels: deduplicate %q: %w", key, err)
 	}
+
+	now := d.clock().UTC()
+	err := d.store.Threads().CreateThread(ctx, lebro.ThreadRecord{
+		ID:        id,
+		Namespace: d.namespace,
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err == nil {
+		return false, nil
+	}
+
+	// The create failed. A concurrent delivery of the same key may have created
+	// the marker between the Get and the Create; the store reports that as a
+	// uniqueness error (ErrConflict on PostgreSQL, a plain "already exists" on
+	// the in-memory and SQLite stores). Re-read to tell that apart from a real
+	// storage failure: if the marker now exists, this delivery is the duplicate.
+	if _, getErr := d.store.Threads().GetThread(ctx, id); getErr == nil {
+		return true, nil
+	}
+	return false, fmt.Errorf("lebro/channels: deduplicate %q: %w", key, err)
 }
 
-// decodeDedupState reads the ring from a metadata payload. A nil or empty
-// payload — which is what a record carries before any key is stored — decodes
-// to an empty ring rather than failing, so an externally created record does
-// not wedge deduplication.
-func decodeDedupState(metadata json.RawMessage) (dedupState, error) {
-	if len(metadata) == 0 {
-		return dedupState{}, nil
+// lengthPrefixed encodes fields so no field's contents can shift a boundary and
+// alias a different split — ("a","bc") and ("ab","c") encode differently. Each
+// field is prefixed with its byte length and a separator.
+func lengthPrefixed(fields ...string) []byte {
+	var buf []byte
+	for _, field := range fields {
+		buf = append(buf, []byte(strconv.Itoa(len(field)))...)
+		buf = append(buf, ':')
+		buf = append(buf, []byte(field)...)
 	}
-	var state dedupState
-	if err := json.Unmarshal(metadata, &state); err != nil {
-		return dedupState{}, fmt.Errorf("lebro/channels: decode dedup state: %w", err)
-	}
-	return state, nil
+	return buf
 }
 
 var (

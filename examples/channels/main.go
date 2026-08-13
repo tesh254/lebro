@@ -13,6 +13,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -64,10 +65,33 @@ func main() {
 		log.Fatalf("new agent: %v", err)
 	}
 
+	// Stand in for the platform's reply endpoint: the adapter POSTs each reply
+	// chunk here, so the example shows the streamed response actually delivered
+	// rather than dropped. A real deployment points ReplyURL at the platform.
+	var replies []string
+	replyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var chunk struct {
+			Text  string `json:"text"`
+			Final bool   `json:"final"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&chunk); err != nil {
+			http.Error(w, "bad chunk", http.StatusBadRequest)
+			return
+		}
+		marker := "delta"
+		if chunk.Final {
+			marker = "final"
+		}
+		replies = append(replies, fmt.Sprintf("[%s] %q", marker, chunk.Text))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer replyServer.Close()
+
 	secret := []byte("shared-webhook-secret")
 	adapter, err := channels.NewWebhookAdapter(channels.WebhookAdapterConfig{
 		Platform: "webhook",
 		Secret:   secret,
+		ReplyURL: replyServer.URL,
 	})
 	if err != nil {
 		log.Fatalf("new adapter: %v", err)
@@ -99,6 +123,17 @@ func main() {
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	fmt.Printf("webhook status: %d\n", rec.Code)
+	if rec.Code != http.StatusOK {
+		// A non-200 means the webhook was rejected or the run failed; the
+		// exchange below would be misleading, so stop here.
+		log.Fatalf("webhook returned %d, want 200", rec.Code)
+	}
+
+	// The streamed reply was delivered to the reply endpoint chunk by chunk.
+	fmt.Printf("delivered reply chunks: %d\n", len(replies))
+	for _, reply := range replies {
+		fmt.Printf("  %s\n", reply)
+	}
 
 	// The reply was persisted to the conversation's thread. Show that a second
 	// message on the same conversation continues one durable transcript.

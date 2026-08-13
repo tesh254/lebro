@@ -215,6 +215,13 @@ func (a *WebhookAdapter) Decode(_ *http.Request, body []byte) (InboundMessage, b
 	if err := decoder.Decode(&payload); err != nil {
 		return InboundMessage{}, false, err
 	}
+	// A body with anything past the first JSON value is malformed; accepting it
+	// would let a signed prefix carry unverified trailing content. A second
+	// Decode surfaces both a trailing value and unparseable trailing bytes as a
+	// non-EOF result, which decoder.More() would miss at the top level.
+	if err := decoder.Decode(new(json.RawMessage)); !errors.Is(err, io.EOF) {
+		return InboundMessage{}, false, errors.New("lebro/channels: webhook body contains trailing content after the first JSON value")
+	}
 	if payload.ConversationID == "" && payload.Text == "" {
 		return InboundMessage{}, false, nil
 	}

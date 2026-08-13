@@ -22,9 +22,10 @@ All notable changes to this project are documented in this file.
   lands on one persisted transcript; the sender is mapped onto a
   `lebro.Identity` and carried on the run context so a configured `Policy`
   authorizes the run, and inbound content is always a user turn. Redelivery is
-  made safe by a `Deduplicator`: `StoreDeduplicator` persists the dedup window
-  through a `Store` (the default whenever a store is configured) so it survives
-  a restart, and `MemoryDeduplicator` keeps a bounded in-process window. The
+  made safe by a `Deduplicator`, scoped per agent-platform route:
+  `StoreDeduplicator` persists a marker per key through a `Store` (the default
+  whenever a store is configured) so redelivery is recognized across a restart,
+  and `MemoryDeduplicator` keeps a bounded in-process window. The
   webhook handler returns status codes a platform's retry logic can act on. The
   public surface adds the `channels` package (`Server`, `Config`, `ExposeAgent`,
   `Adapter`, `InboundMessage`, `OutboundMessage`, `ChannelIdentity`,

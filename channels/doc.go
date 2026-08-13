@@ -62,13 +62,18 @@
 //
 // A [Deduplicator] makes redelivery safe by dropping a message whose provider ID
 // has already been processed. The check-and-record is atomic, so two concurrent
-// deliveries of one ID cannot both run the agent. [MemoryDeduplicator] retains a
-// bounded in-process window; [StoreDeduplicator] persists the window through a
-// [github.com/tesh254/lebro.Store] so it survives a restart and is the default
-// whenever a store is configured. Deduplication is best-effort beyond the
-// retained window: a redelivery older than the window is no longer remembered and
-// would be processed again, so the window should exceed a platform's redelivery
-// horizon. A message with no provider ID cannot be keyed and is always processed.
+// deliveries of one ID cannot both run the agent. The channel handler scopes the
+// key by agent and platform, so an equal provider ID from a different route is
+// not conflated. [MemoryDeduplicator] retains a bounded in-process window and is
+// best-effort beyond it: a redelivery older than the window is no longer
+// remembered, so the window should exceed a platform's redelivery horizon.
+// [StoreDeduplicator] persists a marker per key through a
+// [github.com/tesh254/lebro.Store] so redelivery is recognized however late it
+// arrives and across a restart; it is the default whenever a store is configured.
+// Its marker set is not self-bounded — markers accumulate with the number of
+// distinct messages and are pruned out of band — so it trades storage growth for
+// exactness. A message with no provider ID cannot be keyed and is always
+// processed.
 //
 // Reply delivery is not transactional with the run. A run can succeed while a
 // later reply chunk fails to deliver; the handler then returns 500 and the

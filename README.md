@@ -1524,10 +1524,13 @@ if err != nil {
 }
 
 // The generic HMAC webhook adapter needs no platform SDK: a platform signs the
-// raw body with a shared secret and sends the hex digest.
+// raw body with a shared secret and sends the hex digest. ReplyURL is where the
+// adapter POSTs each reply chunk; omit it only when the platform's reply channel
+// is wired separately, since without it Send is a no-op and no reply is delivered.
 adapter, err := channels.NewWebhookAdapter(channels.WebhookAdapterConfig{
     Platform: "webhook",
     Secret:   []byte(os.Getenv("CHANNEL_WEBHOOK_SECRET")),
+    ReplyURL: os.Getenv("CHANNEL_REPLY_URL"),
 })
 if err != nil {
     panic(err)
