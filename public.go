@@ -275,6 +275,7 @@ const (
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 	AgentErrorUnauthorized            = runtime.AgentErrorUnauthorized
+	AgentErrorProcessor               = runtime.AgentErrorProcessor
 
 	ActionAgentRun     = runtime.ActionAgentRun
 	ActionToolCall     = runtime.ActionToolCall
@@ -327,6 +328,7 @@ const (
 	RunEventBranchSelected       = runtime.RunEventBranchSelected
 	RunEventModelAttemptStarted  = runtime.RunEventModelAttemptStarted
 	RunEventModelAttemptFinished = runtime.RunEventModelAttemptFinished
+	RunEventProcessor            = runtime.RunEventProcessor
 
 	FanOutFailFast   = runtime.FanOutFailFast
 	FanOutCollectAll = runtime.FanOutCollectAll
@@ -395,7 +397,8 @@ var (
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
 	ErrAgentUnauthorized            = runtime.ErrAgentUnauthorized
 
-	ErrPolicyDenied = runtime.ErrPolicyDenied
+	ErrPolicyDenied   = runtime.ErrPolicyDenied
+	ErrAgentProcessor = runtime.ErrAgentProcessor
 
 	ErrProcessorFailed          = runtime.ErrProcessorFailed
 	ErrProcessorCancelled       = runtime.ErrProcessorCancelled
