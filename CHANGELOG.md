@@ -6,6 +6,29 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Voice integration points. A new optional `voice` package adds optional speech
+  input and output around an agent without changing core orchestration: a spoken
+  utterance is transcribed to a canonical user turn, the agent runs through the
+  ordinary streaming pipeline, and the final reply is synthesized back to audio.
+  It is off by default — nothing in the root module imports it, and the root
+  module gains no provider dependency. The package supplies the provider-neutral
+  edges and leaves the provider-specific work to optional adapters that implement
+  `Recognizer` (speech-to-text) and/or `Synthesizer` (text-to-speech); a `Voice`
+  bundles the two optional halves. A `Session`, built with `NewSession`, drives
+  one voice turn end to end through `Turn` (or the separate `Transcribe` and
+  `Synthesize` halves), starting the run from the final transcript via
+  `TranscriptMessage` and projecting the reply with `AssistantText`. Recognition
+  and synthesis stream with cancellation through `RecognitionStream` and
+  `SynthesisStream`, mirroring the agent runtime's stream contract; cancelling
+  the context stops the active transcription, run, or synthesis and joins its
+  goroutine. Voice provider failures are a distinct `*VoiceError` (kinds
+  `Recognition`, `Synthesis`, `Unsupported`, matchable with `ErrRecognition`,
+  `ErrSynthesis`, `ErrUnsupported`) and are never confused with an agent
+  `*AgentError`. The public surface adds the `voice` package (`Session`,
+  `SessionConfig`, `Voice`, `Recognizer`, `Synthesizer`, `Speaker`, `AudioChunk`,
+  `AudioFormat`, `Transcript`, `SynthesisRequest`, `TurnInput`, `TurnResult`,
+  `RecognitionStream`, `SynthesisStream`, `VoiceError`, and their constructors);
+  no new module dependency is introduced.
 - Messaging channel adapters. A new optional `channels` package connects agents
   to conversational platforms: a platform delivers an inbound message to a
   webhook, the agent runs through the ordinary streaming pipeline, and the
