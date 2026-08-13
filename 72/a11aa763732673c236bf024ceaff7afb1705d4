@@ -1,0 +1,56 @@
+internal/runtime/thread_history_test.go
+  s_a652f13ebd74d1::t_976a81822412d8 56-58
+  s_a652f13ebd74d1::t_1249fc88184266 5,69,73
+  s_a652f13ebd74d1::t_a4dac1f9e7e87d 1-4,6-16,25-27,31,59,80
+  s_a652f13ebd74d1::t_67ab1c7a656158 19-24,28-30,32-37,40-41,52-54,60-68,70-72,74-79
+  s_a652f13ebd74d1::t_614a74b73d449b 38-39,45
+  s_a652f13ebd74d1::t_4f30ce64114e13 17-18,55
+  s_a652f13ebd74d1::t_cc71027f2f8ce2 42-44,46-51
+internal/testkit/contract_storage.go
+  s_a652f13ebd74d1::t_a777250a1fed45 113-119
+  s_a652f13ebd74d1::t_3bc8e69ba8d4b1 91-96,100-102,106,110-112
+  s_a652f13ebd74d1::t_3425064bc1215d 97-99,103-105,107-109
+  s_a652f13ebd74d1::t_976a81822412d8 120-125
+examples/thread-history/main.go
+  s_a652f13ebd74d1::t_e15f9c4f1f1fc0 1-21,25-27,29,42
+  s_a652f13ebd74d1::t_48c008dacc7547 22-24,28,30-41
+internal/runtime/thread_history.go
+  s_a652f13ebd74d1::t_2b96902b77466c 1-9,11-16,19,21-23,30-31,47-49,53,57-59,69-71,89-90,105-106,126-128,135,146,150,158-159,172,209-210,225-226,244-245
+  s_a652f13ebd74d1::t_976a81822412d8 189-197,201-206
+  s_a652f13ebd74d1::t_6cb8c951836409 10,101,104,248-250,255
+  s_a652f13ebd74d1::t_a777250a1fed45 78-79,82,85-86,88,173-188,198-200,207-208,327-329,331-332
+  s_a652f13ebd74d1::t_b7ff82eb24e5f5 63-65,74-76,94-96,109-111
+  s_a652f13ebd74d1::t_a4dac1f9e7e87d 17-18,20,24-29,32-46,50-52,54-56,60-62,66-68,72-73,77,80-81,83-84,87,91-93,97-100,102-103,107-108,112-125,129-134,136-145,147-149,151-157,160-171,211-224,227-243,246-247,251-254,256-326,330,333-354
+internal/runtime/storage.go
+  s_a652f13ebd74d1::t_9cfef0516736fb 159-163
+internal/runtime/memory_storage.go
+  s_a652f13ebd74d1::t_9cfef0516736fb 130-147,267-280,436-463,465-474,477-496,498-507
+internal/runtime/sqlite_storage.go
+  s_a652f13ebd74d1::t_9cfef0516736fb 427,435-436,460,471-476,501-503
+  s_a652f13ebd74d1::t_239a2e50235fe7 428-434,437-445,449-459,461-470,477-500
+  s_a652f13ebd74d1::t_4bb39add134e96 446-448
+internal/runtime/storage_guard.go
+  s_a652f13ebd74d1::t_b4656366b2876e 222-242
+public.go
+  s_a652f13ebd74d1::t_21c107d11d3eda 181-185,613-616
+internal/runtime/postgres_storage.go
+  s_a652f13ebd74d1::t_4bb39add134e96 451-453
+  s_a652f13ebd74d1::t_9cfef0516736fb 432,440-441,465,476-481,499-501
+  s_a652f13ebd74d1::t_239a2e50235fe7 433-439,442-450,454-464,466-475,482-498
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "72a11aa763732673c236bf024ceaff7afb1705d4",
+  "prompts": {},
+  "sessions": {
+    "s_a652f13ebd74d1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffcbd-ea72-7c71-a774-3635bfc6ac14",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
