@@ -184,6 +184,32 @@ type (
 	PolicyStore                 = runtime.PolicyStore
 )
 
+type (
+	Processor                     = runtime.Processor
+	ProcessorPipeline             = runtime.ProcessorPipeline
+	ProcessorRun                  = runtime.ProcessorRun
+	InputProcessor                = runtime.InputProcessor
+	ProcessorInputRequest         = runtime.ProcessorInputRequest
+	ProcessorInputResult          = runtime.ProcessorInputResult
+	ModelRequestProcessor         = runtime.ModelRequestProcessor
+	ProcessorModelRequest         = runtime.ProcessorModelRequest
+	ProcessorModelRequestResult   = runtime.ProcessorModelRequestResult
+	ModelResponseProcessor        = runtime.ModelResponseProcessor
+	ProcessorModelResponseRequest = runtime.ProcessorModelResponseRequest
+	ProcessorModelResponseResult  = runtime.ProcessorModelResponseResult
+	StreamDeltaProcessor          = runtime.StreamDeltaProcessor
+	ProcessorStreamDeltaRequest   = runtime.ProcessorStreamDeltaRequest
+	ProcessorStreamDeltaResult    = runtime.ProcessorStreamDeltaResult
+	OutputProcessor               = runtime.OutputProcessor
+	ProcessorOutputRequest        = runtime.ProcessorOutputRequest
+	ProcessorOutputResult         = runtime.ProcessorOutputResult
+	ProcessorPhase                = runtime.ProcessorPhase
+	ProcessorDecisionKind         = runtime.ProcessorDecisionKind
+	ProcessorDecision             = runtime.ProcessorDecision
+	ProcessorErrorKind            = runtime.ProcessorErrorKind
+	ProcessorError                = runtime.ProcessorError
+)
+
 const (
 	RoleSystem    = runtime.RoleSystem
 	RoleUser      = runtime.RoleUser
@@ -229,6 +255,16 @@ const (
 	FinishReasonContent     = runtime.FinishReasonContent
 	FinishReasonCancelled   = runtime.FinishReasonCancelled
 	FinishReasonUnspecified = runtime.FinishReasonUnspecified
+
+	ProcessorPhaseInput         = runtime.ProcessorPhaseInput
+	ProcessorPhaseModelRequest  = runtime.ProcessorPhaseModelRequest
+	ProcessorPhaseModelResponse = runtime.ProcessorPhaseModelResponse
+	ProcessorPhaseStreamDelta   = runtime.ProcessorPhaseStreamDelta
+	ProcessorPhaseOutput        = runtime.ProcessorPhaseOutput
+
+	ProcessorAllow     = runtime.ProcessorAllow
+	ProcessorTransform = runtime.ProcessorTransform
+	ProcessorBlock     = runtime.ProcessorBlock
 
 	AgentErrorUnknownTool             = runtime.AgentErrorUnknownTool
 	AgentErrorInvalidToolArguments    = runtime.AgentErrorInvalidToolArguments
@@ -361,6 +397,10 @@ var (
 
 	ErrPolicyDenied = runtime.ErrPolicyDenied
 
+	ErrProcessorFailed          = runtime.ErrProcessorFailed
+	ErrProcessorCancelled       = runtime.ErrProcessorCancelled
+	ErrProcessorInvalidDecision = runtime.ErrProcessorInvalidDecision
+
 	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
 	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
 	ErrSubagentCancelled    = runtime.ErrSubagentCancelled
@@ -444,6 +484,23 @@ func NewModelToolCalls(calls ...ModelToolCall) (ModelToolCalls, error) {
 
 func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 	return runtime.NewModelStructuredOutput(value)
+}
+
+// NewProcessorPipeline retains processors in their declared invocation order.
+func NewProcessorPipeline(processors ...Processor) (ProcessorPipeline, error) {
+	return runtime.NewProcessorPipeline(processors...)
+}
+
+// NormalizeProcessorDecision validates a processor decision and resolves its
+// zero value to ProcessorAllow.
+func NormalizeProcessorDecision(decision ProcessorDecision) (ProcessorDecision, error) {
+	return runtime.NormalizeProcessorDecision(decision)
+}
+
+// NormalizeProcessorError maps a processor failure to the stable processor
+// error vocabulary while preserving the original cause.
+func NormalizeProcessorError(phase ProcessorPhase, processor string, err error) error {
+	return runtime.NormalizeProcessorError(phase, processor, err)
 }
 
 // WithIdentity returns a context carrying identity so downstream agent, tool,
