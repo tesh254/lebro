@@ -68,6 +68,10 @@ const (
 	// non-terminal and sits between step_started and step_finished for the
 	// branching step.
 	RunEventBranchSelected RunEventType = "branch_selected"
+	// RunEventLoopIterationStarted and RunEventLoopIterationFinished bracket
+	// each post-condition loop body execution. Iteration is 1-indexed.
+	RunEventLoopIterationStarted  RunEventType = "loop_iteration_started"
+	RunEventLoopIterationFinished RunEventType = "loop_iteration_finished"
 	// RunEventModelAttemptStarted is emitted before each provider attempt
 	// when using a ModelRouter. It carries the Provider ID and model name.
 	RunEventModelAttemptStarted RunEventType = "model_attempt_started"
@@ -124,6 +128,7 @@ type RunEvent struct {
 	StepID                StepID
 	Step                  int
 	Attempt               int
+	Iteration             int
 	Delay                 time.Duration
 	Timestamp             time.Time
 	Duration              time.Duration
@@ -566,6 +571,13 @@ func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, br
 		Branch:    branch,
 		Timestamp: e.clock.Now(),
 	})
+}
+
+func (e *runEmitter) emitLoopIteration(runID RunID, step int, stepID StepID, iteration int, eventType RunEventType, err error) {
+	if !e.enabled() {
+		return
+	}
+	e.dispatch(RunEvent{Type: eventType, RunID: runID, StepID: stepID, Step: step, Iteration: iteration, Timestamp: e.clock.Now(), Error: err})
 }
 
 // emitModelAttemptStarted records a model_attempt_started event before each
