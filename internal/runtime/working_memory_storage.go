@@ -258,7 +258,7 @@ func (r *sqliteRepositories) ListWorkingMemoryFacts(ctx context.Context, s Worki
 	if err != nil {
 		return Page[WorkingMemoryFact]{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := Page[WorkingMemoryFact]{Records: []WorkingMemoryFact{}}
 	for rows.Next() {
 		v, err := scanWorkingMemoryFact(rows)
@@ -330,7 +330,7 @@ func (r *postgresRepositories) ListWorkingMemoryFacts(ctx context.Context, s Wor
 	if err != nil {
 		return Page[WorkingMemoryFact]{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := Page[WorkingMemoryFact]{Records: []WorkingMemoryFact{}}
 	for rows.Next() {
 		v, err := scanWorkingMemoryFact(rows)
