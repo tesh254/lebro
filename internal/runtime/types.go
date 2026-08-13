@@ -92,6 +92,11 @@ type RunInput struct {
 	ThreadID     ThreadID
 	Metadata     map[string]string
 	OutputSchema *ModelOutputSchema
+	// Memory overrides the agent's Memory configuration for this run. A nil
+	// value retains the agent default; an explicit configuration is scoped to
+	// this run only.
+	Memory         *MemoryProcessorConfig
+	memoryRecalled bool
 }
 
 // RunStatus identifies the terminal or in-progress state of a run.

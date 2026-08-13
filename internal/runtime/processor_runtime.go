@@ -17,6 +17,7 @@ type ProcessorContext struct {
 	Response ModelResponse
 	Delta    StreamDelta
 	Result   RunResult
+	Memory   *MemoryProcessorConfig
 }
 
 type processorResult struct {
@@ -31,7 +32,7 @@ var ErrProcessorBlocked = errors.New("lebro: processor blocked run")
 
 func (a *Agent) process(ctx context.Context, emitter *runEmitter, runID RunID, step int, stepID StepID, value ProcessorContext) (processorResult, error) {
 	result := processorResult{Input: &value.Input, Request: &value.Request, Response: &value.Response, Delta: &value.Delta, Result: &value.Result}
-	run := ProcessorRun{ID: runID, Agent: a.definition, ThreadID: value.ThreadID, Metadata: cloneMetadata(value.Metadata)}
+	run := ProcessorRun{ID: runID, Agent: a.definition, ThreadID: value.ThreadID, Metadata: cloneMetadata(value.Metadata), Memory: value.Memory.Clone()}
 	for _, processor := range a.processors.Processors() {
 		decision, next, invoked, err := a.processOne(ctx, processor, run, step, value)
 		if !invoked {

@@ -25,6 +25,17 @@ type (
 	AgentError                  = runtime.AgentError
 	AgentErrorKind              = runtime.AgentErrorKind
 	RunInput                    = runtime.RunInput
+	MemoryProcessor             = runtime.MemoryProcessor
+	MemoryProcessorConfig       = runtime.MemoryProcessorConfig
+	MemoryRecallConfig          = runtime.MemoryRecallConfig
+	MemoryFactFilter            = runtime.MemoryFactFilter
+	MemoryExtractor             = runtime.MemoryExtractor
+	MemoryExtractionRequest     = runtime.MemoryExtractionRequest
+	MemoryFactProposal          = runtime.MemoryFactProposal
+	MemoryApprovalFunc          = runtime.MemoryApprovalFunc
+	MemoryWriteRequest          = runtime.MemoryWriteRequest
+	MemoryAuditFunc             = runtime.MemoryAuditFunc
+	MemoryAuditEvent            = runtime.MemoryAuditEvent
 	RunStatus                   = runtime.RunStatus
 	RunResult                   = runtime.RunResult
 	ModelAttempt                = runtime.ModelAttempt
@@ -496,6 +507,10 @@ func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 // NewProcessorPipeline retains processors in their declared invocation order.
 func NewProcessorPipeline(processors ...Processor) (ProcessorPipeline, error) {
 	return runtime.NewProcessorPipeline(processors...)
+}
+
+func NewMemoryProcessor(store Store, config *MemoryProcessorConfig) (*MemoryProcessor, error) {
+	return runtime.NewMemoryProcessor(store, config)
 }
 
 // NormalizeProcessorDecision validates a processor decision and resolves its

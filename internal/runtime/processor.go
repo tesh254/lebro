@@ -92,12 +92,14 @@ type ProcessorRun struct {
 	Agent    AgentDefinition
 	ThreadID ThreadID
 	Metadata map[string]string
+	Memory   *MemoryProcessorConfig
 }
 
 // Clone returns a caller-owned copy of the run metadata.
 func (r ProcessorRun) Clone() ProcessorRun {
 	r.Agent.Tools = append([]ToolID(nil), r.Agent.Tools...)
 	r.Metadata = cloneMetadata(r.Metadata)
+	r.Memory = r.Memory.Clone()
 	return r
 }
 
@@ -117,6 +119,7 @@ func (r ProcessorInputRequest) Clone() ProcessorInputRequest {
 	r.Input.Messages = cloneMessages(r.Input.Messages)
 	r.Input.Metadata = cloneMetadata(r.Input.Metadata)
 	r.Input.OutputSchema = cloneModelOutputSchema(r.Input.OutputSchema)
+	r.Input.Memory = r.Input.Memory.Clone()
 	return r
 }
 
@@ -129,6 +132,7 @@ func (r ProcessorInputResult) Clone() ProcessorInputResult {
 	r.Input.Messages = cloneMessages(r.Input.Messages)
 	r.Input.Metadata = cloneMetadata(r.Input.Metadata)
 	r.Input.OutputSchema = cloneModelOutputSchema(r.Input.OutputSchema)
+	r.Input.Memory = r.Input.Memory.Clone()
 	return r
 }
 
