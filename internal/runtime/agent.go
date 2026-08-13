@@ -218,7 +218,7 @@ type AgentConfig struct {
 	Policy Policy
 	// Processors are ordered, provider-neutral hooks around input, model calls,
 	// stream deltas, and terminal output. They operate independently of Policy.
-	Processors []Processor
+	Processors ProcessorPipeline
 }
 
 // Agent repeatedly asks a model, executes requested tools, and feeds results
@@ -240,7 +240,7 @@ type Agent struct {
 	idSource       IDSource
 	store          Store
 	policy         Policy
-	processors     []Processor
+	processors     ProcessorPipeline
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -296,12 +296,6 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	for _, id := range definition.Tools {
 		allowed[id] = struct{}{}
 	}
-	processors := append([]Processor(nil), config.Processors...)
-	for i, processor := range processors {
-		if processor == nil || isNilInterface(processor) {
-			return nil, fmt.Errorf("lebro: agent processor %d is nil", i)
-		}
-	}
 	clock := config.Clock
 	if clock == nil {
 		clock = defaultClock{}
@@ -326,7 +320,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		idSource:       idSource,
 		store:          config.Store,
 		policy:         config.Policy,
-		processors:     processors,
+		processors:     config.Processors,
 	}, nil
 }
 

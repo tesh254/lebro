@@ -168,13 +168,6 @@ type (
 	RAGErrorKind                = runtime.RAGErrorKind
 	RunEvent                    = runtime.RunEvent
 	RunEventType                = runtime.RunEventType
-	Processor                   = runtime.Processor
-	ProcessorFunc               = runtime.ProcessorFunc
-	ProcessorContext            = runtime.ProcessorContext
-	ProcessorDecision           = runtime.ProcessorDecision
-	ProcessorPhase              = runtime.ProcessorPhase
-	ProcessorAction             = runtime.ProcessorAction
-	ProcessorError              = runtime.ProcessorError
 	RunListener                 = runtime.RunListener
 	RunRecorder                 = runtime.RunRecorder
 	Clock                       = runtime.Clock
@@ -189,6 +182,32 @@ type (
 	AllowAllPolicy              = runtime.AllowAllPolicy
 	PolicyDenial                = runtime.PolicyDenial
 	PolicyStore                 = runtime.PolicyStore
+)
+
+type (
+	Processor                     = runtime.Processor
+	ProcessorPipeline             = runtime.ProcessorPipeline
+	ProcessorRun                  = runtime.ProcessorRun
+	InputProcessor                = runtime.InputProcessor
+	ProcessorInputRequest         = runtime.ProcessorInputRequest
+	ProcessorInputResult          = runtime.ProcessorInputResult
+	ModelRequestProcessor         = runtime.ModelRequestProcessor
+	ProcessorModelRequest         = runtime.ProcessorModelRequest
+	ProcessorModelRequestResult   = runtime.ProcessorModelRequestResult
+	ModelResponseProcessor        = runtime.ModelResponseProcessor
+	ProcessorModelResponseRequest = runtime.ProcessorModelResponseRequest
+	ProcessorModelResponseResult  = runtime.ProcessorModelResponseResult
+	StreamDeltaProcessor          = runtime.StreamDeltaProcessor
+	ProcessorStreamDeltaRequest   = runtime.ProcessorStreamDeltaRequest
+	ProcessorStreamDeltaResult    = runtime.ProcessorStreamDeltaResult
+	OutputProcessor               = runtime.OutputProcessor
+	ProcessorOutputRequest        = runtime.ProcessorOutputRequest
+	ProcessorOutputResult         = runtime.ProcessorOutputResult
+	ProcessorPhase                = runtime.ProcessorPhase
+	ProcessorDecisionKind         = runtime.ProcessorDecisionKind
+	ProcessorDecision             = runtime.ProcessorDecision
+	ProcessorErrorKind            = runtime.ProcessorErrorKind
+	ProcessorError                = runtime.ProcessorError
 )
 
 const (
@@ -237,6 +256,16 @@ const (
 	FinishReasonCancelled   = runtime.FinishReasonCancelled
 	FinishReasonUnspecified = runtime.FinishReasonUnspecified
 
+	ProcessorPhaseInput         = runtime.ProcessorPhaseInput
+	ProcessorPhaseModelRequest  = runtime.ProcessorPhaseModelRequest
+	ProcessorPhaseModelResponse = runtime.ProcessorPhaseModelResponse
+	ProcessorPhaseStreamDelta   = runtime.ProcessorPhaseStreamDelta
+	ProcessorPhaseOutput        = runtime.ProcessorPhaseOutput
+
+	ProcessorAllow     = runtime.ProcessorAllow
+	ProcessorTransform = runtime.ProcessorTransform
+	ProcessorBlock     = runtime.ProcessorBlock
+
 	AgentErrorUnknownTool             = runtime.AgentErrorUnknownTool
 	AgentErrorInvalidToolArguments    = runtime.AgentErrorInvalidToolArguments
 	AgentErrorInvalidToolOutput       = runtime.AgentErrorInvalidToolOutput
@@ -246,6 +275,7 @@ const (
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 	AgentErrorUnauthorized            = runtime.AgentErrorUnauthorized
+	AgentErrorProcessor               = runtime.AgentErrorProcessor
 
 	ActionAgentRun     = runtime.ActionAgentRun
 	ActionToolCall     = runtime.ActionToolCall
@@ -299,16 +329,6 @@ const (
 	RunEventModelAttemptStarted  = runtime.RunEventModelAttemptStarted
 	RunEventModelAttemptFinished = runtime.RunEventModelAttemptFinished
 	RunEventProcessor            = runtime.RunEventProcessor
-
-	ProcessorPhaseInput         = runtime.ProcessorPhaseInput
-	ProcessorPhaseModelRequest  = runtime.ProcessorPhaseModelRequest
-	ProcessorPhaseModelResponse = runtime.ProcessorPhaseModelResponse
-	ProcessorPhaseStreamDelta   = runtime.ProcessorPhaseStreamDelta
-	ProcessorPhaseOutput        = runtime.ProcessorPhaseOutput
-
-	ProcessorContinue  = runtime.ProcessorContinue
-	ProcessorTransform = runtime.ProcessorTransform
-	ProcessorBlock     = runtime.ProcessorBlock
 
 	FanOutFailFast   = runtime.FanOutFailFast
 	FanOutCollectAll = runtime.FanOutCollectAll
@@ -377,9 +397,12 @@ var (
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput
 	ErrAgentUnauthorized            = runtime.ErrAgentUnauthorized
 
-	ErrPolicyDenied     = runtime.ErrPolicyDenied
-	ErrProcessorBlocked = runtime.ErrProcessorBlocked
-	ErrAgentProcessor   = runtime.ErrAgentProcessor
+	ErrPolicyDenied   = runtime.ErrPolicyDenied
+	ErrAgentProcessor = runtime.ErrAgentProcessor
+
+	ErrProcessorFailed          = runtime.ErrProcessorFailed
+	ErrProcessorCancelled       = runtime.ErrProcessorCancelled
+	ErrProcessorInvalidDecision = runtime.ErrProcessorInvalidDecision
 
 	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
 	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
@@ -464,6 +487,23 @@ func NewModelToolCalls(calls ...ModelToolCall) (ModelToolCalls, error) {
 
 func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 	return runtime.NewModelStructuredOutput(value)
+}
+
+// NewProcessorPipeline retains processors in their declared invocation order.
+func NewProcessorPipeline(processors ...Processor) (ProcessorPipeline, error) {
+	return runtime.NewProcessorPipeline(processors...)
+}
+
+// NormalizeProcessorDecision validates a processor decision and resolves its
+// zero value to ProcessorAllow.
+func NormalizeProcessorDecision(decision ProcessorDecision) (ProcessorDecision, error) {
+	return runtime.NormalizeProcessorDecision(decision)
+}
+
+// NormalizeProcessorError maps a processor failure to the stable processor
+// error vocabulary while preserving the original cause.
+func NormalizeProcessorError(phase ProcessorPhase, processor string, err error) error {
+	return runtime.NormalizeProcessorError(phase, processor, err)
 }
 
 // WithIdentity returns a context carrying identity so downstream agent, tool,

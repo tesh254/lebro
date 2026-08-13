@@ -139,7 +139,7 @@ type RunEvent struct {
 	ProviderModel         string
 	AttemptStatus         ModelAttemptStatus
 	ProcessorPhase        ProcessorPhase
-	ProcessorAction       ProcessorAction
+	ProcessorAction       ProcessorDecisionKind
 	Status                RunStatus
 	Error                 error
 }
@@ -349,7 +349,7 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 	})
 }
 
-func (e *runEmitter) emitProcessor(runID RunID, step int, stepID StepID, phase ProcessorPhase, action ProcessorAction) {
+func (e *runEmitter) emitProcessor(runID RunID, step int, stepID StepID, phase ProcessorPhase, action ProcessorDecisionKind) {
 	if !e.enabled() {
 		return
 	}

@@ -2,141 +2,97 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"reflect"
-	"strings"
 	"testing"
 )
 
-func TestAgentProcessorsOrderAndTransformRun(t *testing.T) {
-	model := newScriptedModel(textResponse("model"))
-	var phases []ProcessorPhase
-	processor := ProcessorFunc(func(_ context.Context, value ProcessorContext) (ProcessorDecision, error) {
-		phases = append(phases, value.Phase)
-		switch value.Phase {
-		case ProcessorPhaseInput:
-			input := value.Input
-			input.Messages[0].Content = "sanitized input"
-			return ProcessorDecision{Action: ProcessorTransform, Input: &input}, nil
-		case ProcessorPhaseModelResponse:
-			response := value.Response
-			response.Message.Content = "sanitized output"
-			return ProcessorDecision{Action: ProcessorTransform, Response: &response}, nil
-		default:
-			return ProcessorDecision{}, nil
+func TestProcessorDecisionNormalizesAndRejectsUnknownKinds(t *testing.T) {
+	t.Parallel()
+	decision, err := NormalizeProcessorDecision(ProcessorDecision{})
+	if err != nil || decision.Kind != ProcessorAllow {
+		t.Fatalf("NormalizeProcessorDecision() = %#v, %v", decision, err)
+	}
+	for _, kind := range []ProcessorDecisionKind{ProcessorAllow, ProcessorTransform, ProcessorBlock} {
+		if _, err := NormalizeProcessorDecision(ProcessorDecision{Kind: kind}); err != nil {
+			t.Fatalf("%q: %v", kind, err)
 		}
-	})
-	agent, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: model, Processors: []Processor{processor}})
-	if err != nil {
-		t.Fatal(err)
 	}
-	result, err := agent.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "secret"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := result.Messages[len(result.Messages)-1].Content, "sanitized output"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
-	if got, want := model.calls[0].Messages[0].Content, "sanitized input"; got != want {
-		t.Fatalf("model input = %q, want %q", got, want)
-	}
-	if want := []ProcessorPhase{ProcessorPhaseInput, ProcessorPhaseModelRequest, ProcessorPhaseModelResponse, ProcessorPhaseOutput}; !reflect.DeepEqual(phases, want) {
-		t.Fatalf("phases = %#v, want %#v", phases, want)
+	if _, err := NormalizeProcessorDecision(ProcessorDecision{Kind: "drop"}); err == nil || !errors.Is(err, ErrProcessorInvalidDecision) {
+		t.Fatal("unknown decision was accepted")
 	}
 }
 
-func TestAgentProcessorBlockShortCircuitsWithoutPayloadEvent(t *testing.T) {
-	model := newScriptedModel(textResponse("must not run"))
-	recorder := NewRunRecorder()
-	agent, err := NewAgent(AgentConfig{
-		Definition: AgentDefinition{ID: "processor"}, Model: model, Listener: recorder,
-		Processors: []Processor{ProcessorFunc(func(context.Context, ProcessorContext) (ProcessorDecision, error) {
-			return ProcessorDecision{Action: ProcessorBlock, Reason: "secret input"}, nil
-		})},
-	})
+func TestProcessorPipelinePreservesOrderAndDefensivelyCopiesSlice(t *testing.T) {
+	t.Parallel()
+	first, second := namedProcessor("first"), namedProcessor("second")
+	pipeline, err := NewProcessorPipeline(first, second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = agent.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "secret input"}}})
-	if !errors.Is(err, ErrAgentProcessor) || !errors.Is(err, ErrProcessorBlocked) {
-		t.Fatalf("error = %v, want processor block", err)
+	processors := pipeline.Processors()
+	if len(processors) != 2 || processors[0].Name() != "first" || processors[1].Name() != "second" {
+		t.Fatalf("processors = %#v", processors)
 	}
-	if strings.Contains(err.Error(), "secret input") {
-		t.Fatalf("error leaked processor reason: %v", err)
+	processors[0] = second
+	if pipeline.Processors()[0].Name() != "first" {
+		t.Fatal("Processors returned the pipeline-owned slice")
 	}
-	if got := len(model.calls); got != 0 {
-		t.Fatalf("model calls = %d, want 0", got)
-	}
-	for _, event := range recorder.Events() {
-		if event.Type == RunEventProcessor && (event.DeltaText != "" || event.DeltaStructuredOutput != "") {
-			t.Fatalf("processor event leaked payload: %#v", event)
-		}
+	if _, err := NewProcessorPipeline(nil); err == nil {
+		t.Fatal("nil processor was accepted")
 	}
 }
 
-func TestAgentProcessorsMatchRunAndStreamResponse(t *testing.T) {
-	processor := ProcessorFunc(func(_ context.Context, value ProcessorContext) (ProcessorDecision, error) {
-		if value.Phase != ProcessorPhaseModelResponse {
-			return ProcessorDecision{}, nil
-		}
-		response := value.Response
-		response.Message.Content = "redacted"
-		return ProcessorDecision{Action: ProcessorTransform, Response: &response}, nil
-	})
-	nonStream, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: newScriptedModel(textResponse("secret")), Processors: []Processor{processor}})
-	if err != nil {
-		t.Fatal(err)
+type namedProcessor string
+
+func (p namedProcessor) Name() string { return string(p) }
+
+func TestProcessorRequestsAndResultsDefensivelyCopy(t *testing.T) {
+	t.Parallel()
+	request := ProcessorModelRequest{Run: ProcessorRun{Agent: AgentDefinition{Tools: []ToolID{"lookup"}}, Metadata: map[string]string{"tenant": "a"}}, Request: ModelRequest{Messages: []Message{{Role: RoleUser, Content: "original"}}, Tools: []ToolDefinition{{ID: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}}, Extension: json.RawMessage(`{"source":"test"}`)}}
+	copy := request.Clone()
+	copy.Run.Agent.Tools[0] = "changed"
+	copy.Run.Metadata["tenant"] = "b"
+	copy.Request.Messages[0].Content = "changed"
+	copy.Request.Tools[0].InputSchema[2] = 'X'
+	copy.Request.Extension[2] = 'X'
+	if request.Run.Agent.Tools[0] != "lookup" || request.Run.Metadata["tenant"] != "a" || request.Request.Messages[0].Content != "original" || request.Request.Tools[0].InputSchema[2] != 't' || request.Request.Extension[2] != 's' {
+		t.Fatalf("Clone mutated source: %#v", request)
 	}
-	stream, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: newStreamScriptedModel(textDeltas("secret")), Processors: []Processor{processor}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonStreamResult, err := nonStream.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamRun, err := stream.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamResult, err := streamRun.Drain()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := streamResult.Messages[len(streamResult.Messages)-1].Content, nonStreamResult.Messages[len(nonStreamResult.Messages)-1].Content; got != want {
-		t.Fatalf("stream output = %q, want %q", got, want)
+
+	result := ProcessorOutputResult{Result: RunResult{Messages: []Message{{Role: RoleAssistant, Content: "original"}}, Metadata: map[string]string{"request": "1"}, ModelAttempts: []ModelAttempt{{Error: &ModelError{Extension: json.RawMessage(`{"code":"original"}`)}}}}}
+	resultCopy := result.Clone()
+	resultCopy.Result.Messages[0].Content = "changed"
+	resultCopy.Result.Metadata["request"] = "2"
+	resultCopy.Result.ModelAttempts[0].Error.Extension[9] = 'X'
+	if result.Result.Messages[0].Content != "original" || result.Result.Metadata["request"] != "1" || result.Result.ModelAttempts[0].Error.Extension[9] != 'o' {
+		t.Fatalf("result Clone mutated source: %#v", result)
 	}
 }
 
-func TestAgentStreamDeltaProcessorTransformsCallerDelta(t *testing.T) {
-	processor := ProcessorFunc(func(_ context.Context, value ProcessorContext) (ProcessorDecision, error) {
-		if value.Phase != ProcessorPhaseStreamDelta || value.Delta.Text == "" {
-			return ProcessorDecision{}, nil
-		}
-		delta := value.Delta
-		delta.Text = "redacted"
-		return ProcessorDecision{Action: ProcessorTransform, Delta: &delta}, nil
-	})
-	agent, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "processor"}, Model: newStreamScriptedModel(textDeltas("secret")), Processors: []Processor{processor}})
-	if err != nil {
-		t.Fatal(err)
+func TestProcessorStreamDeltaCloneCopiesToolArguments(t *testing.T) {
+	t.Parallel()
+	request := ProcessorStreamDeltaRequest{Delta: StreamDelta{ToolCall: &ModelToolCall{ID: "call", ToolID: "tool", Arguments: json.RawMessage(`{"a":1}`)}}}
+	copy := request.Clone()
+	copy.Delta.ToolCall.Arguments[2] = 'X'
+	if request.Delta.ToolCall.Arguments[2] != 'a' {
+		t.Fatalf("Clone mutated source arguments: %s", request.Delta.ToolCall.Arguments)
 	}
-	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestNormalizeProcessorError(t *testing.T) {
+	t.Parallel()
+	ordinary := errors.New("boom")
+	err := NormalizeProcessorError(ProcessorPhaseInput, "redactor", ordinary)
+	var processorErr *ProcessorError
+	if !errors.As(err, &processorErr) || processorErr.Kind != ProcessorErrorFailed || !errors.Is(err, ErrProcessorFailed) || !errors.Is(err, ordinary) {
+		t.Fatalf("ordinary error = %v", err)
 	}
-	var deltas []StreamDelta
-	for delta := range run.Deltas {
-		deltas = append(deltas, delta)
+	cancelled := NormalizeProcessorError(ProcessorPhaseModelRequest, "guard", context.Canceled)
+	if !errors.Is(cancelled, ErrProcessorCancelled) || !errors.Is(cancelled, context.Canceled) {
+		t.Fatalf("cancelled error = %v", cancelled)
 	}
-	result, err := run.Wait()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := deltas[0].Text, "redacted"; got != want {
-		t.Fatalf("delta = %q, want %q", got, want)
-	}
-	if got, want := result.Messages[len(result.Messages)-1].Content, "redacted"; got != want {
-		t.Fatalf("output = %q, want %q", got, want)
+	if NormalizeProcessorError(ProcessorPhaseInput, "x", nil) != nil {
+		t.Fatal("nil error did not remain nil")
 	}
 }
