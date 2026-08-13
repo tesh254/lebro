@@ -156,6 +156,8 @@ var postgresSchemaMigrations = []string{
 		value TEXT NOT NULL, version BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
 		PRIMARY KEY (namespace, owner_id, key)
 	)`,
+	`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS wake_run_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS wake_token TEXT NOT NULL DEFAULT ''`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -768,8 +770,8 @@ func (r *postgresRepositories) SaveSchedule(ctx context.Context, v ScheduleRecor
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: schedule: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		ON CONFLICT (id) DO UPDATE SET
 			workflow_id  = EXCLUDED.workflow_id,
 			spec         = EXCLUDED.spec,
@@ -779,10 +781,12 @@ func (r *postgresRepositories) SaveSchedule(ctx context.Context, v ScheduleRecor
 			metadata     = EXCLUDED.metadata,
 			next_fire_at = EXCLUDED.next_fire_at,
 			last_fire_at = EXCLUDED.last_fire_at,
+			wake_run_id  = EXCLUDED.wake_run_id,
+			wake_token   = EXCLUDED.wake_token,
 			created_at   = EXCLUDED.created_at,
 			updated_at   = EXCLUDED.updated_at`,
 		v.ID, v.WorkflowID, v.Spec, v.Paused, string(v.Concurrency), postgresJSON(v.Input), postgresJSON(v.Metadata),
-		postgresNullableTime(v.NextFireAt), postgresNullableTime(v.LastFireAt), v.CreatedAt.UTC(), v.UpdatedAt.UTC()); err != nil {
+		postgresNullableTime(v.NextFireAt), postgresNullableTime(v.LastFireAt), v.WakeRunID, v.WakeToken, v.CreatedAt.UTC(), v.UpdatedAt.UTC()); err != nil {
 		return fmt.Errorf("lebro: save schedule %q: %w", v.ID, postgresError(err))
 	}
 	return nil
@@ -792,7 +796,7 @@ func (r *postgresRepositories) GetSchedule(ctx context.Context, id ScheduleID) (
 	if err := ctx.Err(); err != nil {
 		return ScheduleRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules WHERE id = $1`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules WHERE id = $1`, id)
 	record, err := scanSchedulePG(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScheduleRecord{}, ErrNotFound
@@ -811,7 +815,7 @@ func (r *postgresRepositories) ListSchedules(ctx context.Context, filter Schedul
 	if err != nil {
 		return Page[ScheduleRecord]{}, err
 	}
-	query := `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules`
+	query := `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules`
 	args := []any{}
 	param := 1
 	where := []string{}
@@ -1072,7 +1076,7 @@ func scanSchedulePG(row messagePageScanner) (ScheduleRecord, error) {
 	var concurrency string
 	var input, metadata sql.NullString
 	var nextFireAt, lastFireAt sql.NullTime
-	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &record.Paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.CreatedAt, &record.UpdatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &record.Paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.WakeRunID, &record.WakeToken, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return ScheduleRecord{}, err
 	}
 	record.Concurrency = ConcurrencyPolicy(concurrency)

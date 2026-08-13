@@ -171,6 +171,8 @@ var sqliteSchemaMigrations = []string{
 		value TEXT NOT NULL, version INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
 		PRIMARY KEY (namespace, owner_id, key), UNIQUE (id)
 	)`,
+	`ALTER TABLE schedules ADD COLUMN wake_run_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN wake_token TEXT NOT NULL DEFAULT ''`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -775,8 +777,8 @@ func (r *sqliteRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord)
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: schedule: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workflow_id  = excluded.workflow_id,
 			spec         = excluded.spec,
@@ -786,10 +788,12 @@ func (r *sqliteRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord)
 			metadata     = excluded.metadata,
 			next_fire_at = excluded.next_fire_at,
 			last_fire_at = excluded.last_fire_at,
+			wake_run_id  = excluded.wake_run_id,
+			wake_token   = excluded.wake_token,
 			created_at   = excluded.created_at,
 			updated_at   = excluded.updated_at`,
 		v.ID, v.WorkflowID, v.Spec, sqliteBool(v.Paused), string(v.Concurrency), sqliteJSON(v.Input), sqliteJSON(v.Metadata),
-		sqliteNullableTime(v.NextFireAt), sqliteNullableTime(v.LastFireAt), sqliteTime(v.CreatedAt), sqliteTime(v.UpdatedAt)); err != nil {
+		sqliteNullableTime(v.NextFireAt), sqliteNullableTime(v.LastFireAt), v.WakeRunID, v.WakeToken, sqliteTime(v.CreatedAt), sqliteTime(v.UpdatedAt)); err != nil {
 		return fmt.Errorf("lebro: save schedule %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -799,7 +803,7 @@ func (r *sqliteRepositories) GetSchedule(ctx context.Context, id ScheduleID) (Sc
 	if err := ctx.Err(); err != nil {
 		return ScheduleRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules WHERE id = ?`, id)
 	record, err := scanSchedule(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScheduleRecord{}, ErrNotFound
@@ -819,7 +823,7 @@ func (r *sqliteRepositories) ListSchedules(ctx context.Context, filter ScheduleF
 		return Page[ScheduleRecord]{}, err
 	}
 	var (
-		query = `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, created_at, updated_at FROM schedules`
+		query = `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules`
 		args  []any
 		where []string
 	)
@@ -1138,7 +1142,7 @@ func scanSchedule(row messagePageScanner) (ScheduleRecord, error) {
 	var nextFireAt, lastFireAt sql.NullString
 	var paused int
 	var createdAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.WakeRunID, &record.WakeToken, &createdAt, &updatedAt); err != nil {
 		return ScheduleRecord{}, err
 	}
 	record.Paused = paused != 0

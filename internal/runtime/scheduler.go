@@ -190,6 +190,9 @@ func (s *Scheduler) loadDue(ctx context.Context, now time.Time) ([]ScheduleRecor
 // occurrence is recorded as missed so the gap is visible without replaying a
 // backlog of runs. scheduledFor is that most-recent occurrence.
 func (s *Scheduler) fireSchedule(ctx context.Context, now time.Time, schedule ScheduleRecord, result *TickResult) error {
+	if schedule.WakeRunID != "" {
+		return s.fireWakeup(ctx, now, schedule, result)
+	}
 	compiled, parseErr := ParseCronSpec(schedule.Spec)
 	// A nil NextFireAt would not have been returned as due, so this deref is
 	// safe. It is the earliest due occurrence.
@@ -259,6 +262,67 @@ func (s *Scheduler) fireSchedule(ctx context.Context, now time.Time, schedule Sc
 	}
 	result.Fired++
 	return nil
+}
+
+// fireWakeup consumes one durable sleep wakeup. Wakeups deliberately bypass
+// schedule concurrency because each one is fenced to one run snapshot. The
+// token makes retrying a crash-interrupted tick safe: an already-resumed or
+// later-suspended run is a successful no-op, never an accidental second resume.
+func (s *Scheduler) fireWakeup(ctx context.Context, now time.Time, schedule ScheduleRecord, result *TickResult) error {
+	scheduledFor := now
+	if schedule.NextFireAt != nil {
+		scheduledFor = schedule.NextFireAt.UTC()
+	}
+	workflow, ok := s.resolver.ResolveWorkflow(schedule.WorkflowID)
+	status, message := ScheduleExecSucceeded, ""
+	runID := schedule.WakeRunID
+	if !ok {
+		status, message = ScheduleExecFailed, fmt.Sprintf("no workflow registered for %q", schedule.WorkflowID)
+	} else if resumeResult, err := workflow.resumeWake(ctx, schedule.WakeRunID, schedule.WakeToken); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if !errors.Is(err, errWorkflowWakeupStale) {
+			terminal, stateErr := s.wakeupRunTerminal(ctx, schedule.WakeRunID)
+			if stateErr != nil {
+				return fmt.Errorf("lebro: scheduler: inspect wakeup run %q after resume error: %w", schedule.WakeRunID, stateErr)
+			}
+			if !terminal {
+				return err
+			}
+			status, message = ScheduleExecFailed, err.Error()
+		}
+	} else if resumeResult.Status != RunStatusSucceeded && resumeResult.Status != RunStatusFailed && resumeResult.Status != RunStatusCancelled && resumeResult.Status != RunStatusSuspended {
+		return fmt.Errorf("lebro: scheduler: wakeup run %q returned non-terminal status %q", schedule.WakeRunID, resumeResult.Status)
+	}
+	finished := s.clock.Now().UTC()
+	exec := s.newExecution(schedule.ID, runID, status, scheduledFor, now, &finished, message)
+	updated := schedule
+	updated.LastFireAt = &scheduledFor
+	updated.NextFireAt = nil
+	updated.Paused = true
+	updated.UpdatedAt = now
+	if err := s.persist(ctx, updated, exec, nil, result); err != nil {
+		return err
+	}
+	result.Fired++
+	return nil
+}
+
+// wakeupRunTerminal reports whether a failed wake attempt committed a terminal
+// run result. A persistence failure can leave the run Suspended; keeping its
+// schedule due lets the next tick retry using the same fenced wake token.
+func (s *Scheduler) wakeupRunTerminal(ctx context.Context, runID RunID) (bool, error) {
+	run, err := s.store.WorkflowRuns().GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	switch run.Status {
+	case RunStatusSucceeded, RunStatusFailed, RunStatusCancelled:
+		return true, nil
+	default:
+		return false, nil
+	}
 }
 
 // runWorkflow runs the workflow for a due schedule. When the schedule was not

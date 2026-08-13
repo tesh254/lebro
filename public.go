@@ -87,6 +87,8 @@ type (
 	WorkflowDefinition          = runtime.WorkflowDefinition
 	Workflow                    = runtime.Workflow
 	StepDefinition              = runtime.StepDefinition
+	Sleep                       = runtime.Sleep
+	SleepUntil                  = runtime.SleepUntil
 	Step                        = runtime.Step
 	StepHandler                 = runtime.StepHandler
 	StepHandlerFunc             = runtime.StepHandlerFunc
@@ -444,10 +446,11 @@ var (
 	ErrWorkflowStepPanicked      = runtime.ErrWorkflowStepPanicked
 	ErrWorkflowCancelled         = runtime.ErrWorkflowCancelled
 
-	ErrWorkflowSuspend             = runtime.ErrWorkflowSuspend
-	ErrNotSuspended                = runtime.ErrNotSuspended
-	ErrInvalidResumeInput          = runtime.ErrInvalidResumeInput
-	ErrWorkflowResumeRequiresStore = runtime.ErrWorkflowResumeRequiresStore
+	ErrWorkflowSuspend                = runtime.ErrWorkflowSuspend
+	ErrNotSuspended                   = runtime.ErrNotSuspended
+	ErrInvalidResumeInput             = runtime.ErrInvalidResumeInput
+	ErrWorkflowResumeRequiresStore    = runtime.ErrWorkflowResumeRequiresStore
+	ErrWorkflowSleepRequiresScheduler = runtime.ErrWorkflowSleepRequiresScheduler
 
 	ErrApprovalRejected        = runtime.ErrApprovalRejected
 	ErrApprovalExpired         = runtime.ErrApprovalExpired
