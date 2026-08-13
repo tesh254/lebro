@@ -366,6 +366,52 @@ func TestUnsupportedHalves(t *testing.T) {
 	}
 }
 
+// TestTurnSinkWithoutSynthesizer covers the case where a caller supplies a sink
+// but the Voice has no synthesizer: Turn must surface ErrUnsupported rather than
+// silently returning the reply text and never invoking the sink.
+func TestTurnSinkWithoutSynthesizer(t *testing.T) {
+	session, err := voice.NewSession(voice.SessionConfig{
+		Voice: voice.Voice{Recognizer: fakeRecognizer{final: "hi"}},
+		Agent: newAgent(t, "reply"),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	sinkCalled := false
+	_, err = session.Turn(context.Background(), voice.TurnInput{Audio: audioOf("x")}, func(voice.AudioChunk) error {
+		sinkCalled = true
+		return nil
+	})
+	if !errors.Is(err, voice.ErrUnsupported) {
+		t.Fatalf("Turn with sink and no synthesizer = %v, want ErrUnsupported", err)
+	}
+	if sinkCalled {
+		t.Fatal("sink must not be called when no synthesizer is configured")
+	}
+}
+
+// TestTurnNoSinkNoSynthesizer confirms the reply text is still returned when
+// neither a sink nor a synthesizer is present: there is nothing to deliver, so
+// the turn succeeds.
+func TestTurnNoSinkNoSynthesizer(t *testing.T) {
+	session, err := voice.NewSession(voice.SessionConfig{
+		Voice: voice.Voice{Recognizer: fakeRecognizer{final: "hi"}},
+		Agent: newAgent(t, "reply"),
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	result, err := session.Turn(context.Background(), voice.TurnInput{Audio: audioOf("x")}, nil)
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if result.Reply != "reply" {
+		t.Fatalf("reply = %q, want %q", result.Reply, "reply")
+	}
+}
+
 // TestNewSessionRequiresAgent guards the one construction invariant.
 func TestNewSessionRequiresAgent(t *testing.T) {
 	if _, err := voice.NewSession(voice.SessionConfig{}); err == nil {

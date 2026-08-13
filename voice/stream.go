@@ -72,9 +72,10 @@ func (s *RecognitionStream) Cancel() {
 
 // Wait blocks until the recognition goroutine has completed and returns its
 // terminal error, or nil on success. It must be called after Transcripts has
-// been fully drained so the goroutine is not blocked writing to the channel. On
-// cancellation it returns a VoiceError of kind Recognition wrapping the
-// cancellation cause.
+// been fully drained so the goroutine is not blocked writing to the channel. The
+// error is the recognizer's own terminal error, unwrapped — on cancellation,
+// the context cause. Session.Transcribe wraps this in a VoiceError of kind
+// Recognition; a caller that invokes Wait directly receives the raw error.
 func (s *RecognitionStream) Wait() error {
 	if s == nil {
 		return errors.New("lebro/voice: recognition stream is nil")
@@ -102,8 +103,10 @@ func (s *SynthesisStream) Cancel() {
 
 // Wait blocks until the synthesis goroutine has completed and returns its
 // terminal error, or nil on success. It must be called after Chunks has been
-// fully drained. On cancellation it returns a VoiceError of kind Synthesis
-// wrapping the cancellation cause.
+// fully drained. The error is the synthesizer's own terminal error, unwrapped —
+// on cancellation, the context cause. Session.Synthesize wraps this in a
+// VoiceError of kind Synthesis; a caller that invokes Wait directly receives the
+// raw error.
 func (s *SynthesisStream) Wait() error {
 	if s == nil {
 		return errors.New("lebro/voice: synthesis stream is nil")

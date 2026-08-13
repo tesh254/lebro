@@ -156,8 +156,10 @@ func (s *Session) Synthesize(ctx context.Context, request SynthesisRequest, sink
 //
 // Cancelling ctx stops whichever stage is active — transcription, the run, or
 // synthesis — and joins its goroutine before returning, so an abandoned turn
-// leaves nothing running. A nil sink runs the turn and reports the reply text
-// without emitting audio.
+// leaves nothing running. A nil sink and no synthesizer run the turn and report
+// the reply text without emitting audio; a non-nil sink with no synthesizer
+// fails with a VoiceError of kind Unsupported rather than silently dropping the
+// audio the caller asked to receive.
 func (s *Session) Turn(ctx context.Context, input TurnInput, sink func(AudioChunk) error) (TurnResult, error) {
 	transcript, err := s.Transcribe(ctx, input.Audio)
 	if err != nil {
@@ -176,6 +178,9 @@ func (s *Session) Turn(ctx context.Context, input TurnInput, sink func(AudioChun
 		// AgentError so a caller distinguishes it from a provider fault.
 		return TurnResult{}, err
 	}
+	// Cancel unconditionally so any early return releases the run goroutine
+	// rather than leaving it parked writing to Deltas with no reader.
+	defer run.Cancel()
 	// Drain to completion so the run goroutine is not left blocked, then collect
 	// the terminal result. Drain also cancels on the caller's cancelled context
 	// via the run's own context wiring.
@@ -185,7 +190,12 @@ func (s *Session) Turn(ctx context.Context, input TurnInput, sink func(AudioChun
 	}
 
 	reply := AssistantText(result)
-	if s.voice.Synthesizer != nil {
+	// Synthesize the reply. When a sink is supplied but no synthesizer is
+	// configured, Synthesize surfaces the ErrUnsupported mismatch rather than
+	// silently dropping the audio the caller asked to receive. With no sink and
+	// no synthesizer there is nothing to deliver, so the turn returns the reply
+	// text only.
+	if s.voice.Synthesizer != nil || sink != nil {
 		req := SynthesisRequest{Text: reply, Format: input.Format, Voice: input.Voice}
 		if err := s.Synthesize(ctx, req, sink); err != nil {
 			return TurnResult{}, err
