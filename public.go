@@ -131,6 +131,9 @@ type (
 	WorkflowSnapshotRepository  = runtime.WorkflowSnapshotRepository
 	ScheduleRepository          = runtime.ScheduleRepository
 	ScheduleExecutionRepository = runtime.ScheduleExecutionRepository
+	WorkingMemoryRepository     = runtime.WorkingMemoryRepository
+	WorkingMemoryFact           = runtime.WorkingMemoryFact
+	WorkingMemoryScope          = runtime.WorkingMemoryScope
 	Repositories                = runtime.Repositories
 	Store                       = runtime.Store
 	ThreadStore                 = runtime.ThreadStore
@@ -291,6 +294,7 @@ const (
 	ResourceKindWorkflowRun      = runtime.ResourceKindWorkflowRun
 	ResourceKindWorkflowSnapshot = runtime.ResourceKindWorkflowSnapshot
 	ResourceKindSchedule         = runtime.ResourceKindSchedule
+	ResourceKindWorkingMemory    = runtime.ResourceKindWorkingMemory
 
 	SubagentErrorInvalidInput = runtime.SubagentErrorInvalidInput
 	SubagentErrorRunFailed    = runtime.SubagentErrorRunFailed

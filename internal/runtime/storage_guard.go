@@ -85,6 +85,9 @@ func (s *PolicyStore) Schedules() ScheduleRepository {
 func (s *PolicyStore) ScheduleExecutions() ScheduleExecutionRepository {
 	return &guardedScheduleExecutionRepository{inner: s.store.ScheduleExecutions(), policy: s.policy}
 }
+func (s *PolicyStore) WorkingMemory() WorkingMemoryRepository {
+	return &guardedWorkingMemoryRepository{inner: s.store.WorkingMemory(), policy: s.policy}
+}
 
 // guardedRepositories applies the store's policy to a transaction-scoped set of
 // repositories.
@@ -115,6 +118,45 @@ func (r *guardedRepositories) Schedules() ScheduleRepository {
 
 func (r *guardedRepositories) ScheduleExecutions() ScheduleExecutionRepository {
 	return &guardedScheduleExecutionRepository{inner: r.repos.ScheduleExecutions(), policy: r.policy}
+}
+func (r *guardedRepositories) WorkingMemory() WorkingMemoryRepository {
+	return &guardedWorkingMemoryRepository{inner: r.repos.WorkingMemory(), policy: r.policy}
+}
+
+type guardedWorkingMemoryRepository struct {
+	inner  WorkingMemoryRepository
+	policy Policy
+}
+
+func (r *guardedWorkingMemoryRepository) UpsertWorkingMemoryFact(ctx context.Context, v WorkingMemoryFact, e int64) (WorkingMemoryFact, error) {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: v.Key, Tenant: v.Namespace}); err != nil {
+		return WorkingMemoryFact{}, err
+	}
+	return r.inner.UpsertWorkingMemoryFact(ctx, v, e)
+}
+func (r *guardedWorkingMemoryRepository) GetWorkingMemoryFact(ctx context.Context, s WorkingMemoryScope, k string) (WorkingMemoryFact, error) {
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindWorkingMemory, ID: k, Tenant: s.Namespace}); err != nil {
+		return WorkingMemoryFact{}, err
+	}
+	return r.inner.GetWorkingMemoryFact(ctx, s, k)
+}
+func (r *guardedWorkingMemoryRepository) ListWorkingMemoryFacts(ctx context.Context, s WorkingMemoryScope, p PageRequest) (Page[WorkingMemoryFact], error) {
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindWorkingMemory, ID: s.OwnerID, Tenant: s.Namespace}); err != nil {
+		return Page[WorkingMemoryFact]{}, err
+	}
+	return r.inner.ListWorkingMemoryFacts(ctx, s, p)
+}
+func (r *guardedWorkingMemoryRepository) DeleteWorkingMemoryFact(ctx context.Context, s WorkingMemoryScope, k string, e int64) error {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: k, Tenant: s.Namespace}); err != nil {
+		return err
+	}
+	return r.inner.DeleteWorkingMemoryFact(ctx, s, k, e)
+}
+func (r *guardedWorkingMemoryRepository) ClearWorkingMemory(ctx context.Context, s WorkingMemoryScope) error {
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: s.OwnerID, Tenant: s.Namespace}); err != nil {
+		return err
+	}
+	return r.inner.ClearWorkingMemory(ctx, s)
 }
 
 type guardedThreadRepository struct {

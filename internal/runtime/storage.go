@@ -118,6 +118,34 @@ type WorkflowRunFilter struct {
 	Status     RunStatus
 }
 
+// WorkingMemoryFact is one durable, user-scoped fact. Namespace identifies a
+// tenant and OwnerID identifies the user within it. Key is unique within that
+// scope. Version starts at one and changes only after a successful write.
+type WorkingMemoryFact struct {
+	ID        string          `json:"id"`
+	Namespace string          `json:"namespace"`
+	OwnerID   string          `json:"owner_id"`
+	Key       string          `json:"key"`
+	Value     json.RawMessage `json:"value"`
+	Version   int64           `json:"version"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// WorkingMemoryScope selects facts owned by one user in one tenant.
+type WorkingMemoryScope struct{ Namespace, OwnerID string }
+
+// WorkingMemoryRepository owns scoped fact CRUD. expectedVersion is zero for
+// create and otherwise must equal the stored version; conflicts return
+// ErrConflict. Clear deletes every fact in scope.
+type WorkingMemoryRepository interface {
+	UpsertWorkingMemoryFact(context.Context, WorkingMemoryFact, int64) (WorkingMemoryFact, error)
+	GetWorkingMemoryFact(context.Context, WorkingMemoryScope, string) (WorkingMemoryFact, error)
+	ListWorkingMemoryFacts(context.Context, WorkingMemoryScope, PageRequest) (Page[WorkingMemoryFact], error)
+	DeleteWorkingMemoryFact(context.Context, WorkingMemoryScope, string, int64) error
+	ClearWorkingMemory(context.Context, WorkingMemoryScope) error
+}
+
 // ThreadRepository owns thread records and their lifecycle.
 type ThreadRepository interface {
 	CreateThread(context.Context, ThreadRecord) error
@@ -153,6 +181,7 @@ type Repositories interface {
 	WorkflowSnapshots() WorkflowSnapshotRepository
 	Schedules() ScheduleRepository
 	ScheduleExecutions() ScheduleExecutionRepository
+	WorkingMemory() WorkingMemoryRepository
 }
 
 // Store owns transaction boundaries and migration execution. Adapters own the

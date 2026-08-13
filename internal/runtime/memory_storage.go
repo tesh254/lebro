@@ -20,14 +20,15 @@ type MemoryStore struct {
 }
 
 type memoryState struct {
-	threads      map[ThreadID]ThreadRecord
-	messages     map[ThreadID][]MessageRecord
-	runs         map[RunID]WorkflowRunRecord
-	snapshots    map[RunID][]WorkflowSnapshotRecord
-	snapshotIDs  map[RunID]map[string]struct{}
-	schedules    map[ScheduleID]ScheduleRecord
-	executions   map[ScheduleID][]ScheduleExecutionRecord
-	executionIDs map[ScheduleID]map[string]struct{}
+	threads       map[ThreadID]ThreadRecord
+	messages      map[ThreadID][]MessageRecord
+	runs          map[RunID]WorkflowRunRecord
+	snapshots     map[RunID][]WorkflowSnapshotRecord
+	snapshotIDs   map[RunID]map[string]struct{}
+	schedules     map[ScheduleID]ScheduleRecord
+	executions    map[ScheduleID][]ScheduleExecutionRecord
+	executionIDs  map[ScheduleID]map[string]struct{}
+	workingMemory map[string]WorkingMemoryFact
 }
 
 // NewMemoryStore creates an empty in-memory storage implementation.
@@ -37,14 +38,15 @@ func NewMemoryStore() *MemoryStore {
 
 func newMemoryState() memoryState {
 	return memoryState{
-		threads:      map[ThreadID]ThreadRecord{},
-		messages:     map[ThreadID][]MessageRecord{},
-		runs:         map[RunID]WorkflowRunRecord{},
-		snapshots:    map[RunID][]WorkflowSnapshotRecord{},
-		snapshotIDs:  map[RunID]map[string]struct{}{},
-		schedules:    map[ScheduleID]ScheduleRecord{},
-		executions:   map[ScheduleID][]ScheduleExecutionRecord{},
-		executionIDs: map[ScheduleID]map[string]struct{}{},
+		threads:       map[ThreadID]ThreadRecord{},
+		messages:      map[ThreadID][]MessageRecord{},
+		runs:          map[RunID]WorkflowRunRecord{},
+		snapshots:     map[RunID][]WorkflowSnapshotRecord{},
+		snapshotIDs:   map[RunID]map[string]struct{}{},
+		schedules:     map[ScheduleID]ScheduleRecord{},
+		executions:    map[ScheduleID][]ScheduleExecutionRecord{},
+		executionIDs:  map[ScheduleID]map[string]struct{}{},
+		workingMemory: map[string]WorkingMemoryFact{},
 	}
 }
 
@@ -56,6 +58,7 @@ func (s *MemoryStore) Schedules() ScheduleRepository                 { return s 
 func (s *MemoryStore) ScheduleExecutions() ScheduleExecutionRepository {
 	return s
 }
+func (s *MemoryStore) WorkingMemory() WorkingMemoryRepository { return s }
 
 // Migrate is a no-op: MemoryStore has no external schema.
 func (s *MemoryStore) Migrate(context.Context) error { return nil }
@@ -218,6 +221,7 @@ func (r *memoryRepositories) Schedules() ScheduleRepository                 { re
 func (r *memoryRepositories) ScheduleExecutions() ScheduleExecutionRepository {
 	return r
 }
+func (r *memoryRepositories) WorkingMemory() WorkingMemoryRepository { return r }
 func (r *memoryRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	err := createThread(ctx, &r.state, v)
 	if err == nil {
@@ -699,6 +703,9 @@ func cloneMemoryState(s memoryState) memoryState {
 		for id := range ids {
 			out.executionIDs[scheduleID][id] = struct{}{}
 		}
+	}
+	for k, v := range s.workingMemory {
+		out.workingMemory[k] = cloneWorkingMemoryFact(v)
 	}
 	return out
 }
