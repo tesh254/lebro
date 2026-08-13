@@ -19,6 +19,7 @@ lebro/                   public API façade and module documentation
 internal/runtime/        model, tools, schema, workflow, storage, vector, and RAG runtime
 jsonschema/              optional JSON Schema compiler implementation
 httpapi/                 optional HTTP server and generated OpenAPI contract
+channels/                optional messaging channel adapters (inbound webhook, streamed reply)
 studio/                  optional local Studio-style developer UI
 evals/                   optional datasets, scorers, and experiment runs
 internal/testkit/        deterministic provider fixtures and contract suites for tests
@@ -1501,6 +1502,72 @@ Identity flows through the run context, so subagent delegations and workflow
 steps authorize against the same caller without extra wiring. A nil `Policy`
 allows everything, so the core library is fully usable without one;
 `lebro.AllowAllPolicy{}` is the explicit no-op.
+
+## Messaging channel adapters
+
+`channels` connects agents to conversational platforms. A platform delivers an
+inbound message to a webhook, the agent runs through the ordinary streaming
+pipeline, and the streamed reply is delivered back to the same conversation. The
+package supplies the provider-neutral edges — an inbound message contract,
+deterministic thread mapping, deduplication, and a streamed-reply relay — and
+leaves the platform-specific edges to an `Adapter`. The root module gains no
+provider dependency.
+
+```go
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition: lebro.AgentDefinition{ID: "assistant", Name: "Assistant"},
+    Model:      model,
+    Store:      store,
+})
+if err != nil {
+    panic(err)
+}
+
+// The generic HMAC webhook adapter needs no platform SDK: a platform signs the
+// raw body with a shared secret and sends the hex digest.
+adapter, err := channels.NewWebhookAdapter(channels.WebhookAdapterConfig{
+    Platform: "webhook",
+    Secret:   []byte(os.Getenv("CHANNEL_WEBHOOK_SECRET")),
+})
+if err != nil {
+    panic(err)
+}
+
+server, err := channels.NewServer(channels.Config{
+    Store:  store,
+    Mapper: channels.NamespaceThreadMapper{Namespace: "prod"},
+})
+if err != nil {
+    panic(err)
+}
+if err := server.ExposeAgent(agent, adapter); err != nil {
+    panic(err)
+}
+
+// Serve the webhook route: /agents/{id}/channels/{platform}/webhook
+http.ListenAndServe(":8080", server)
+```
+
+An inbound message maps deterministically to a durable thread: a `ThreadMapper`
+derives a stable `ThreadID` from the conversation reference, so every message in
+one platform conversation lands on one persisted transcript and a reply
+continues it. The sender is mapped onto a `lebro.Identity` and carried on the
+run context, so a configured `Policy` authorizes the run against the platform
+user. Inbound content is always delivered as a user turn, so a platform payload
+cannot forge a system or assistant turn.
+
+Authentication is per adapter, in `Adapter.Verify`, before the request body is
+trusted; the generic adapter recomputes an HMAC-SHA256 over the raw body bound
+to a request timestamp, compares it in constant time, and rejects a timestamp
+outside a configurable skew to prevent replay. Messaging platforms deliver at
+least once, so a `Deduplicator` drops a redelivered message whose provider ID
+was already processed; `StoreDeduplicator` persists the dedup window through a
+`Store` (the default whenever a store is configured) so it survives a restart,
+and `MemoryDeduplicator` keeps a bounded in-process window. The webhook handler
+returns status codes a platform's retry logic can act on — 401 for a rejected
+signature, 400 for an undecodable body, 200 for a handshake or an
+already-processed delivery, and 500 for a run or delivery failure the platform
+may safely redeliver.
 
 ## Examples
 
