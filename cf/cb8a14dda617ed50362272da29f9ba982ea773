@@ -1,0 +1,42 @@
+internal/runtime/processor_runtime.go
+  s_1606ad34b37432::t_fca808e71e543a 14
+  s_1606ad34b37432::t_a08d53535f923e 36,51,58,131
+  s_1606ad34b37432::t_8aeb8bd1ff034e 61-73,75-87,89-101,103-115,117-129,134-136
+  s_1606ad34b37432::t_1bda4a5794e46d 1-13,15-35,37-50,52-57,59-60,74,88,102,116,130,132-133
+contracts_test.go
+  s_1606ad34b37432::t_838867782b3f87 17,20-27,130-143
+public.go
+  s_1606ad34b37432::t_f73a3407811c3b 278
+  s_1606ad34b37432::t_838867782b3f87 187-212,259-267,403-405,492-506
+internal/runtime/processor.go
+  s_1606ad34b37432::t_924f4d1e19015b 9-10,21-22,25-31,34-92,95-124,128-132,135-138,141-145,147-153,156-159,161-166,169-172,175-179,182-186,189-216,218,221-223,226-228,231-235,238-240,243-253,255-269,272-297,300-302,304-309,311,314-316,318-329,331,335-350
+internal/runtime/processor_runtime_test.go
+  s_1606ad34b37432::t_909bd71f7bf2f0 1-17,21-23,27-29,33-37,40-41,44-45,49-50,54,64-69,73-74,78,85-89,94-95,99,103,107,113,123
+  s_1606ad34b37432::t_76c7a6203c63a0 18-20,24-26,30-32,38-39,42-43,46-48,51-53,55-63,70-72,75-77,79-84,90-93,96-98,100-102,104-106,108-112,114-122
+internal/runtime/agent.go
+  s_1606ad34b37432::t_c9c5621d9f45c5 221,243,323
+examples/processor-contract/main_test.go
+  s_1606ad34b37432::t_838867782b3f87 1-19
+examples/processor-contract/main.go
+  s_1606ad34b37432::t_838867782b3f87 1-54
+internal/runtime/processor_test.go
+  s_1606ad34b37432::t_924f4d1e19015b 5,10-18,21-22,26-29,33-35,37-39,41-42,46-60,62-69,73-79,81-96
+internal/runtime/run_record.go
+  s_1606ad34b37432::t_c9c5621d9f45c5 142,352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "cfcb8a14dda617ed50362272da29f9ba982ea773",
+  "prompts": {},
+  "sessions": {
+    "s_1606ad34b37432": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffc0f-75ea-7d90-ad76-6a13fef0d9b5",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
