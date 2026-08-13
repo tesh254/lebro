@@ -14,7 +14,16 @@ var (
 	_ StreamingModel = contractStreamingModel{}
 	_ Tool           = contractTool{}
 	_ Workflow       = contractWorkflow{}
+	_ InputProcessor = contractInputProcessor{}
 )
+
+type contractInputProcessor struct{}
+
+func (contractInputProcessor) Name() string { return "contract-input" }
+
+func (contractInputProcessor) ProcessInput(_ context.Context, request ProcessorInputRequest) (ProcessorInputResult, error) {
+	return ProcessorInputResult{Decision: ProcessorDecision{Kind: ProcessorTransform}, Input: request.Input}, nil
+}
 
 type contractModel struct{}
 
@@ -115,6 +124,23 @@ func TestMAD10PublicContracts(t *testing.T) {
 	}
 	if workflow.Definition().ID != "echo" || result.Status != RunStatusSucceeded || result.Messages[0] != message || result.Metadata["source"] != "test" {
 		t.Fatalf("workflow result = %#v", result)
+	}
+}
+
+func TestMAD59ProcessorPublicContract(t *testing.T) {
+	t.Parallel()
+	request := ProcessorInputRequest{Run: ProcessorRun{ID: "run-1"}, Input: RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}}}
+	result, err := (contractInputProcessor{}).ProcessInput(context.Background(), request.Clone())
+	if err != nil || result.Decision.Kind != ProcessorTransform || result.Input.Messages[0].Content != "hello" {
+		t.Fatalf("processor result = %#v, %v", result, err)
+	}
+	decision, err := NormalizeProcessorDecision(ProcessorDecision{})
+	if err != nil || decision.Kind != ProcessorAllow {
+		t.Fatalf("decision = %#v, %v", decision, err)
+	}
+	err = NormalizeProcessorError(ProcessorPhaseInput, "contract-input", context.Canceled)
+	if !errors.Is(err, ErrProcessorCancelled) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
 	}
 }
 
