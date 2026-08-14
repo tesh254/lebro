@@ -503,10 +503,17 @@ Three adapters ship:
 | `MemoryVectorStore` | In-process | Brute-force cosine | No-op |
 | `SQLiteVectorStore` | SQLite (JSON TEXT) | Brute-force cosine | `vector_schema_migrations` table |
 | `PostgresVectorStore` | PostgreSQL + pgvector | `<=>` operator | `vector_schema_migrations` table |
+| `QdrantVectorStore` | Qdrant gRPC | Cosine collection search | Qdrant collection per index |
 
 All adapters pass the shared `VectorContractSuite`. PostgreSQL vector tests
 are gated by `LEBRO_POSTGRES_TEST_DSN` and require the pgvector extension.
 The pgvector adapter uses `github.com/pgvector/pgvector-go` (pure Go, no CGO).
+Qdrant vector tests are gated by `LEBRO_QDRANT_TEST_HOST` and optionally
+`LEBRO_QDRANT_TEST_PORT`. Qdrant uses a deterministic UUID for each Lebro
+record ID and preserves original ID, content, metadata, and exact metadata
+filters in point payload. In shared collections, callers must include their
+tenant/owner metadata condition in every query; this adapter does not infer or
+enforce a tenant policy.
 
 ## Retrieval-augmented generation
 
