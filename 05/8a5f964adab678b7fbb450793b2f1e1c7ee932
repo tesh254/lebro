@@ -1,0 +1,19 @@
+httpapi/stream_test.go
+  s_a2961bbf12ab48::t_0c30e53edad535 284,286,288,291-294,296-300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "058a5f964adab678b7fbb450793b2f1e1c7ee932",
+  "prompts": {},
+  "sessions": {
+    "s_a2961bbf12ab48": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ffd8b-b4f6-75c3-a4d6-e301f528fb30",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
