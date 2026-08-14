@@ -281,25 +281,23 @@ func TestStreamCancelsRunWhenClientDisconnects(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
-	// Cancelling the request context is what a client going away looks like to
-	// the server. Closing the response body alone is not: the connection
-	// returns to the idle pool and the server-side context stays live.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		httpServer.URL+"/agents/assistant/runs/stream", bytes.NewReader([]byte(`{}`)))
+	client, err := httpapi.NewClient(httpapi.ClientConfig{BaseURL: httpServer.URL})
 	must(t, err)
-
-	response, err := http.DefaultClient.Do(request)
+	stream, err := client.RunStream(context.Background(), "assistant", httpapi.RunRequest{})
 	must(t, err)
-	defer func() { _ = response.Body.Close() }()
+	defer stream.Cancel()
 
 	// Read one delta so the run is demonstrably streaming before hanging up.
-	buffer := make([]byte, 64)
-	if _, err := response.Body.Read(buffer); err != nil {
-		t.Fatalf("read first delta: %v", err)
+	select {
+	case <-stream.Events:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not deliver its first delta")
 	}
-	cancel()
+	// ClientStream.Cancel closes the request's transport response as well as its
+	// local context. That is the stable, supported representation of a caller
+	// abandoning a stream; cancelling only the raw request context races the
+	// server's observation of the connection close.
+	stream.Cancel()
 
 	select {
 	case <-observed:
