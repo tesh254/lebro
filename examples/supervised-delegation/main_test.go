@@ -17,7 +17,7 @@ func TestRunDelegatesToASelectedSubagent(t *testing.T) {
 		"delegated to: researcher",
 		"delegated status: succeeded",
 		"delegated output: The Nairobi office opened in 2019.",
-		"delegation step: 1 (delegate.research)",
+		"delegation step: 1 (delegate)",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output %q does not contain %q", got, want)

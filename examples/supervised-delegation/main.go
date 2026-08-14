@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -90,6 +91,28 @@ func run(output io.Writer) error {
 	if err := registry.Register(edit); err != nil {
 		return err
 	}
+	router, err := lebro.NewRuleRouter([]lebro.RouteRule{{
+		SpecialistID: "delegate.research",
+		Match: func(request lebro.RoutingRequest) bool {
+			return strings.Contains(strings.ToLower(request.Task), "when")
+		},
+	}}, "delegate.edit")
+	if err != nil {
+		return err
+	}
+	delegation, err := lebro.NewRoutedSubagent(lebro.RoutedSubagentConfig{
+		ID:          "delegate",
+		Description: "Route focused work to the research or editing specialist.",
+		Router:      router,
+		Specialists: []*lebro.Subagent{research, edit},
+		Fallback:    []lebro.ToolID{"delegate.edit"},
+	})
+	if err != nil {
+		return err
+	}
+	if err := registry.Register(delegation); err != nil {
+		return err
+	}
 
 	// The supervisor picks a subagent by tool ID, reads its result, and
 	// answers. Its allow-list governs which subagents it may reach.
@@ -99,11 +122,11 @@ func run(output io.Writer) error {
 			ID:           "supervisor",
 			Name:         "Supervisor",
 			Instructions: "Delegate focused work to the most suitable subagent, then report the result.",
-			Tools:        []lebro.ToolID{"delegate.research", "delegate.edit"},
+			Tools:        []lebro.ToolID{"delegate"},
 		},
 		Model: testkit.NewModel(
 			testkit.ToolCallResponse(testkit.ToolCall{
-				ToolID:    "delegate.research",
+				ToolID:    "delegate",
 				Arguments: json.RawMessage(`{"task":"When did the Nairobi office open?"}`),
 			}),
 			testkit.Text("The Nairobi office opened in 2019."),

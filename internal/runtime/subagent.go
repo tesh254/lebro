@@ -44,7 +44,10 @@ var (
 type SubagentError struct {
 	Kind SubagentErrorKind
 	ID   ToolID
-	Err  error
+	// RunID identifies a child run that started before this failure. It is empty
+	// when validation rejected delegation before a child run existed.
+	RunID RunID
+	Err   error
 }
 
 func (e *SubagentError) Error() string {
@@ -330,12 +333,12 @@ func (s *Subagent) Execute(ctx context.Context, input json.RawMessage) (json.Raw
 			return nil, parentErr
 		}
 		if errors.Is(err, ErrAgentCancelled) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, &SubagentError{Kind: SubagentErrorCancelled, ID: s.id, Err: err}
+			return nil, &SubagentError{Kind: SubagentErrorCancelled, ID: s.id, RunID: result.ID, Err: err}
 		}
-		return nil, &SubagentError{Kind: SubagentErrorRunFailed, ID: s.id, Err: err}
+		return nil, &SubagentError{Kind: SubagentErrorRunFailed, ID: s.id, RunID: result.ID, Err: err}
 	}
 	if result.Status != RunStatusSucceeded {
-		return nil, &SubagentError{Kind: SubagentErrorRunFailed, ID: s.id, Err: fmt.Errorf("lebro: subagent run finished with status %q: %w", result.Status, ErrSubagentRunFailed)}
+		return nil, &SubagentError{Kind: SubagentErrorRunFailed, ID: s.id, RunID: result.ID, Err: fmt.Errorf("lebro: subagent run finished with status %q: %w", result.Status, ErrSubagentRunFailed)}
 	}
 
 	return s.encodeResult(result)

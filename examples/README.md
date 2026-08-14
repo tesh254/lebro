@@ -47,6 +47,13 @@ a local schema-backed tool (no network or API key required):
 go run ./examples/agent-loop
 ```
 
+Run the supervised delegation example, with deterministic specialist routing
+and a configured fallback (no network or API key required):
+
+```sh
+go run ./examples/supervised-delegation
+```
+
 Run the schema-constrained structured-output example (agent requests a final
 JSON value that conforms to a caller-supplied schema, validated locally; no
 network or API key required):
