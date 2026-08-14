@@ -61,6 +61,18 @@ type (
 	SubagentConfig              = runtime.SubagentConfig
 	SubagentError               = runtime.SubagentError
 	SubagentErrorKind           = runtime.SubagentErrorKind
+	RoutingRequest              = runtime.RoutingRequest
+	RoutingCandidate            = runtime.RoutingCandidate
+	RoutingDecision             = runtime.RoutingDecision
+	SpecialistRouter            = runtime.SpecialistRouter
+	RouteRule                   = runtime.RouteRule
+	RuleRouter                  = runtime.RuleRouter
+	ModelSpecialistRouter       = runtime.ModelSpecialistRouter
+	ModelSpecialistRouterConfig = runtime.ModelSpecialistRouterConfig
+	RoutedSubagent              = runtime.RoutedSubagent
+	RoutedSubagentConfig        = runtime.RoutedSubagentConfig
+	RouteError                  = runtime.RouteError
+	RouteErrorKind              = runtime.RouteErrorKind
 	SchemaCompiler              = runtime.SchemaCompiler
 	CompiledSchema              = runtime.CompiledSchema
 	ValidationTarget            = runtime.ValidationTarget
@@ -326,6 +338,8 @@ const (
 	SubagentErrorInvalidInput = runtime.SubagentErrorInvalidInput
 	SubagentErrorRunFailed    = runtime.SubagentErrorRunFailed
 	SubagentErrorCancelled    = runtime.SubagentErrorCancelled
+	RouteErrorSelection       = runtime.RouteErrorSelection
+	RouteErrorExhausted       = runtime.RouteErrorExhausted
 
 	WorkflowErrorInvalidStepInput        = runtime.WorkflowErrorInvalidStepInput
 	WorkflowErrorInvalidStepOutput       = runtime.WorkflowErrorInvalidStepOutput
@@ -441,6 +455,8 @@ var (
 	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
 	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
 	ErrSubagentCancelled    = runtime.ErrSubagentCancelled
+	ErrRouteSelection       = runtime.ErrRouteSelection
+	ErrRouteExhausted       = runtime.ErrRouteExhausted
 
 	ErrWorkflowInvalidStepInput  = runtime.ErrWorkflowInvalidStepInput
 	ErrWorkflowInvalidStepOutput = runtime.ErrWorkflowInvalidStepOutput
@@ -505,6 +521,18 @@ func NewAgentStep(agent Workflow) (*AgentStep, error) { return runtime.NewAgentS
 // configuration opts in.
 func NewSubagent(config SubagentConfig) (*Subagent, error) {
 	return runtime.NewSubagent(config)
+}
+
+func NewRuleRouter(rules []RouteRule, defaultID ToolID) (*RuleRouter, error) {
+	return runtime.NewRuleRouter(rules, defaultID)
+}
+
+func NewModelSpecialistRouter(config ModelSpecialistRouterConfig) (*ModelSpecialistRouter, error) {
+	return runtime.NewModelSpecialistRouter(config)
+}
+
+func NewRoutedSubagent(config RoutedSubagentConfig) (*RoutedSubagent, error) {
+	return runtime.NewRoutedSubagent(config)
 }
 
 func NewToolStep(tool *RegisteredTool) (*ToolStep, error) { return runtime.NewToolStep(tool) }
