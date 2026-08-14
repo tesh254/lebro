@@ -109,7 +109,7 @@ same canonical transcript can be persisted and replayed on the next turn.
 Provider failures can be inspected with `errors.As` as `*lebro.ModelError` or
 with `errors.Is` against sentinels such as `lebro.ErrModelRateLimited`.
 
-## OpenAI-compatible text-generation adapter
+## Model-provider adapters
 
 The optional `github.com/tesh254/lebro/openai` package implements `lebro.Model`
 against any OpenAI-compatible chat-completions endpoint. It is text-only: tool
@@ -145,6 +145,23 @@ if err != nil {
     return err
 }
 ```
+
+The optional `github.com/tesh254/lebro/anthropic` and
+`github.com/tesh254/lebro/gemini` packages add native Claude and Gemini
+adapters. Both support text, client tool calls, streaming, and structured
+output without coupling those provider SDKs to the root package:
+
+```go
+model, err := anthropic.New(anthropic.Config{
+    APIKey: os.Getenv("ANTHROPIC_API_KEY"),
+    Model:  "claude-sonnet-4-5",
+})
+// Or: gemini.New(gemini.Config{APIKey: os.Getenv("GEMINI_API_KEY"), Model: "gemini-2.5-flash"})
+```
+
+Anthropic JSON output requires a model with structured-output support. Gemini
+accepts only its documented JSON Schema subset. Provider schema rejection is an
+invalid model request; Lebro still validates returned structured JSON locally.
 
 Network, authentication, permission, not-found, rate-limit, timeout, and
 malformed-response failures each map to a distinct `lebro.ModelErrorKind`;
