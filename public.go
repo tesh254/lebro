@@ -166,6 +166,8 @@ type (
 	SQLiteVectorStore           = runtime.SQLiteVectorStore
 	PostgresVectorStore         = runtime.PostgresVectorStore
 	PostgresVectorStoreOptions  = runtime.PostgresVectorStoreOptions
+	QdrantVectorStore           = runtime.QdrantVectorStore
+	QdrantVectorStoreConfig     = runtime.QdrantVectorStoreConfig
 	VectorStore                 = runtime.VectorStore
 	EmbeddingRecord             = runtime.EmbeddingRecord
 	VectorMetadataFilter        = runtime.VectorMetadataFilter
@@ -599,6 +601,13 @@ func NewSQLiteVectorStore(dsn string) (*SQLiteVectorStore, error) {
 // Requires the pgvector extension on the target database.
 func NewPostgresVectorStore(dsn string, opts PostgresVectorStoreOptions) (*PostgresVectorStore, error) {
 	return runtime.NewPostgresVectorStore(dsn, opts)
+}
+
+// NewQdrantVectorStore opens a Qdrant-backed vector store. Each Lebro index
+// becomes a Qdrant collection using cosine distance. Metadata filters remain
+// caller-controlled; use a mandatory tenant filter for shared collections.
+func NewQdrantVectorStore(config QdrantVectorStoreConfig) (*QdrantVectorStore, error) {
+	return runtime.NewQdrantVectorStore(config)
 }
 
 // NewCharacterChunker returns a fixed-width, optionally overlapping rune-window

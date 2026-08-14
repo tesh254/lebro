@@ -94,6 +94,14 @@ similarity search; no network or API key required):
 go run ./examples/vector-search
 ```
 
+Run Qdrant vector search after starting a local Qdrant gRPC server on port
+6334:
+
+```sh
+docker run --rm -p 6334:6334 qdrant/qdrant
+go run ./examples/vector-qdrant
+```
+
 Run the MCP server example (exposes lebro tools over stdio for any
 MCP-compatible client; reads from stdin, so pipe requests or connect a client):
 
