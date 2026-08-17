@@ -1,0 +1,26 @@
+internal/runtime/network.go
+  s_0ea7f627976152::t_65ab424a041da8 48,100-101,228,248,269,272-274,286,301-304,319-322,324,341-352
+  s_0ea7f627976152::t_8352bf302bf83f 58
+api_types.go
+  s_0ea7f627976152::t_8352bf302bf83f 474
+  s_0ea7f627976152::t_65ab424a041da8 350
+internal/runtime/network_test.go
+  s_0ea7f627976152::t_6fe133ba97a2dd 236-256
+  s_0ea7f627976152::t_583f27e4b093e6 7,24-57,138-161,192-235,257-273
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d656017c95fb17fabb779662ec59b5d9d92847f1",
+  "prompts": {},
+  "sessions": {
+    "s_0ea7f627976152": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a001b0-82c6-7b70-ad47-1a1327674154",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
