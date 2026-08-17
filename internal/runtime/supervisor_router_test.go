@@ -131,6 +131,28 @@ func TestModelSpecialistRouterSelectsStructuredCandidate(t *testing.T) {
 	}
 }
 
+func TestModelSpecialistRouterCompletesNetwork(t *testing.T) {
+	router, err := NewModelSpecialistRouter(ModelSpecialistRouterConfig{Model: routeModel{response: ModelResponse{Message: Message{Role: RoleAssistant, StructuredOutput: NewModelStructuredOutput(json.RawMessage(`{"complete":true}`))}, FinishReason: FinishReasonStop}}, ModelName: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := router.Route(context.Background(), RoutingRequest{Task: "work", Hops: 1, Candidates: []RoutingCandidate{{ID: "known"}}})
+	if err != nil || !decision.Complete {
+		t.Fatalf("decision = %#v, error = %v", decision, err)
+	}
+}
+
+func TestRuleRouterCompletesNetworkAfterFirstHandoff(t *testing.T) {
+	router, err := NewRuleRouter(nil, "known")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := router.Route(context.Background(), RoutingRequest{Hops: 1})
+	if err != nil || !decision.Complete {
+		t.Fatalf("decision = %#v, error = %v", decision, err)
+	}
+}
+
 func TestRoutedSubagentReportsExhaustedFallbacks(t *testing.T) {
 	primary := newRouterSpecialist(t, "primary", routerWorkflow{id: "primary-agent", err: &ModelError{Kind: ModelErrorUnavailable}})
 	fallback := newRouterSpecialist(t, "fallback", routerWorkflow{id: "fallback-agent", err: &ModelError{Kind: ModelErrorUnavailable}})

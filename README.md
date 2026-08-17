@@ -15,7 +15,7 @@ stable façade for every public contract and constructor, so existing code keeps
 using `lebro.Message`, `lebro.NewToolRegistry`, and `lebro.NewMemoryStore`.
 
 ```
-lebro/                   public API façade and module documentation
+lebro/                   public API contracts and domain constructors
 internal/runtime/        model, tools, schema, workflow, storage, vector, and RAG runtime
 jsonschema/              optional JSON Schema compiler implementation
 httpapi/                 optional HTTP server and generated OpenAPI contract
@@ -28,8 +28,10 @@ examples/                runnable feature-focused examples
 docs/                    installation and release guides
 ```
 
-Keep runtime implementation out of module root. Add optional integrations as
-their own packages, never as dependencies of the root API.
+Root API files are grouped by domain (`agent.go`, `network.go`, `storage.go`,
+`workflow.go`, `tools.go`, and related files); `api_types.go` contains shared
+aliases and constants. Keep runtime implementation out of module root. Add
+optional integrations as their own packages, never as dependencies of root API.
 
 ## Requirements
 
@@ -1098,6 +1100,44 @@ Run the supervised delegation example (no network or API key required):
 go run ./examples/supervised-delegation
 ```
 
+## Agent networks
+
+`lebro.NewNetwork` coordinates named specialist workflows through an explicit
+`SpecialistRouter`. Every specialist handoff preserves the caller context, so
+identity, policy, cancellation, and deadlines flow into child execution.
+Networks require a non-empty user message, bound traversal with `MaxHops` and
+`Deadline`, reject a repeated specialist ID, and return typed `NetworkError`
+values for invalid input, selection failures, cycles, exhausted hops, failed
+specialists, and authorization denial. A handoff requires a non-empty user
+task and each specialist must return assistant text or structured output.
+
+```go
+network, err := lebro.NewNetwork(lebro.NetworkConfig{
+    Definition: lebro.WorkflowDefinition{ID: "knowledge-network"},
+    Router: router,
+    Specialists: []lebro.NetworkSpecialist{
+        {ID: "research", Workflow: researcher, Description: "Research facts."},
+    },
+    Store: store,
+})
+result, err := network.Run(ctx, lebro.RunInput{
+    Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "What is Lebro?"}},
+})
+```
+
+Each route records candidates, selected specialist, child run ID, status, and
+failure in `WorkflowRunRecord.StepOutputs`; existing Memory, SQLite, and
+Postgres stores persist those records without a migration. Configure a
+`RunListener` to receive `RunEventRouteSelected` events. `RuleRouter` performs
+one handoff then completes; a multi-hop router uses `RoutingRequest.Hops` and
+returns `RoutingDecision{Complete: true}` when finished.
+
+Run deterministic example:
+
+```sh
+go run ./examples/agent-network
+```
+
 ## Token and event streaming with cancellation
 
 `lebro.StreamingModel` extends the provider-neutral `Model` interface with
@@ -1713,6 +1753,13 @@ the correlated result:
 
 ```sh
 go run ./examples/supervised-delegation
+```
+
+The agent-network example routes a request to a named specialist and loads its
+durable route record:
+
+```sh
+go run ./examples/agent-network
 ```
 
 The streaming example runs a bounded agent against a scripted streaming model

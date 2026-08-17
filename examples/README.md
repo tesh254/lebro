@@ -54,6 +54,13 @@ and a configured fallback (no network or API key required):
 go run ./examples/supervised-delegation
 ```
 
+Run the bounded agent-network example (routes to a named specialist and reads
+durable route records; no network or API key required):
+
+```sh
+go run ./examples/agent-network
+```
+
 Run the schema-constrained structured-output example (agent requests a final
 JSON value that conforms to a caller-supplied schema, validated locally; no
 network or API key required):

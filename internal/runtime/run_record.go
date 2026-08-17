@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -68,6 +69,9 @@ const (
 	// non-terminal and sits between step_started and step_finished for the
 	// branching step.
 	RunEventBranchSelected RunEventType = "branch_selected"
+	// RunEventRouteSelected records a Network router decision. ToolID is the
+	// selected specialist and DeltaText contains its JSON-encoded candidates.
+	RunEventRouteSelected RunEventType = "route_selected"
 	// RunEventLoopIterationStarted and RunEventLoopIterationFinished bracket
 	// each post-condition loop body execution. Iteration is 1-indexed.
 	RunEventLoopIterationStarted  RunEventType = "loop_iteration_started"
@@ -571,6 +575,14 @@ func (e *runEmitter) emitBranchSelected(runID RunID, step int, stepID StepID, br
 		Branch:    branch,
 		Timestamp: e.clock.Now(),
 	})
+}
+
+func (e *runEmitter) emitRouteSelected(runID RunID, step int, selected ToolID, candidates []ToolID) {
+	if !e.enabled() {
+		return
+	}
+	raw, _ := json.Marshal(candidates)
+	e.dispatch(RunEvent{Type: RunEventRouteSelected, RunID: runID, Step: step, Timestamp: e.clock.Now(), ToolID: selected, DeltaText: string(raw)})
 }
 
 func (e *runEmitter) emitLoopIteration(runID RunID, step int, stepID StepID, iteration int, eventType RunEventType, err error) {

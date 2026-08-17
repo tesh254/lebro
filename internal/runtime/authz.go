@@ -26,6 +26,8 @@ const (
 	ActionToolCall Action = "tool.call"
 	// ActionWorkflowRun is requested once at the start of a workflow run.
 	ActionWorkflowRun Action = "workflow.run"
+	// ActionNetworkRun is requested before a router-led Network begins.
+	ActionNetworkRun Action = "network.run"
 	// ActionStorageRead is requested before a read against a storage
 	// repository (thread, message, workflow run, or snapshot lookups and lists).
 	ActionStorageRead Action = "storage.read"
@@ -42,6 +44,7 @@ const (
 	ResourceKindAgent            ResourceKind = "agent"
 	ResourceKindTool             ResourceKind = "tool"
 	ResourceKindWorkflow         ResourceKind = "workflow"
+	ResourceKindNetwork          ResourceKind = "network"
 	ResourceKindThread           ResourceKind = "thread"
 	ResourceKindMessage          ResourceKind = "message"
 	ResourceKindWorkflowRun      ResourceKind = "workflow_run"
