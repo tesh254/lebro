@@ -5,9 +5,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
+
+type fixtureRelevanceScorer struct {
+	scores       map[string]float32
+	explanations map[string]string
+	err          error
+	calls        *int
+}
+
+type fixtureReranker struct{ results []RerankResult }
+
+func (r fixtureReranker) Rerank(_ context.Context, _ string, _ []RetrievedChunk) ([]RerankResult, error) {
+	return r.results, nil
+}
+
+func (s fixtureRelevanceScorer) Score(ctx context.Context, _ string, candidate Chunk) (float32, string, error) {
+	if s.calls != nil {
+		*s.calls++
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
+	if s.err != nil {
+		return 0, "", s.err
+	}
+	return s.scores[candidate.ID], s.explanations[candidate.ID], nil
+}
 
 // seedRetrievalIndex ingests a small corpus and returns a retriever over it.
 func seedRetrievalIndex(t *testing.T, config VectorRetrieverConfig) (*VectorRetriever, *stubEmbedder, VectorStore) {
@@ -139,6 +166,148 @@ func TestVectorRetrieverRespectsTopK(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+}
+
+func TestVectorRetrieverReranksBoundedCandidates(t *testing.T) {
+	reranker, err := NewScorerReranker(fixtureRelevanceScorer{
+		scores:       map[string]float32{"billing#0": 1, "onboarding#0": 2, "secret#0": 3},
+		explanations: map[string]string{"secret#0": "highest relevance"},
+	})
+	if err != nil {
+		t.Fatalf("NewScorerReranker error = %v", err)
+	}
+	retriever, _, _ := seedRetrievalIndex(t, VectorRetrieverConfig{
+		TopK:          1,
+		Reranker:      reranker,
+		CandidateTopK: 3,
+	})
+
+	results, err := retriever.Retrieve(context.Background(), RetrievalQuery{Query: "anything"})
+	if err != nil {
+		t.Fatalf("Retrieve error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
+	}
+	if results[0].ID != "secret#0" {
+		t.Fatalf("results[0].ID = %q, want secret#0", results[0].ID)
+	}
+	if results[0].Score != 3 || results[0].VectorScore == 0 {
+		t.Fatalf("result scores = rerank %.2f/vector %.2f, want rerank 3 and preserved vector score", results[0].Score, results[0].VectorScore)
+	}
+	if results[0].ScoreExplanation != "highest relevance" {
+		t.Fatalf("ScoreExplanation = %q, want scorer explanation", results[0].ScoreExplanation)
+	}
+}
+
+func TestNewVectorRetrieverRerankerValidation(t *testing.T) {
+	embedder := newStubEmbedder(8)
+	store := NewMemoryVectorStore()
+	_, err := NewVectorRetriever(VectorRetrieverConfig{Embeddings: embedder, Store: store, Index: "docs", CandidateTopK: 2})
+	if err == nil || !strings.Contains(err.Error(), "requires a reranker") {
+		t.Fatalf("NewVectorRetriever error = %v, want CandidateTopK reranker validation", err)
+	}
+	_, err = NewVectorRetriever(VectorRetrieverConfig{Embeddings: embedder, Store: store, Index: "docs", CandidateTopK: -1})
+	if err == nil || !strings.Contains(err.Error(), "must not be negative") {
+		t.Fatalf("NewVectorRetriever error = %v, want negative CandidateTopK validation", err)
+	}
+}
+
+func TestScorerRerankerDeterministicTiesAndErrors(t *testing.T) {
+	providerErr := errors.New("scorer unavailable")
+	_, err := NewScorerReranker(nil)
+	if err == nil {
+		t.Fatal("NewScorerReranker(nil) error = nil, want error")
+	}
+
+	reranker, err := NewScorerReranker(fixtureRelevanceScorer{scores: map[string]float32{"b": 1, "a": 1}})
+	if err != nil {
+		t.Fatalf("NewScorerReranker error = %v", err)
+	}
+	results, err := reranker.Rerank(context.Background(), "query", []RetrievedChunk{
+		{Chunk: Chunk{ID: "b"}, Score: 0.5},
+		{Chunk: Chunk{ID: "a"}, Score: 0.5},
+	})
+	if err != nil {
+		t.Fatalf("Rerank error = %v", err)
+	}
+	if results[0].Candidate.ID != "a" || results[1].Candidate.ID != "b" {
+		t.Fatalf("tie order = %q, %q; want a, b", results[0].Candidate.ID, results[1].Candidate.ID)
+	}
+
+	failing, err := NewScorerReranker(fixtureRelevanceScorer{err: providerErr})
+	if err != nil {
+		t.Fatalf("NewScorerReranker error = %v", err)
+	}
+	_, err = failing.Rerank(context.Background(), "query", []RetrievedChunk{{Chunk: Chunk{ID: "a"}}})
+	if !errors.Is(err, providerErr) {
+		t.Fatalf("Rerank error = %v, want provider error preserved", err)
+	}
+
+	nan, err := NewScorerReranker(fixtureRelevanceScorer{scores: map[string]float32{"a": float32(math.NaN())}})
+	if err != nil {
+		t.Fatalf("NewScorerReranker error = %v", err)
+	}
+	_, err = nan.Rerank(context.Background(), "query", []RetrievedChunk{{Chunk: Chunk{ID: "a"}}})
+	if err == nil || !strings.Contains(err.Error(), "must not be NaN") {
+		t.Fatalf("Rerank error = %v, want NaN validation", err)
+	}
+}
+
+func TestVectorRetrieverWrapsRerankerError(t *testing.T) {
+	providerErr := errors.New("provider unavailable")
+	reranker, err := NewScorerReranker(fixtureRelevanceScorer{err: providerErr})
+	if err != nil {
+		t.Fatalf("NewScorerReranker error = %v", err)
+	}
+	retriever, _, _ := seedRetrievalIndex(t, VectorRetrieverConfig{Reranker: reranker, CandidateTopK: 2})
+	_, err = retriever.Retrieve(context.Background(), RetrievalQuery{Query: "anything"})
+	if !errors.Is(err, ErrRAGReranking) || !errors.Is(err, providerErr) {
+		t.Fatalf("Retrieve error = %v, want reranking and provider errors", err)
+	}
+}
+
+func TestVectorRetrieverSkipsRerankerForEmptyCandidatePool(t *testing.T) {
+	calls := 0
+	reranker, err := NewScorerReranker(fixtureRelevanceScorer{calls: &calls})
+	if err != nil {
+		t.Fatalf("NewScorerReranker error = %v", err)
+	}
+	retriever, err := NewVectorRetriever(VectorRetrieverConfig{
+		Embeddings:    newStubEmbedder(8),
+		Store:         NewMemoryVectorStore(),
+		Index:         "empty",
+		Reranker:      reranker,
+		CandidateTopK: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewVectorRetriever error = %v", err)
+	}
+	if err := retriever.store.CreateIndex(context.Background(), "empty", 8); err != nil {
+		t.Fatalf("CreateIndex error = %v", err)
+	}
+	results, err := retriever.Retrieve(context.Background(), RetrievalQuery{Query: "anything"})
+	if err != nil {
+		t.Fatalf("Retrieve error = %v", err)
+	}
+	if len(results) != 0 || calls != 0 {
+		t.Fatalf("results/calls = %d/%d, want 0/0", len(results), calls)
+	}
+}
+
+func TestVectorRetrieverRejectsInvalidRerankerResults(t *testing.T) {
+	retriever, _, _ := seedRetrievalIndex(t, VectorRetrieverConfig{
+		TopK:          1,
+		CandidateTopK: 2,
+		Reranker: fixtureReranker{results: []RerankResult{
+			{Candidate: RetrievedChunk{Chunk: Chunk{ID: "missing"}}, Score: 1},
+			{Candidate: RetrievedChunk{Chunk: Chunk{ID: "missing"}}, Score: 0},
+		}},
+	})
+	_, err := retriever.Retrieve(context.Background(), RetrievalQuery{Query: "anything"})
+	if !errors.Is(err, ErrRAGReranking) || !strings.Contains(err.Error(), "unknown chunk") {
+		t.Fatalf("Retrieve error = %v, want validated reranker result error", err)
 	}
 }
 

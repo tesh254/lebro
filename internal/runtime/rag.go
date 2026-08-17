@@ -61,6 +61,9 @@ const (
 	// RAGErrorGraphTraversal means a graph store rejected or failed a bounded
 	// traversal request.
 	RAGErrorGraphTraversal RAGErrorKind = "rag_graph_traversal"
+	// RAGErrorReranking means a reranker or its relevance-scoring adapter
+	// failed after vector retrieval returned its bounded candidate pool.
+	RAGErrorReranking RAGErrorKind = "rag_reranking"
 )
 
 // Retrieval-pipeline errors. Adapters and pipeline stages return these via
@@ -78,6 +81,8 @@ var (
 	ErrRAGRetrieval = errors.New("lebro: RAG retrieval failed")
 	// ErrRAGGraphTraversal matches graph traversal failures.
 	ErrRAGGraphTraversal = errors.New("lebro: RAG graph traversal failed")
+	// ErrRAGReranking matches reranker and relevance-scoring failures.
+	ErrRAGReranking = errors.New("lebro: RAG reranking failed")
 )
 
 // RAGError preserves the failing stage and cause of a retrieval-pipeline
@@ -138,6 +143,8 @@ func ragErrorSentinel(kind RAGErrorKind) error {
 		return ErrRAGRetrieval
 	case RAGErrorGraphTraversal:
 		return ErrRAGGraphTraversal
+	case RAGErrorReranking:
+		return ErrRAGReranking
 	default:
 		return ErrRAGRetrieval
 	}
@@ -301,7 +308,14 @@ func (q RetrievalQuery) Validate() error {
 // similarity to the query vector.
 type RetrievedChunk struct {
 	Chunk
+	// Score is cosine similarity when no Reranker is configured; otherwise it
+	// is the rerank score used to order this response.
 	Score float32 `json:"score"`
+	// VectorScore preserves the candidate's cosine similarity after reranking.
+	// It is zero when no reranker is configured.
+	VectorScore float32 `json:"vector_score,omitempty"`
+	// ScoreExplanation describes the rerank score when a reranker provides one.
+	ScoreExplanation string `json:"score_explanation,omitempty"`
 }
 
 // Retriever answers a semantic query with the chunks most relevant to it.

@@ -65,13 +65,15 @@ func main() {
 		fmt.Printf("indexed %s: %d chunk(s)\n", result.DocumentID, result.Chunks)
 	}
 
-	// 3. Retrieve directly. The retriever embeds the query itself, so callers
-	// never handle vectors.
+	// 3. Retrieve directly. The retriever embeds the query itself, fetches a
+	// bounded candidate pool, then reranks it through a provider-neutral scorer.
 	retriever := mustValue(lebro.NewVectorRetriever(lebro.VectorRetrieverConfig{
-		Embeddings: embeddings,
-		Store:      store,
-		Index:      "handbook",
-		TopK:       2,
+		Embeddings:    embeddings,
+		Store:         store,
+		Index:         "handbook",
+		TopK:          2,
+		CandidateTopK: 4,
+		Reranker:      mustValue(lebro.NewScorerReranker(keywordScorer{})),
 		Filter: lebro.VectorMetadataFilter{
 			Match: map[string]json.RawMessage{"visibility": json.RawMessage(`"public"`)},
 		},
@@ -82,7 +84,7 @@ func main() {
 	}))
 	fmt.Printf("\nretrieved %d chunk(s):\n", len(hits))
 	for _, hit := range hits {
-		fmt.Printf("  %s (score=%.4f, source=%s)\n", hit.ID, hit.Score, hit.Source)
+		fmt.Printf("  %s (rerank=%.4f, vector=%.4f, source=%s)\n", hit.ID, hit.Score, hit.VectorScore, hit.Source)
 	}
 
 	// 4. Expose retrieval as an ordinary tool and let an agent use it. The
@@ -169,6 +171,25 @@ func (e localEmbedder) Embed(ctx context.Context, inputs []string) ([][]float32,
 		vectors[i] = vector
 	}
 	return vectors, nil
+}
+
+// keywordScorer is a local relevance adapter used only by this runnable
+// example. Production scorers can call any provider while keeping the same
+// RelevanceScorer contract and cancellation behavior.
+type keywordScorer struct{}
+
+func (keywordScorer) Score(ctx context.Context, query string, candidate lebro.Chunk) (float32, string, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, "", err
+	}
+	var matches float32
+	content := strings.ToLower(candidate.Content)
+	for _, word := range strings.Fields(strings.ToLower(query)) {
+		if strings.Contains(content, word) {
+			matches++
+		}
+	}
+	return matches, fmt.Sprintf("%d query keyword matches", int(matches)), nil
 }
 
 // scriptedModel stands in for a provider: it requests retrieval on the first

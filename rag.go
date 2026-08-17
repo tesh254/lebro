@@ -10,6 +10,11 @@ func NewIndexer(config IndexerConfig) (*Indexer, error) { return runtime.NewInde
 func NewVectorRetriever(config VectorRetrieverConfig) (*VectorRetriever, error) {
 	return runtime.NewVectorRetriever(config)
 }
+
+// NewScorerReranker adapts a provider-neutral relevance scorer for vector retrieval.
+func NewScorerReranker(scorer RelevanceScorer) (*ScorerReranker, error) {
+	return runtime.NewScorerReranker(scorer)
+}
 func NewThreadHistory(config ThreadHistoryConfig) (*ThreadHistory, error) {
 	return runtime.NewThreadHistory(config)
 }

@@ -197,6 +197,10 @@ type (
 	Retriever                   = runtime.Retriever
 	RetrievalQuery              = runtime.RetrievalQuery
 	RetrievedChunk              = runtime.RetrievedChunk
+	RerankResult                = runtime.RerankResult
+	Reranker                    = runtime.Reranker
+	RelevanceScorer             = runtime.RelevanceScorer
+	ScorerReranker              = runtime.ScorerReranker
 	VectorRetriever             = runtime.VectorRetriever
 	VectorRetrieverConfig       = runtime.VectorRetrieverConfig
 	RetrievalTool               = runtime.RetrievalTool
@@ -423,14 +427,16 @@ const (
 	RAGErrorEmbedding       = runtime.RAGErrorEmbedding
 	RAGErrorIndexing        = runtime.RAGErrorIndexing
 	RAGErrorRetrieval       = runtime.RAGErrorRetrieval
+	RAGErrorReranking       = runtime.RAGErrorReranking
 
 	ChunkMetadataDocumentID = runtime.ChunkMetadataDocumentID
 	ChunkMetadataSource     = runtime.ChunkMetadataSource
 	ChunkMetadataChunkIndex = runtime.ChunkMetadataChunkIndex
 
-	DefaultChunkSize          = runtime.DefaultChunkSize
-	DefaultEmbeddingBatchSize = runtime.DefaultEmbeddingBatchSize
-	DefaultRetrievalTopK      = runtime.DefaultRetrievalTopK
+	DefaultChunkSize           = runtime.DefaultChunkSize
+	DefaultEmbeddingBatchSize  = runtime.DefaultEmbeddingBatchSize
+	DefaultRetrievalTopK       = runtime.DefaultRetrievalTopK
+	DefaultRerankCandidateTopK = runtime.DefaultRerankCandidateTopK
 )
 
 var (
@@ -520,5 +526,6 @@ var (
 	ErrRAGEmbedding       = runtime.ErrRAGEmbedding
 	ErrRAGIndexing        = runtime.ErrRAGIndexing
 	ErrRAGRetrieval       = runtime.ErrRAGRetrieval
+	ErrRAGReranking       = runtime.ErrRAGReranking
 	ErrRAGGraphTraversal  = runtime.ErrRAGGraphTraversal
 )
