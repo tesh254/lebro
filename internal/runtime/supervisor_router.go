@@ -14,6 +14,11 @@ import (
 type RoutingRequest struct {
 	Task       string
 	Candidates []RoutingCandidate
+	// Hops is number of completed specialist handoffs. Existing routers may
+	// ignore it; Network routers can use it to stop bounded traversal.
+	Hops int
+	// PreviousOutput is final assistant text from prior specialist, if any.
+	PreviousOutput string
 }
 
 // RoutingCandidate describes one supervised delegation target.
@@ -24,7 +29,12 @@ type RoutingCandidate struct {
 
 // RoutingDecision chooses the first specialist to attempt. Fallback order is
 // owned by RoutedSubagentConfig, so a router cannot silently widen execution.
-type RoutingDecision struct{ SpecialistID ToolID }
+type RoutingDecision struct {
+	SpecialistID ToolID
+	// Complete ends a Network after at least one successful specialist. It is
+	// ignored by RoutedSubagent, preserving its single-handoff behavior.
+	Complete bool
+}
 
 // SpecialistRouter selects one configured specialist for a focused task.
 // Implementations must return one of request.Candidates.
@@ -65,6 +75,13 @@ func NewRuleRouter(rules []RouteRule, defaultID ToolID) (*RuleRouter, error) {
 func (r *RuleRouter) Route(_ context.Context, request RoutingRequest) (RoutingDecision, error) {
 	if r == nil {
 		return RoutingDecision{}, errors.New("lebro: rule router is nil")
+	}
+	// Rule routers are single-handoff strategies. A Network can opt into
+	// multi-hop traversal with a router that inspects RoutingRequest.Hops;
+	// ending here keeps existing declarative rules useful without inventing a
+	// second termination callback.
+	if request.Hops > 0 {
+		return RoutingDecision{Complete: true}, nil
 	}
 	for _, rule := range r.rules {
 		if rule.Match(request) {
@@ -112,9 +129,11 @@ func (r *ModelSpecialistRouter) Route(ctx context.Context, request RoutingReques
 		return RoutingDecision{}, err
 	}
 	prompt, err := json.Marshal(struct {
-		Task       string             `json:"task"`
-		Candidates []RoutingCandidate `json:"candidates"`
-	}{Task: request.Task, Candidates: request.Candidates})
+		Task           string             `json:"task"`
+		Candidates     []RoutingCandidate `json:"candidates"`
+		Hops           int                `json:"hops,omitempty"`
+		PreviousOutput string             `json:"previous_output,omitempty"`
+	}{Task: request.Task, Candidates: request.Candidates, Hops: request.Hops, PreviousOutput: request.PreviousOutput})
 	if err != nil {
 		return RoutingDecision{}, fmt.Errorf("lebro: encode routing request: %w", err)
 	}
@@ -125,7 +144,7 @@ func (r *ModelSpecialistRouter) Route(ctx context.Context, request RoutingReques
 	response, err := r.model.Generate(ctx, ModelRequest{
 		Model:        r.modelName,
 		Messages:     messages,
-		OutputSchema: &ModelOutputSchema{Name: "specialist_route", Strict: true, Schema: json.RawMessage(`{"type":"object","required":["specialist_id"],"properties":{"specialist_id":{"type":"string"}},"additionalProperties":false}`)},
+		OutputSchema: &ModelOutputSchema{Name: "specialist_route", Strict: true, Schema: json.RawMessage(`{"type":"object","properties":{"specialist_id":{"type":"string"},"complete":{"type":"boolean"}},"anyOf":[{"required":["specialist_id"]},{"required":["complete"]}],"additionalProperties":false}`)},
 	})
 	if err != nil {
 		return RoutingDecision{}, fmt.Errorf("lebro: select specialist: %w", err)
@@ -139,12 +158,16 @@ func (r *ModelSpecialistRouter) Route(ctx context.Context, request RoutingReques
 	}
 	var selected struct {
 		SpecialistID ToolID `json:"specialist_id"`
+		Complete     bool   `json:"complete"`
 	}
-	if err := json.Unmarshal(raw, &selected); err != nil || selected.SpecialistID == "" {
+	if err := json.Unmarshal(raw, &selected); err != nil || (selected.SpecialistID == "" && !selected.Complete) {
 		if err == nil {
 			err = errors.New("specialist_id is required")
 		}
 		return RoutingDecision{}, fmt.Errorf("lebro: decode specialist route: %w", err)
+	}
+	if selected.Complete {
+		return RoutingDecision{Complete: true}, nil
 	}
 	if !hasRoutingCandidate(request.Candidates, selected.SpecialistID) {
 		return RoutingDecision{}, fmt.Errorf("lebro: selected specialist %q is not a candidate", selected.SpecialistID)

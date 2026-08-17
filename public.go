@@ -73,6 +73,12 @@ type (
 	RoutedSubagentConfig        = runtime.RoutedSubagentConfig
 	RouteError                  = runtime.RouteError
 	RouteErrorKind              = runtime.RouteErrorKind
+	Network                     = runtime.Network
+	NetworkConfig               = runtime.NetworkConfig
+	NetworkSpecialist           = runtime.NetworkSpecialist
+	NetworkRouteRecord          = runtime.NetworkRouteRecord
+	NetworkError                = runtime.NetworkError
+	NetworkErrorKind            = runtime.NetworkErrorKind
 	SchemaCompiler              = runtime.SchemaCompiler
 	CompiledSchema              = runtime.CompiledSchema
 	ValidationTarget            = runtime.ValidationTarget
@@ -322,12 +328,14 @@ const (
 	ActionAgentRun     = runtime.ActionAgentRun
 	ActionToolCall     = runtime.ActionToolCall
 	ActionWorkflowRun  = runtime.ActionWorkflowRun
+	ActionNetworkRun   = runtime.ActionNetworkRun
 	ActionStorageRead  = runtime.ActionStorageRead
 	ActionStorageWrite = runtime.ActionStorageWrite
 
 	ResourceKindAgent            = runtime.ResourceKindAgent
 	ResourceKindTool             = runtime.ResourceKindTool
 	ResourceKindWorkflow         = runtime.ResourceKindWorkflow
+	ResourceKindNetwork          = runtime.ResourceKindNetwork
 	ResourceKindThread           = runtime.ResourceKindThread
 	ResourceKindMessage          = runtime.ResourceKindMessage
 	ResourceKindWorkflowRun      = runtime.ResourceKindWorkflowRun
@@ -335,11 +343,17 @@ const (
 	ResourceKindSchedule         = runtime.ResourceKindSchedule
 	ResourceKindWorkingMemory    = runtime.ResourceKindWorkingMemory
 
-	SubagentErrorInvalidInput = runtime.SubagentErrorInvalidInput
-	SubagentErrorRunFailed    = runtime.SubagentErrorRunFailed
-	SubagentErrorCancelled    = runtime.SubagentErrorCancelled
-	RouteErrorSelection       = runtime.RouteErrorSelection
-	RouteErrorExhausted       = runtime.RouteErrorExhausted
+	SubagentErrorInvalidInput    = runtime.SubagentErrorInvalidInput
+	SubagentErrorRunFailed       = runtime.SubagentErrorRunFailed
+	SubagentErrorCancelled       = runtime.SubagentErrorCancelled
+	RouteErrorSelection          = runtime.RouteErrorSelection
+	RouteErrorExhausted          = runtime.RouteErrorExhausted
+	NetworkErrorInvalidInput     = runtime.NetworkErrorInvalidInput
+	NetworkErrorSelection        = runtime.NetworkErrorSelection
+	NetworkErrorCycle            = runtime.NetworkErrorCycle
+	NetworkErrorHopLimit         = runtime.NetworkErrorHopLimit
+	NetworkErrorSpecialistFailed = runtime.NetworkErrorSpecialistFailed
+	NetworkErrorUnauthorized     = runtime.NetworkErrorUnauthorized
 
 	WorkflowErrorInvalidStepInput        = runtime.WorkflowErrorInvalidStepInput
 	WorkflowErrorInvalidStepOutput       = runtime.WorkflowErrorInvalidStepOutput
@@ -452,11 +466,17 @@ var (
 	ErrProcessorCancelled       = runtime.ErrProcessorCancelled
 	ErrProcessorInvalidDecision = runtime.ErrProcessorInvalidDecision
 
-	ErrSubagentInvalidInput = runtime.ErrSubagentInvalidInput
-	ErrSubagentRunFailed    = runtime.ErrSubagentRunFailed
-	ErrSubagentCancelled    = runtime.ErrSubagentCancelled
-	ErrRouteSelection       = runtime.ErrRouteSelection
-	ErrRouteExhausted       = runtime.ErrRouteExhausted
+	ErrSubagentInvalidInput    = runtime.ErrSubagentInvalidInput
+	ErrSubagentRunFailed       = runtime.ErrSubagentRunFailed
+	ErrSubagentCancelled       = runtime.ErrSubagentCancelled
+	ErrRouteSelection          = runtime.ErrRouteSelection
+	ErrRouteExhausted          = runtime.ErrRouteExhausted
+	ErrNetworkInvalidInput     = runtime.ErrNetworkInvalidInput
+	ErrNetworkSelection        = runtime.ErrNetworkSelection
+	ErrNetworkCycle            = runtime.ErrNetworkCycle
+	ErrNetworkHopLimit         = runtime.ErrNetworkHopLimit
+	ErrNetworkSpecialistFailed = runtime.ErrNetworkSpecialistFailed
+	ErrNetworkUnauthorized     = runtime.ErrNetworkUnauthorized
 
 	ErrWorkflowInvalidStepInput  = runtime.ErrWorkflowInvalidStepInput
 	ErrWorkflowInvalidStepOutput = runtime.ErrWorkflowInvalidStepOutput
@@ -534,6 +554,9 @@ func NewModelSpecialistRouter(config ModelSpecialistRouterConfig) (*ModelSpecial
 func NewRoutedSubagent(config RoutedSubagentConfig) (*RoutedSubagent, error) {
 	return runtime.NewRoutedSubagent(config)
 }
+
+// NewNetwork builds a router-led, bounded network of named workflows.
+func NewNetwork(config NetworkConfig) (*Network, error) { return runtime.NewNetwork(config) }
 
 func NewToolStep(tool *RegisteredTool) (*ToolStep, error) { return runtime.NewToolStep(tool) }
 
