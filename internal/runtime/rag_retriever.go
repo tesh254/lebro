@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // DefaultRetrievalTopK is the result count used when neither a
@@ -31,6 +32,13 @@ type VectorRetrieverConfig struct {
 	// Filter is applied to every query in addition to the query's own filter.
 	// Use it to scope a retriever to a tenant, collection, or document set.
 	Filter VectorMetadataFilter
+	// Reranker optionally scores a bounded vector candidate pool before results
+	// are returned. It is provider-neutral; adapters implement RelevanceScorer.
+	Reranker Reranker
+	// CandidateTopK is the minimum bounded vector candidate pool for a reranked
+	// query. A larger caller-requested TopK is still honored. A zero value uses
+	// DefaultRerankCandidateTopK.
+	CandidateTopK int
 }
 
 // VectorRetriever answers semantic queries by embedding the query text and
@@ -39,12 +47,14 @@ type VectorRetrieverConfig struct {
 //
 // The zero value is not usable; construct one with NewVectorRetriever.
 type VectorRetriever struct {
-	embeddings EmbeddingModel
-	store      VectorStore
-	index      string
-	topK       int
-	minScore   float32
-	filter     VectorMetadataFilter
+	embeddings    EmbeddingModel
+	store         VectorStore
+	index         string
+	topK          int
+	minScore      float32
+	filter        VectorMetadataFilter
+	reranker      Reranker
+	candidateTopK int
 }
 
 var _ Retriever = (*VectorRetriever)(nil)
@@ -66,18 +76,30 @@ func NewVectorRetriever(config VectorRetrieverConfig) (*VectorRetriever, error) 
 	if config.MinScore < 0 || config.MinScore > 1 || isNaN(config.MinScore) {
 		return nil, errors.New("lebro: retriever MinScore must be in [0, 1]")
 	}
+	if config.CandidateTopK < 0 {
+		return nil, errors.New("lebro: retriever CandidateTopK must not be negative")
+	}
+	if config.Reranker == nil || isNilInterface(config.Reranker) {
+		if config.CandidateTopK != 0 {
+			return nil, errors.New("lebro: retriever CandidateTopK requires a reranker")
+		}
+	} else if config.CandidateTopK == 0 {
+		config.CandidateTopK = DefaultRerankCandidateTopK
+	}
 
 	topK := config.TopK
 	if topK == 0 {
 		topK = DefaultRetrievalTopK
 	}
 	return &VectorRetriever{
-		embeddings: config.Embeddings,
-		store:      config.Store,
-		index:      config.Index,
-		topK:       topK,
-		minScore:   config.MinScore,
-		filter:     cloneVectorMetadataFilter(config.Filter),
+		embeddings:    config.Embeddings,
+		store:         config.Store,
+		index:         config.Index,
+		topK:          topK,
+		minScore:      config.MinScore,
+		filter:        cloneVectorMetadataFilter(config.Filter),
+		reranker:      config.Reranker,
+		candidateTopK: config.CandidateTopK,
 	}, nil
 }
 
@@ -134,11 +156,19 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query RetrievalQuery) ([
 		}
 	}
 
+	candidateTopK := topK
+	if r.reranker != nil {
+		candidateTopK = max(candidateTopK, r.candidateTopK)
+	}
+	// MinScore is intentionally applied to vector similarity before reranking.
+	// RelevanceScorer implementations may use provider-specific score scales, so
+	// treating this cosine threshold as a final rerank-score threshold would be
+	// misleading and would make scorer adapters non-interchangeable.
 	results, err := r.store.Search(ctx, SimilarityQuery{
 		Vector:   vectors[0],
 		Index:    r.index,
 		Filter:   mergeVectorMetadataFilters(query.Filter, r.filter),
-		TopK:     topK,
+		TopK:     candidateTopK,
 		MinScore: minScore,
 	})
 	if err != nil {
@@ -156,7 +186,70 @@ func (r *VectorRetriever) Retrieve(ctx context.Context, query RetrievalQuery) ([
 		}
 		retrieved = append(retrieved, RetrievedChunk{Chunk: chunk, Score: result.Score})
 	}
+	if r.reranker == nil || len(retrieved) == 0 {
+		return retrieved, nil
+	}
+	reranked, err := r.reranker.Rerank(ctx, query.Query, retrieved)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, &RAGError{Kind: RAGErrorReranking, Err: err}
+	}
+	if err := normalizeRerankResults(retrieved, reranked); err != nil {
+		return nil, &RAGError{Kind: RAGErrorReranking, Err: err}
+	}
+	if len(reranked) > topK {
+		reranked = reranked[:topK]
+	}
+	retrieved = make([]RetrievedChunk, 0, len(reranked))
+	for _, result := range reranked {
+		retrieved = append(retrieved, RetrievedChunk{
+			Chunk:            result.Candidate.Chunk,
+			Score:            result.Score,
+			VectorScore:      result.Candidate.Score,
+			ScoreExplanation: result.Explanation,
+		})
+	}
 	return retrieved, nil
+}
+
+// normalizeRerankResults validates that a reranker ranked exactly the supplied
+// candidates, restores the canonical candidate values, and owns final tie
+// breaking so every Reranker implementation yields deterministic retrieval.
+func normalizeRerankResults(candidates []RetrievedChunk, results []RerankResult) error {
+	if len(results) != len(candidates) {
+		return fmt.Errorf("lebro: reranker returned %d results for %d candidates", len(results), len(candidates))
+	}
+	byID := make(map[string]RetrievedChunk, len(candidates))
+	for _, candidate := range candidates {
+		byID[candidate.ID] = candidate
+	}
+	seen := make(map[string]struct{}, len(results))
+	for i := range results {
+		if isNaN(results[i].Score) {
+			return fmt.Errorf("lebro: reranker score for chunk %q must not be NaN", results[i].Candidate.ID)
+		}
+		candidate, ok := byID[results[i].Candidate.ID]
+		if !ok {
+			return fmt.Errorf("lebro: reranker returned unknown chunk %q", results[i].Candidate.ID)
+		}
+		if _, duplicate := seen[candidate.ID]; duplicate {
+			return fmt.Errorf("lebro: reranker returned chunk %q more than once", candidate.ID)
+		}
+		seen[candidate.ID] = struct{}{}
+		results[i].Candidate = candidate
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score != results[j].Score {
+			return results[i].Score > results[j].Score
+		}
+		if results[i].Candidate.Score != results[j].Candidate.Score {
+			return results[i].Candidate.Score > results[j].Candidate.Score
+		}
+		return results[i].Candidate.ID < results[j].Candidate.ID
+	})
+	return nil
 }
 
 // mergeVectorMetadataFilters combines a caller filter with an enforced filter.
