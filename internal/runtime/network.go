@@ -45,6 +45,7 @@ const (
 	NetworkErrorCycle            NetworkErrorKind = "network_cycle_detected"
 	NetworkErrorHopLimit         NetworkErrorKind = "network_hop_limit_exhausted"
 	NetworkErrorSpecialistFailed NetworkErrorKind = "network_specialist_failed"
+	NetworkErrorPersistFailed    NetworkErrorKind = "network_persist_failed"
 	NetworkErrorUnauthorized     NetworkErrorKind = "network_unauthorized"
 )
 
@@ -54,6 +55,7 @@ var (
 	ErrNetworkCycle            = errors.New("lebro: network cycle detected")
 	ErrNetworkHopLimit         = errors.New("lebro: network hop limit exhausted")
 	ErrNetworkSpecialistFailed = errors.New("lebro: network specialist failed")
+	ErrNetworkPersist          = errors.New("lebro: network persistence failed")
 	ErrNetworkUnauthorized     = errors.New("lebro: network unauthorized")
 )
 
@@ -95,6 +97,8 @@ func (e *NetworkError) Is(target error) bool {
 		return target == ErrNetworkHopLimit
 	case NetworkErrorSpecialistFailed:
 		return target == ErrNetworkSpecialistFailed
+	case NetworkErrorPersistFailed:
+		return target == ErrNetworkPersist
 	case NetworkErrorUnauthorized:
 		return target == ErrNetworkUnauthorized
 	default:
@@ -221,7 +225,7 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		if err := runCtx.Err(); err != nil {
 			return n.fail(runCtx, emitter, runID, input, routes, hop, NetworkErrorSpecialistFailed, err)
 		}
-		candidates := n.candidates()
+		candidates := n.candidates(visited)
 		decision, err := n.router.Route(runCtx, RoutingRequest{Task: task, Candidates: candidates, Hops: hop - 1, PreviousOutput: networkOutput(last)})
 		if err != nil {
 			return n.fail(runCtx, emitter, runID, input, routes, hop, NetworkErrorSelection, err)
@@ -241,7 +245,7 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			return n.fail(runCtx, emitter, runID, input, routes, hop, NetworkErrorCycle, fmt.Errorf("lebro: specialist %q already visited", decision.SpecialistID))
 		}
 		visited[decision.SpecialistID] = struct{}{}
-		route := NetworkRouteRecord{Hop: hop, Candidates: candidateIDs(candidates), Selected: decision.SpecialistID, Status: RunStatusRunning}
+		route := NetworkRouteRecord{Hop: hop, Candidates: candidateIDs(candidates), Selected: decision.SpecialistID}
 		child, childErr := specialist.Workflow.Run(runCtx, current)
 		route.ChildRunID, route.Status = child.ID, child.Status
 		if childErr != nil || child.Status != RunStatusSucceeded || !validNetworkOutput(child) {
@@ -262,9 +266,12 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	return n.fail(runCtx, emitter, runID, input, routes, n.maxHops, NetworkErrorHopLimit, fmt.Errorf("lebro: network reached max hops %d", n.maxHops))
 }
 
-func (n *Network) candidates() []RoutingCandidate {
+func (n *Network) candidates(visited map[ToolID]struct{}) []RoutingCandidate {
 	result := make([]RoutingCandidate, 0, len(n.specialists))
 	for _, id := range sortedNetworkIDs(n.specialists) {
+		if _, seen := visited[id]; seen {
+			continue
+		}
 		s := n.specialists[id]
 		result = append(result, RoutingCandidate{ID: id, Description: s.Description})
 	}
@@ -276,7 +283,7 @@ func (n *Network) succeed(ctx context.Context, emitter *runEmitter, id RunID, in
 	result.ID, result.Metadata = id, cloneMetadata(input.Metadata)
 	result.Status = RunStatusSucceeded
 	if err := n.save(ctx, id, input, routes, result, nil); err != nil {
-		err := &NetworkError{Kind: NetworkErrorSpecialistFailed, Hop: len(routes), Routes: append([]NetworkRouteRecord(nil), routes...), Err: fmt.Errorf("lebro: persist network route record: %w", err)}
+		err := networkPersistError(len(routes), routes, err)
 		failed := RunResult{ID: id, Status: RunStatusFailed, Metadata: cloneMetadata(input.Metadata)}
 		emitter.terminal(id, len(routes), "", RunEventFailed, RunStatusFailed, err)
 		return failed, err
@@ -291,8 +298,10 @@ func (n *Network) fail(ctx context.Context, emitter *runEmitter, id RunID, input
 		status = RunStatusCancelled
 	}
 	result := RunResult{ID: id, Status: status, Metadata: cloneMetadata(input.Metadata)}
-	if persistErr := n.save(ctx, id, input, routes, result, err); persistErr != nil {
-		err.Err = fmt.Errorf("%w: persist network route record: %v", err.Err, persistErr)
+	persistCtx, cancel := networkPersistenceContext(ctx)
+	defer cancel()
+	if persistErr := n.save(persistCtx, id, input, routes, result, err); persistErr != nil {
+		err = networkPersistError(hop, routes, fmt.Errorf("%w: persist network route record: %v", err, persistErr))
 	}
 	eventType := RunEventFailed
 	if status == RunStatusCancelled {
@@ -307,10 +316,12 @@ func (n *Network) save(ctx context.Context, id RunID, input RunInput, routes []N
 	}
 	now := n.clock.Now()
 	outputs := make([]json.RawMessage, 0, len(routes))
-	for _, route := range routes {
-		if raw, err := json.Marshal(route); err == nil {
-			outputs = append(outputs, raw)
+	for index, route := range routes {
+		raw, err := json.Marshal(route)
+		if err != nil {
+			return fmt.Errorf("lebro: encode network route %d: %w", index+1, err)
 		}
+		outputs = append(outputs, raw)
 	}
 	var output json.RawMessage
 	if raw := result.StructuredOutput().Raw(); len(raw) > 0 {
@@ -326,6 +337,19 @@ func (n *Network) save(ctx context.Context, id RunID, input RunInput, routes []N
 		record.Failure = &WorkflowFailureData{Kind: WorkflowErrorStepFailed, Step: failure.Hop, Message: failure.Error()}
 	}
 	return n.store.WorkflowRuns().SaveWorkflowRun(ctx, record)
+}
+
+func networkPersistError(hop int, routes []NetworkRouteRecord, cause error) *NetworkError {
+	return &NetworkError{Kind: NetworkErrorPersistFailed, Hop: hop, Routes: append([]NetworkRouteRecord(nil), routes...), Err: fmt.Errorf("lebro: persist network route record: %w", cause)}
+}
+
+func networkPersistenceContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	// Preserve route history even after the execution context has timed out or
+	// been cancelled. Values (including tracing and tenant identity) remain.
+	return context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 }
 func (n *Network) applyDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 	if n.deadline <= 0 {

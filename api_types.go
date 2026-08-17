@@ -347,6 +347,7 @@ const (
 	NetworkErrorCycle            = runtime.NetworkErrorCycle
 	NetworkErrorHopLimit         = runtime.NetworkErrorHopLimit
 	NetworkErrorSpecialistFailed = runtime.NetworkErrorSpecialistFailed
+	NetworkErrorPersistFailed    = runtime.NetworkErrorPersistFailed
 	NetworkErrorUnauthorized     = runtime.NetworkErrorUnauthorized
 
 	WorkflowErrorInvalidStepInput        = runtime.WorkflowErrorInvalidStepInput
@@ -470,6 +471,7 @@ var (
 	ErrNetworkCycle            = runtime.ErrNetworkCycle
 	ErrNetworkHopLimit         = runtime.ErrNetworkHopLimit
 	ErrNetworkSpecialistFailed = runtime.ErrNetworkSpecialistFailed
+	ErrNetworkPersist          = runtime.ErrNetworkPersist
 	ErrNetworkUnauthorized     = runtime.ErrNetworkUnauthorized
 
 	ErrWorkflowInvalidStepInput  = runtime.ErrWorkflowInvalidStepInput
