@@ -201,6 +201,17 @@ type (
 	VectorRetrieverConfig       = runtime.VectorRetrieverConfig
 	RetrievalTool               = runtime.RetrievalTool
 	RetrievalToolConfig         = runtime.RetrievalToolConfig
+	VectorQueryTool             = runtime.VectorQueryTool
+	VectorQueryToolConfig       = runtime.VectorQueryToolConfig
+	DocumentChunkerTool         = runtime.DocumentChunkerTool
+	DocumentChunkerToolConfig   = runtime.DocumentChunkerToolConfig
+	GraphNode                   = runtime.GraphNode
+	GraphTraversal              = runtime.GraphTraversal
+	GraphStore                  = runtime.GraphStore
+	GraphRetrievalQuery         = runtime.GraphRetrievalQuery
+	GraphRetriever              = runtime.GraphRetriever
+	GraphRetrievalTool          = runtime.GraphRetrievalTool
+	GraphRetrievalToolConfig    = runtime.GraphRetrievalToolConfig
 	ThreadHistory               = runtime.ThreadHistory
 	ThreadHistoryConfig         = runtime.ThreadHistoryConfig
 	ThreadHistoryScope          = runtime.ThreadHistoryScope
@@ -509,4 +520,5 @@ var (
 	ErrRAGEmbedding       = runtime.ErrRAGEmbedding
 	ErrRAGIndexing        = runtime.ErrRAGIndexing
 	ErrRAGRetrieval       = runtime.ErrRAGRetrieval
+	ErrRAGGraphTraversal  = runtime.ErrRAGGraphTraversal
 )
