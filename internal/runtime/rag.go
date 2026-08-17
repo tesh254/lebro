@@ -58,6 +58,9 @@ const (
 	// RAGErrorRetrieval means a retrieval query failed — an invalid query, a
 	// failed search, or a hit whose metadata could not be decoded.
 	RAGErrorRetrieval RAGErrorKind = "rag_retrieval"
+	// RAGErrorGraphTraversal means a graph store rejected or failed a bounded
+	// traversal request.
+	RAGErrorGraphTraversal RAGErrorKind = "rag_graph_traversal"
 )
 
 // Retrieval-pipeline errors. Adapters and pipeline stages return these via
@@ -73,6 +76,8 @@ var (
 	ErrRAGIndexing = errors.New("lebro: RAG indexing failed")
 	// ErrRAGRetrieval matches retrieval failures.
 	ErrRAGRetrieval = errors.New("lebro: RAG retrieval failed")
+	// ErrRAGGraphTraversal matches graph traversal failures.
+	ErrRAGGraphTraversal = errors.New("lebro: RAG graph traversal failed")
 )
 
 // RAGError preserves the failing stage and cause of a retrieval-pipeline
@@ -131,6 +136,8 @@ func ragErrorSentinel(kind RAGErrorKind) error {
 		return ErrRAGIndexing
 	case RAGErrorRetrieval:
 		return ErrRAGRetrieval
+	case RAGErrorGraphTraversal:
+		return ErrRAGGraphTraversal
 	default:
 		return ErrRAGRetrieval
 	}
