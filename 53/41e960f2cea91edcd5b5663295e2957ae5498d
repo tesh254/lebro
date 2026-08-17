@@ -1,0 +1,39 @@
+internal/runtime/rag_retriever_test.go
+  s_0190181cb1605a::t_5bfad3be7861a4 20-25,182,296-310
+  s_0190181cb1605a::t_c5a9fd950b67c6 278-281
+  s_0190181cb1605a::t_d207c3f66ca535 17,27-29,268-277,282-295
+  s_0190181cb1605a::t_322f2013bebaf0 8,13-16,18-19,26,30-38,172-181,183-267
+rag.go
+  s_0190181cb1605a::t_50cf1ff4524ba2 13-17
+api_types.go
+  s_0190181cb1605a::t_50cf1ff4524ba2 200-203,430,529
+  s_0190181cb1605a::t_322f2013bebaf0 439
+examples/rag-retrieval/main.go
+  s_0190181cb1605a::t_ca52daebe901a8 68-69,71-76,87,176-192
+internal/runtime/rag.go
+  s_0190181cb1605a::t_50cf1ff4524ba2 64-66,84-85,146-147,311-312,314-318
+internal/runtime/rag_reranker.go
+  s_0190181cb1605a::t_750d74aa8e75b8 87-95
+  s_0190181cb1605a::t_50cf1ff4524ba2 1-23,27-86,96-97
+  s_0190181cb1605a::t_b85d78925a8436 24-26
+internal/runtime/rag_retriever.go
+  s_0190181cb1605a::t_d207c3f66ca535 160-161,163-166,189
+  s_0190181cb1605a::t_b85d78925a8436 8,38-40,50-56,95-101,199-201,217-252
+  s_0190181cb1605a::t_50cf1ff4524ba2 35-37,41,57,79-88,102,159,162,171,190-198,202-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5341e960f2cea91edcd5b5663295e2957ae5498d",
+  "prompts": {},
+  "sessions": {
+    "s_0190181cb1605a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a01171-df7c-7313-a195-0381061e5e7c",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
