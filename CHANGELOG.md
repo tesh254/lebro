@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Bounded agent networks. `Network` coordinates named specialist workflows via
+  a provider-neutral router with explicit completion, required task and output
+  handoffs,
+  hop/deadline budgets, cycle detection, identity and policy propagation, typed
+  route failures, route-decision events, and durable route records through the
+  existing workflow-run storage contracts. Memory, SQLite, and Postgres require
+  no migration. `examples/agent-network` demonstrates one deterministic route.
+
+- Root SDK API is organized into domain files (`agent.go`, `network.go`,
+  `storage.go`, `workflow.go`, `tools.go`, and related files); `api_types.go`
+  holds shared aliases and constants. Public symbols and the
+  `github.com/tesh254/lebro` import path remain unchanged.
+
 - Voice integration points. A new optional `voice` package adds optional speech
   input and output around an agent without changing core orchestration: a spoken
   utterance is transcribed to a canonical user turn, the agent runs through the
