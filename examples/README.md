@@ -108,6 +108,13 @@ similarity search; no network or API key required):
 go run ./examples/vector-search
 ```
 
+Run recursive and sliding-window chunking examples (no network or API key is
+required):
+
+```sh
+go run ./examples/rag-chunkers
+```
+
 Run Qdrant vector search after starting a local Qdrant gRPC server on port
 6334:
 

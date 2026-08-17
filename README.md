@@ -619,6 +619,11 @@ than an error, so a model never branches on response shape.
 `CharacterChunker` measures `Size` and `Overlap` in runes, so a multi-byte
 character is never split across chunks. It is deliberately the simple initial
 strategy: it assumes nothing about language, markup, or sentence structure.
+`SlidingWindowChunker` exposes these same deterministic fixed-window semantics
+under an explicit strategy name. `RecursiveChunker` instead prefers paragraph,
+line, and word boundaries, then falls back to runes; custom `Separators` select
+another deterministic priority order. Both retain stable IDs, document
+provenance, and UTF-8 safety. See `examples/rag-chunkers` for both strategies.
 Content that is not valid UTF-8 is rejected rather than silently rewritten,
 since rune conversion would replace each invalid byte and index text that
 differs from what was submitted; decode or sanitize upstream, where the right
