@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Recursive and sliding-window RAG chunkers. `NewRecursiveChunker` preserves
+  text while preferring paragraph, line, then word boundaries before a rune
+  fallback; `NewSlidingWindowChunker` publishes existing rune-safe fixed-window
+  behavior under an explicit strategy name. Both preserve document validation,
+  stable chunk IDs, provenance, metadata isolation, cancellation, and UTF-8
+  rejection. `examples/rag-chunkers` demonstrates both strategies.
+
 - Bounded agent networks. `Network` coordinates named specialist workflows via
   a provider-neutral router with explicit completion, required task and output
   handoffs,

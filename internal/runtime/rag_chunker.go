@@ -43,12 +43,9 @@ var _ Chunker = (*CharacterChunker)(nil)
 // NewCharacterChunker validates the configuration and returns a chunker safe
 // for concurrent use.
 func NewCharacterChunker(config CharacterChunkerConfig) (*CharacterChunker, error) {
-	size := config.Size
-	if size == 0 {
-		size = DefaultChunkSize
-	}
-	if size < 0 {
-		return nil, errors.New("lebro: chunk size must not be negative")
+	size, err := chunkerSize(config.Size)
+	if err != nil {
+		return nil, err
 	}
 	if config.Overlap < 0 {
 		return nil, errors.New("lebro: chunk overlap must not be negative")
@@ -88,7 +85,7 @@ func (c *CharacterChunker) Chunk(ctx context.Context, document Document) ([]Chun
 		return nil, &RAGError{
 			Kind:       RAGErrorInvalidDocument,
 			DocumentID: document.ID,
-			Err:        errors.New("lebro: document content must be valid UTF-8"),
+			Err:        errInvalidDocumentUTF8,
 		}
 	}
 

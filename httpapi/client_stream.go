@@ -52,6 +52,7 @@ type ClientStream struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	once   sync.Once
+	body   io.Closer
 
 	// done is closed by the reader goroutine after outcome is final, so Wait
 	// observes a fully written outcome without a lock.
@@ -74,6 +75,9 @@ func (s *ClientStream) Cancel() {
 	s.once.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
+		}
+		if s.body != nil {
+			_ = s.body.Close()
 		}
 	})
 }
@@ -158,6 +162,7 @@ func (c *Client) RunStream(ctx context.Context, agentID string, request RunReque
 		Events: events,
 		ctx:    streamCtx,
 		cancel: cancel,
+		body:   response.Body,
 		done:   make(chan struct{}),
 	}
 	go stream.read(response, events)
@@ -282,7 +287,11 @@ func (s *ClientStream) read(response *http.Response, events chan<- StreamEvent) 
 
 	if err := scanner.Err(); err != nil {
 		if s.outcome_ == nil {
-			s.outcome_ = streamReadError(err)
+			if ctxErr := s.ctx.Err(); ctxErr != nil {
+				s.outcome_ = streamReadError(ctxErr)
+			} else {
+				s.outcome_ = streamReadError(err)
+			}
 		}
 		return
 	}
