@@ -1,0 +1,23 @@
+internal/testkit/model.go
+  s_570f9d3bada825::t_afed0a75de09e0 50
+  s_570f9d3bada825::t_0ccb047c99cda2 1-2
+CHANGELOG.md
+  s_570f9d3bada825::t_e2c7fcfa7303fe 621-636
+  s_570f9d3bada825::t_aace81a58d9a72 9-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3db2da24bb1167db422cb3ef9690f7f02d02621b",
+  "prompts": {},
+  "sessions": {
+    "s_570f9d3bada825": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd0fa918effeg22oGfOIlm3jDB",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
