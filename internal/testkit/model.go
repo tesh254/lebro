@@ -1,5 +1,5 @@
-// Package testkit contains deterministic fixtures for lebro's own tests and
-// examples. It is internal so it cannot become part of the public runtime API.
+// Package testkit contains deterministic fixtures for lebro's own tests.
+// It is internal so it cannot become part of the public runtime API.
 package testkit
 
 import (
@@ -47,7 +47,7 @@ type StreamChunk struct {
 	Err              error
 	// Delay pauses the stream for this duration before emitting this chunk.
 	// A zero delay emits the chunk immediately. Use non-zero delays to simulate
-	// real-time token streaming in examples and tests.
+	// real-time token streaming in tests.
 	Delay time.Duration
 }
 
