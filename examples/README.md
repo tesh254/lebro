@@ -237,7 +237,7 @@ go run ./examples/voice
 ## Real-world starting points
 
 Complete, product-shaped builds — each a standalone directory with its own
-README explaining what it composes and how to swap in production providers:
+README and documented in [`docs/product-builds.md`](../docs/product-builds.md):
 
 | Build | Directory |
 | --- | --- |

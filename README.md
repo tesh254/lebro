@@ -1,12 +1,14 @@
 # lebro
 
-`lebro` is a Go library for composing AI agents, schema-backed tools,
-workflows, and their durable runtime state.
+`lebro` is a Go toolkit for building production AI systems: tool-using support
+agents, structured extraction services, durable approval workflows, scheduled
+briefs, multi-agent routers, and MCP or HTTP integrations.
 
-The first release establishes stable public contracts and safe local tool
-execution. Provider adapters, the agent loop, and workflow execution arrive in
-the following incremental releases. This keeps each layer independently
-testable and avoids locking users into a model provider or storage backend.
+Build with provider models, schema-validated tools and output, bounded
+agent loops, cancellable workflows, durable threads and runs, SQLite/Postgres
+storage, RAG, tenant policy hooks, streaming, observability, and evaluations.
+Start small with one tool or agent; add only the optional packages your service
+needs as it grows.
 
 ## Package layout
 
@@ -45,20 +47,112 @@ The module pins Go 1.26.5 with Go's `toolchain` directive. With the default
 
 ## Public API reference
 
-- Root runtime contracts: [`lebro`](https://pkg.go.dev/github.com/tesh254/lebro)
+- Root runtime contracts: [`lebro`](.)
 - HTTP server, typed client, OpenAPI, and streaming contract:
-  [`httpapi`](https://pkg.go.dev/github.com/tesh254/lebro/httpapi)
-- MCP client/server bridge: [`mcp`](https://pkg.go.dev/github.com/tesh254/lebro/mcp)
+  [`httpapi`](httpapi)
+- MCP client/server bridge: [`mcp`](mcp)
 - Optional channels, voice, observability, and evaluations:
-  [`channels`](https://pkg.go.dev/github.com/tesh254/lebro/channels),
-  [`voice`](https://pkg.go.dev/github.com/tesh254/lebro/voice),
-  [`obsv`](https://pkg.go.dev/github.com/tesh254/lebro/obsv), and
-  [`evals`](https://pkg.go.dev/github.com/tesh254/lebro/evals)
+  [`channels`](channels), [`voice`](voice), [`obsv`](obsv), and
+  [`evals`](evals)
 
 Public package GoDoc states security and lifecycle constraints at each boundary.
 The [wire-format guide](docs/wire-format.md) describes HTTP and MCP clients;
 the [migration guide](docs/migrations.md) covers persisted deployments.
 For a standalone MCP server or client, start with [MCP usage](docs/mcp.md).
+
+No release tag has been indexed by `pkg.go.dev` yet. The relative source links
+above work in this repository; after the first semantic version tag is
+published and indexed, replace them with `pkg.go.dev/github.com/tesh254/lebro/...`
+links so readers land on rendered documentation for the version they import.
+See [the releasing guide](docs/releasing.md) for the tag flow and
+[publishing to pkg.go.dev](docs/releasing.md#publishing-to-pkggodev).
+
+## Feature usage index
+
+Every entry below is an independently runnable command. Run examples from this
+repository with `go run`; copied applications need only the imports used by
+their selected command. Examples marked **external** need the named service.
+
+### Core agent and tool contracts
+
+| Feature | Usage | Runnable example |
+| --- | --- | --- |
+| Canonical messages and model protocol | [Model protocol](#provider-neutral-model-protocol) | [`model-fixtures`](examples/model-fixtures): `go run ./examples/model-fixtures` |
+| OpenAI-compatible model | [Provider adapters](#model-provider-adapters) | [`model-openai`](examples/model-openai): `go run ./examples/model-openai` |
+| Provider routing and fallback | [Provider adapters](#model-provider-adapters) | [`model-routing`](examples/model-routing): `go run ./examples/model-routing` |
+| JSON Schema validation | [Tool execution](#schema-backed-tool-execution) | [`schema-validation`](examples/schema-validation): `go run ./examples/schema-validation` |
+| Local schema-backed tools | [Tool execution](#schema-backed-tool-execution) | [`tools-schema`](examples/tools-schema): `go run ./examples/tools-schema` |
+| Input/output processor contracts | [Examples](examples/README.md) | [`processor-contract`](examples/processor-contract): `go run ./examples/processor-contract` |
+| Approved memory processing | [Durable threads](#durable-conversation-threads) | [`memory-processor`](examples/memory-processor): `go run ./examples/memory-processor` |
+| Bounded tool-using agent | [Agent loop](#bounded-tool-using-agent-loop) | [`agent-loop`](examples/agent-loop): `go run ./examples/agent-loop` |
+| Per-request instructions and model resolution | [Agent loop](#bounded-tool-using-agent-loop) | [`request-resolvers`](examples/request-resolvers): `go run ./examples/request-resolvers` |
+| Durable conversation history | [Durable threads](#durable-conversation-threads) | [`thread-history`](examples/thread-history): `go run ./examples/thread-history` |
+| Structured JSON output | [Structured output](#schema-constrained-structured-output) | [`structured-output`](examples/structured-output): `go run ./examples/structured-output` |
+| Streaming and cancellation | [Streaming](#token-and-event-streaming-with-cancellation) | [`streaming`](examples/streaming): `go run ./examples/streaming` |
+| Tenant-scoped policy | [Authorization](#authentication-and-authorization-hooks) | [`tenant-policy`](examples/tenant-policy): `go run ./examples/tenant-policy` |
+
+### Workflows, delegation, and schedules
+
+| Feature | Usage | Runnable example |
+| --- | --- | --- |
+| Typed linear workflow | [Workflows](#typed-linear-workflow-execution) | [`workflow-linear`](examples/workflow-linear): `go run ./examples/workflow-linear` |
+| Agent and tool workflow steps | [Workflow steps](#agent-and-tool-workflow-steps) | [`workflow-agents-tools`](examples/workflow-agents-tools): `go run ./examples/workflow-agents-tools` |
+| Conditional branch | [Workflows](#typed-linear-workflow-execution) | [`workflow-conditional-branch`](examples/workflow-conditional-branch): `go run ./examples/workflow-conditional-branch` |
+| Durable workflow state | [Workflows](#typed-linear-workflow-execution) | [`workflow-durable`](examples/workflow-durable): `go run ./examples/workflow-durable` |
+| Fan-out and join | [Workflows](#typed-linear-workflow-execution) | [`workflow-fanout-join`](examples/workflow-fanout-join): `go run ./examples/workflow-fanout-join` |
+| Map and foreach | [Workflows](#typed-linear-workflow-execution) | [`workflow-map-foreach`](examples/workflow-map-foreach): `go run ./examples/workflow-map-foreach` |
+| Bounded loops | [Workflows](#typed-linear-workflow-execution) | [`workflow-loops`](examples/workflow-loops): `go run ./examples/workflow-loops` |
+| Sleep and time control | [Workflows](#typed-linear-workflow-execution) | [`workflow-sleep`](examples/workflow-sleep): `go run ./examples/workflow-sleep` |
+| Suspend and resume | [Workflows](#typed-linear-workflow-execution) | [`workflow-suspend-resume`](examples/workflow-suspend-resume): `go run ./examples/workflow-suspend-resume` |
+| Durable cron schedules | [Schedules](#durable-schedules-and-recurring-workflow-runs) | [`workflow-schedule`](examples/workflow-schedule): `go run ./examples/workflow-schedule` |
+| Supervised delegation | [Delegation](#supervised-agent-delegation) | [`supervised-delegation`](examples/supervised-delegation): `go run ./examples/supervised-delegation` |
+| Agent network routing | [Networks](#agent-networks) | [`agent-network`](examples/agent-network): `go run ./examples/agent-network` |
+
+### Storage and retrieval
+
+| Feature | Usage | Runnable example |
+| --- | --- | --- |
+| In-memory storage | [Storage](#file-backed-sqlite-storage) | [`storage-memory`](examples/storage-memory): `go run ./examples/storage-memory` |
+| SQLite storage | [SQLite](#file-backed-sqlite-storage) | [`storage-sqlite`](examples/storage-sqlite): `go run ./examples/storage-sqlite` |
+| Postgres storage | [Postgres](#postgresql-storage) | [`storage-postgres`](examples/storage-postgres): `go run ./examples/storage-postgres` |
+| In-memory vector search | [Vector storage](#vector-storage) | [`vector-search`](examples/vector-search): `go run ./examples/vector-search` |
+| Qdrant vector search | [Vector storage](#vector-storage) | [`vector-qdrant`](examples/vector-qdrant): `go run ./examples/vector-qdrant` **external: Qdrant** |
+| Recursive and sliding chunkers | [RAG](#retrieval-augmented-generation) | [`rag-chunkers`](examples/rag-chunkers): `go run ./examples/rag-chunkers` |
+| Retrieval-augmented agent | [RAG](#retrieval-augmented-generation) | [`rag-retrieval`](examples/rag-retrieval): `go run ./examples/rag-retrieval` |
+| Vector, document, and graph RAG tools | [RAG](#retrieval-augmented-generation) | [`rag-tools`](examples/rag-tools): `go run ./examples/rag-tools` |
+
+### Services, protocols, and product integrations
+
+| Feature | Usage | Runnable example |
+| --- | --- | --- |
+| HTTP server, OpenAPI, and native SSE | [HTTP server](#embeddable-http-server-and-openapi-contract) | [`http-server`](examples/http-server): `go run ./examples/http-server` |
+| Typed HTTP client and compatibility handshake | [HTTP client](#typed-go-client) | [`http-client`](examples/http-client): `go run ./examples/http-client` |
+| MCP server over stdio | [MCP usage](docs/mcp.md#server-over-stdio) | [`mcp-server`](examples/mcp-server): `go run ./examples/mcp-server` |
+| MCP client, in-memory fixture | [MCP usage](docs/mcp.md#client-for-an-external-server) | [`mcp-client`](examples/mcp-client): `go run ./examples/mcp-client` |
+| MCP client, external stdio process | [MCP usage](docs/mcp.md#client-for-an-external-server) | [`mcp-client-command`](examples/mcp-client-command): see [MCP command](docs/mcp.md#client-for-an-external-server) |
+| Local Studio | [Studio](#local-studio-style-developer-ui) | [`studio`](examples/studio): `go run ./examples/studio` |
+| Signed webhook channels | [Channels](#messaging-channel-adapters) | [`channels`](examples/channels): `go run ./examples/channels` |
+| Voice session | [Voice](#voice) | [`voice`](examples/voice): `go run ./examples/voice` |
+| Datasets, scorers, experiments | [Evaluations](#dataset-evaluation-scorers-and-experiment-runs) | [`evals-dataset`](examples/evals-dataset): `go run ./examples/evals-dataset` |
+
+## Product build guides
+
+Eight complete builds — the kind of system teams actually ship — are documented
+end to end in [`docs/product-builds.md`](docs/product-builds.md), and each is a
+runnable example directory with its own README. Every one runs with no network
+or API key; deterministic stand-ins mark exactly where production providers,
+storage, and authentication plug in.
+
+| Build | Ships like | Guide | Runnable example |
+| --- | --- | --- | --- |
+| Docs support agent | Intercom Fin | [Docs support agent](docs/product-builds.md#docs-support-agent) | [`docs-support-agent`](examples/docs-support-agent) |
+| Document extraction service | Reducto / Docsumo | [Document extraction service](docs/product-builds.md#document-extraction-service) | [`document-extraction`](examples/document-extraction) |
+| Refund copilot with human sign-off | Stripe dispute flow | [Refund copilot](docs/product-builds.md#refund-copilot-with-human-sign-off) | [`refund-approval`](examples/refund-approval) |
+| Morning competitive-intel digest | Daily brief bot | [Morning digest](docs/product-builds.md#morning-competitive-intel-digest) | [`morning-digest`](examples/morning-digest) |
+| Internal helpdesk front desk | Tier-1 IT triage | [Helpdesk front desk](docs/product-builds.md#internal-helpdesk-front-desk) | [`helpdesk-router`](examples/helpdesk-router) |
+| Multi-tenant B2B agent platform | A B2B agent API | [Multi-tenant platform](docs/product-builds.md#multi-tenant-b2b-agent-platform) | [`multitenant-platform`](examples/multitenant-platform) |
+| Voice booking line | A reservations line | [Voice booking line](docs/product-builds.md#voice-booking-line) | [`voice-booking`](examples/voice-booking) |
+| CI-gated agent releases | Braintrust / LangSmith | [CI-gated releases](docs/product-builds.md#ci-gated-agent-releases) | [`ci-gated-releases`](examples/ci-gated-releases) |
 
 ## Install
 
@@ -180,6 +274,31 @@ model, err := anthropic.New(anthropic.Config{
 })
 // Or: gemini.New(gemini.Config{APIKey: os.Getenv("GEMINI_API_KEY"), Model: "gemini-2.5-flash"})
 ```
+
+### Custom endpoints and OpenRouter
+
+`openai.New` accepts an OpenAI-compatible `BaseURL`; only `APIKey` and `Model`
+are otherwise required. This supports proxies and OpenRouter's Chat Completions
+endpoint:
+
+```go
+model, err := openai.New(openai.Config{
+	BaseURL: "https://openrouter.ai/api/v1",
+	APIKey:  os.Getenv("OPENROUTER_API_KEY"),
+	Model:   "anthropic/claude-sonnet-4.6",
+})
+if err != nil {
+	return err
+}
+```
+
+OpenRouter normalizes an OpenAI-compatible Chat Completions API, so it belongs
+behind `openai.New`, not `anthropic.New`. The OpenAI adapter currently supports
+text generation and streaming only; it intentionally rejects tool definitions
+and structured output even when an upstream provider supports them. Use the
+native `anthropic` adapter for Anthropic Messages API tools and structured
+output. `anthropic.New` also accepts `BaseURL` for an Anthropic-compatible
+proxy or gateway, not OpenRouter's OpenAI-compatible endpoint.
 
 Anthropic JSON output requires a model with structured-output support. Gemini
 accepts only its documented JSON Schema subset. Provider schema rejection is an
