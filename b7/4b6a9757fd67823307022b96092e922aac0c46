@@ -1,0 +1,44 @@
+docs/releasing.md
+  s_33c7e810bad033::t_311a8e1f164a89 31-41
+examples/README.md
+  s_33c7e810bad033::t_ba3b95d7ec259d 147
+  s_33c7e810bad033::t_311a8e1f164a89 57-63,236-250,256-260
+  s_33c7e810bad033::t_3246d39406626e 140-146,148-151,251-255
+doc.go
+  s_33c7e810bad033::t_311a8e1f164a89 2-18
+docs/stability.md
+  s_33c7e810bad033::t_311a8e1f164a89 1-58
+docs/migrations.md
+  s_33c7e810bad033::t_311a8e1f164a89 1-53
+docs/wire-format.md
+  s_33c7e810bad033::t_311a8e1f164a89 1-38
+docs/mcp.md
+  s_33c7e810bad033::t_ba3b95d7ec259d 86
+  s_33c7e810bad033::t_3246d39406626e 1-85,87-100
+examples/tenant-policy/main.go
+  s_33c7e810bad033::t_311a8e1f164a89 1-58
+examples/mcp-client-command/main.go
+  s_33c7e810bad033::t_ba3b95d7ec259d 25,65-66,68
+  s_33c7e810bad033::t_3246d39406626e 1-24,26-64,67,69-72
+examples/tenant-policy/main_test.go
+  s_33c7e810bad033::t_311a8e1f164a89 1-17
+README.md
+  s_33c7e810bad033::t_311a8e1f164a89 16-18,46-60
+  s_33c7e810bad033::t_3246d39406626e 61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b74b6a9757fd67823307022b96092e922aac0c46",
+  "prompts": {},
+  "sessions": {
+    "s_33c7e810bad033": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ed3-1499-7ef3-b07e-e916f1bef97e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
