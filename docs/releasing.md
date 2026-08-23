@@ -28,6 +28,14 @@ go get github.com/tesh254/lebro@v0.1.0
 
 ## Subsequent releases
 
-Use semantic versioning. Additive changes before 1.0 use a new minor version;
-breaking public API changes use the next major version and a matching Go module
-path such as `github.com/tesh254/lebro/v2`.
+Use semantic versioning. A patch release (`v0.1.1`) is source- and wire-
+compatible. Before `v1.0.0`, additive and breaking public changes both require
+a new minor version (`v0.2.0`); never place a breaking change in a patch.
+
+At `v1.0.0` and later, additive public changes use a new minor version and a
+breaking exported Go API or supported wire-contract change requires a new major
+version and matching module path, such as `github.com/tesh254/lebro/v2`.
+
+Follow [the stability policy](stability.md), add upgrade notes to
+`CHANGELOG.md`, and update [the migration guide](migrations.md) for every
+persistence or wire-contract change.

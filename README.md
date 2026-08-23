@@ -13,6 +13,9 @@ testable and avoids locking users into a model provider or storage backend.
 `github.com/tesh254/lebro` is the only import most applications need. It is a
 stable façade for every public contract and constructor, so existing code keeps
 using `lebro.Message`, `lebro.NewToolRegistry`, and `lebro.NewMemoryStore`.
+Read the [public API reference](#public-api-reference) and
+[stability policy](docs/stability.md) before depending on optional packages or
+wire contracts.
 
 ```
 lebro/                   public API contracts and domain constructors
@@ -39,6 +42,23 @@ optional integrations as their own packages, never as dependencies of root API.
 
 The module pins Go 1.26.5 with Go's `toolchain` directive. With the default
 `GOTOOLCHAIN=auto`, Go downloads that toolchain automatically when needed.
+
+## Public API reference
+
+- Root runtime contracts: [`lebro`](https://pkg.go.dev/github.com/tesh254/lebro)
+- HTTP server, typed client, OpenAPI, and streaming contract:
+  [`httpapi`](https://pkg.go.dev/github.com/tesh254/lebro/httpapi)
+- MCP client/server bridge: [`mcp`](https://pkg.go.dev/github.com/tesh254/lebro/mcp)
+- Optional channels, voice, observability, and evaluations:
+  [`channels`](https://pkg.go.dev/github.com/tesh254/lebro/channels),
+  [`voice`](https://pkg.go.dev/github.com/tesh254/lebro/voice),
+  [`obsv`](https://pkg.go.dev/github.com/tesh254/lebro/obsv), and
+  [`evals`](https://pkg.go.dev/github.com/tesh254/lebro/evals)
+
+Public package GoDoc states security and lifecycle constraints at each boundary.
+The [wire-format guide](docs/wire-format.md) describes HTTP and MCP clients;
+the [migration guide](docs/migrations.md) covers persisted deployments.
+For a standalone MCP server or client, start with [MCP usage](docs/mcp.md).
 
 ## Install
 
