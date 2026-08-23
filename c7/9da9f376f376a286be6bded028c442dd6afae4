@@ -1,0 +1,23 @@
+internal/testkit/contract_memory.go
+  s_181cc90d891712::t_c6fd86beec84e0 68-71
+internal/testkit/contract_parity.go
+  s_181cc90d891712::t_c6fd86beec84e0 63,66
+httpapi/ai_sdk_stream_test.go
+  s_181cc90d891712::t_c6fd86beec84e0 6,24-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c79da9f376f376a286be6bded028c442dd6afae4",
+  "prompts": {},
+  "sessions": {
+    "s_181cc90d891712": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02eba-b4e4-73f3-904c-c6838b710b41",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
