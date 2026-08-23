@@ -11,7 +11,6 @@ import (
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 type tenantPolicy struct{}
@@ -28,7 +27,7 @@ func main() { must(run(os.Stdout)) }
 func run(output io.Writer) error {
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "support", Name: "Support"},
-		Model:      testkit.NewModel(testkit.Text("Your ticket is open.")),
+		Model:      newFixtureModel([]string{"Your ticket is open."}),
 		Policy:     tenantPolicy{},
 	})
 	if err != nil {
@@ -49,6 +48,27 @@ func run(output io.Writer) error {
 	}
 	fmt.Fprintf(output, "acme tenant: %s\n", result.Messages[len(result.Messages)-1].Content)
 	return nil
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter; a real
+// deployment supplies openai.New or any other lebro.Model instead.
+type fixtureModel struct {
+	replies []string
+	calls   int
+}
+
+func newFixtureModel(replies []string) *fixtureModel { return &fixtureModel{replies: replies} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.calls >= len(m.replies) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	reply := m.replies[m.calls]
+	m.calls++
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }
 
 func must(err error) {

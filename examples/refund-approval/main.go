@@ -37,11 +37,13 @@ func main() {
 
 func run(output io.Writer) error {
 	ctx := context.Background()
-	store, reopenStore, err := openStores(ctx)
+	store, reopenStore, cleanup, err := openStores(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = reopenStore.close() }()
+	// Cleanup closes both stores and removes the temp database, so the
+	// example leaves nothing behind on success or failure.
+	defer cleanup()
 
 	wf, err := newRefundWorkflow(store.store)
 	if err != nil {
@@ -205,24 +207,30 @@ type db struct {
 
 func (d *db) close() error { return d.store.Close() }
 
-func openStores(ctx context.Context) (*db, *db, error) {
+// openStores creates the temp database, opening it twice: once as the process
+// that suspends the run and once as the restarted process. cleanup closes any
+// opened store and removes the directory; it is safe to call after success.
+func openStores(ctx context.Context) (*db, *db, func(), error) {
 	dir, err := os.MkdirTemp("", "lebro-refund-approval-")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
 	first, err := openDB(ctx, filepath.Join(dir, "refund.db"))
 	if err != nil {
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	reopened, err := openDB(ctx, first.dsn)
 	if err != nil {
 		_ = first.close()
 		cleanup()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return first, reopened, nil
+	return first, reopened, func() {
+		_ = reopened.close()
+		cleanup()
+	}, nil
 }
 
 func openDB(ctx context.Context, dsn string) (*db, error) {

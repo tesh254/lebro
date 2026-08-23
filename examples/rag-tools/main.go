@@ -5,7 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
+	"os"
 
 	"github.com/tesh254/lebro"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
@@ -27,13 +28,20 @@ func (graphFixture) RetrieveGraph(_ context.Context, query lebro.GraphRetrievalQ
 }
 
 func main() {
+	if err := run(os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(output io.Writer) error {
 	registry, err := lebro.NewToolRegistry(lebrojsonschema.NewCompiler())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	chunker, err := lebro.NewCharacterChunker(lebro.CharacterChunkerConfig{Size: 200})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	tools := []lebro.Tool{
 		must(lebro.NewVectorQueryTool(lebro.VectorQueryToolConfig{ID: "search_handbook", Retriever: vectorFixture{}})),
@@ -42,20 +50,21 @@ func main() {
 	}
 	for _, tool := range tools {
 		if err := registry.Register(tool); err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 
 	result := registry.Execute(context.Background(), "search_policy_graph", lebro.ToolExecutionRequest{Arguments: json.RawMessage(`{"query":"refund policy","max_depth":9}`)})
 	if result.Err != nil {
-		log.Fatal(result.Err)
+		return result.Err
 	}
-	fmt.Println(string(result.Output)) // max_depth is clamped to 2.
+	_, err = fmt.Fprintln(output, string(result.Output)) // max_depth is clamped to 2.
+	return err
 }
 
 func must(tool lebro.Tool, err error) lebro.Tool {
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 	return tool
 }

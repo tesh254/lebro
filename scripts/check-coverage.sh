@@ -19,9 +19,15 @@ cd "$(dirname "$0")/.."
 baseline_file="scripts/coverage-baseline"
 profile="${COVERAGE_PROFILE:-coverage.out}"
 update=false
-if [[ "${1:-}" == "--update" ]]; then
-	update=true
-fi
+# Arguments: [--update] [profile]. A positional profile overrides the
+# COVERAGE_PROFILE default, so `check-coverage.sh coverage.out` from CI names
+# the file it writes instead of the argument being ignored.
+for arg in "$@"; do
+	case "$arg" in
+	--update) update=true ;;
+	*) profile="$arg" ;;
+	esac
+done
 
 if [[ ! -f "$baseline_file" ]]; then
 	echo "coverage baseline file $baseline_file is missing" >&2

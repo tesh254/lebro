@@ -5,12 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
+	"os"
 
 	"github.com/tesh254/lebro"
 )
 
 func main() {
+	if err := run(os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(output io.Writer) error {
 	wf, err := lebro.NewLinearWorkflow(lebro.LinearWorkflowConfig{
 		Definition: lebro.WorkflowDefinition{ID: "retry-until-ready"},
 		Steps: []lebro.Step{{Definition: lebro.StepDefinition{ID: "poll", DoUntil: &lebro.DoUntil{
@@ -37,11 +45,12 @@ func main() {
 		}}}},
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	result, err := wf.Run(context.Background(), lebro.WorkflowRunInput{Input: json.RawMessage(`{"attempts":0}`)})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	fmt.Println(string(result.Output))
+	_, err = fmt.Fprintln(output, string(result.Output))
+	return err
 }

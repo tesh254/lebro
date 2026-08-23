@@ -6,19 +6,33 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
+	"os"
 
 	"github.com/tesh254/lebro"
 )
 
 func main() {
+	if err := run(os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(output io.Writer) error {
 	document := lebro.Document{
 		ID:      "guide",
 		Content: "Alpha paragraph.\n\nBeta paragraph.\n\nGamma paragraph.",
 		Source:  "docs/guide.md",
 	}
-	recursive := must(lebro.NewRecursiveChunker(lebro.RecursiveChunkerConfig{Size: 20}))
-	sliding := must(lebro.NewSlidingWindowChunker(lebro.SlidingWindowChunkerConfig{Size: 20}))
+	recursive, err := lebro.NewRecursiveChunker(lebro.RecursiveChunkerConfig{Size: 20})
+	if err != nil {
+		return err
+	}
+	sliding, err := lebro.NewSlidingWindowChunker(lebro.SlidingWindowChunkerConfig{Size: 20})
+	if err != nil {
+		return err
+	}
 
 	for _, strategy := range []struct {
 		name    string
@@ -26,18 +40,16 @@ func main() {
 	}{{"recursive (paragraph boundaries)", recursive}, {"sliding window (fixed rune boundaries)", sliding}} {
 		chunks, err := strategy.chunker.Chunk(context.Background(), document)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
-		fmt.Printf("%s:\n", strategy.name)
+		if _, err := fmt.Fprintf(output, "%s:\n", strategy.name); err != nil {
+			return err
+		}
 		for _, chunk := range chunks {
-			fmt.Printf("  %s %q (%s)\n", chunk.ID, chunk.Content, chunk.Source)
+			if _, err := fmt.Fprintf(output, "  %s %q (%s)\n", chunk.ID, chunk.Content, chunk.Source); err != nil {
+				return err
+			}
 		}
 	}
-}
-
-func must[T any](value T, err error) T {
-	if err != nil {
-		log.Fatal(err)
-	}
-	return value
+	return nil
 }

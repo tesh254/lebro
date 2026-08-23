@@ -25,7 +25,6 @@ import (
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/httpapi"
-	"github.com/tesh254/lebro/internal/testkit"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
 
@@ -45,14 +44,14 @@ func run(output io.Writer) error {
 	store := lebro.NewMemoryStore()
 	guarded := mustValue(lebro.NewPolicyStore(store, policy))
 
-	model := testkit.NewModel(
-		// Consumed by the capable run.
-		testkit.ToolCallResponse(lebro.ModelToolCall{
+	model := newFixtureModel(
+		// Consumed by the capable run: request the tool, then close out.
+		fixtureStep{toolCall: &lebro.ModelToolCall{
 			ID:        "call-1",
 			ToolID:    "weather.lookup",
 			Arguments: json.RawMessage(`{"city":"Nairobi"}`),
-		}),
-		testkit.Text("Nairobi is 24.5C."),
+		}},
+		fixtureStep{content: "Nairobi is 24.5C."},
 	)
 
 	registry := mustValue(lebro.NewToolRegistry(lebrojsonschema.NewCompiler()))
@@ -79,17 +78,17 @@ func run(output io.Writer) error {
 	if !errors.Is(err, lebro.ErrPolicyDenied) {
 		return fmt.Errorf("expected ErrPolicyDenied for other tenant, got %v", err)
 	}
-	writef(output, "other tenant run: denied before any model call (fixtures left: %d)\n", model.Remaining())
+	writef(output, "other tenant run: denied before any model call (fixtures left: %d)\n", model.remaining())
 
 	// 2. An acme caller without tools:call gets past the run gate, but the
 	// model's tool request never executes: a separate fixture model drives this
 	// run, and it fails with a typed, auditable denial naming the subject,
 	// action, and resource.
-	blockedModel := testkit.NewModel(testkit.ToolCallResponse(lebro.ModelToolCall{
+	blockedModel := newFixtureModel(fixtureStep{toolCall: &lebro.ModelToolCall{
 		ID:        "call-1",
 		ToolID:    "weather.lookup",
 		Arguments: json.RawMessage(`{"city":"Nairobi"}`),
-	}))
+	}})
 	blockedAgent := mustValue(lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{
 			ID:           "support",
@@ -140,13 +139,13 @@ func run(output io.Writer) error {
 func streamRedaction(output io.Writer, policy lebro.Policy) error {
 	ctx := context.Background()
 
-	streamModel := testkit.NewModel(
-		testkit.Stream(testkit.ToolCallChunk(lebro.ModelToolCall{
+	streamModel := newFixtureModel(
+		fixtureStep{stream: true, toolCall: &lebro.ModelToolCall{
 			ID:        "call-1",
 			ToolID:    "weather.lookup",
 			Arguments: json.RawMessage(`{"city":"Nairobi"}`),
-		})),
-		testkit.Text("Done."),
+		}},
+		fixtureStep{content: "Done."},
 	)
 	streamRegistry := mustValue(lebro.NewToolRegistry(lebrojsonschema.NewCompiler()))
 	must(streamRegistry.Register(weatherTool{}))
@@ -206,6 +205,93 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 		return fmt.Errorf("stream never surfaced a tool call")
 	}
 	return nil
+}
+
+// fixtureStep scripts one model call: either a tool-call request or a final
+// text turn. stream=true delivers it through Model.Stream instead of Generate.
+type fixtureStep struct {
+	content  string
+	toolCall *lebro.ModelToolCall
+	stream   bool
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter supporting
+// both the generate and streaming protocols. A real deployment supplies
+// openai.New, anthropic.New, or any other lebro.Model instead.
+type fixtureModel struct {
+	steps []fixtureStep
+	next  int
+}
+
+func newFixtureModel(steps ...fixtureStep) *fixtureModel {
+	return &fixtureModel{steps: steps}
+}
+
+func (m *fixtureModel) remaining() int { return len(m.steps) - m.next }
+
+func (m *fixtureModel) take() (fixtureStep, error) {
+	if m.next >= len(m.steps) {
+		return fixtureStep{}, errors.New("fixture model script exhausted")
+	}
+	step := m.steps[m.next]
+	m.next++
+	return step, nil
+}
+
+func (m *fixtureModel) response(step fixtureStep) (lebro.ModelResponse, error) {
+	message := lebro.Message{Role: lebro.RoleAssistant, Content: step.content}
+	finish := lebro.FinishReasonStop
+	if step.toolCall != nil {
+		calls, err := lebro.NewModelToolCalls(*step.toolCall)
+		if err != nil {
+			return lebro.ModelResponse{}, err
+		}
+		message.Content = ""
+		message.ToolCalls = calls
+		finish = lebro.FinishReasonToolCalls
+	}
+	return lebro.ModelResponse{Message: message, FinishReason: finish}, nil
+}
+
+// Generate consumes the next scripted step synchronously.
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	step, err := m.take()
+	if err != nil {
+		return lebro.ModelResponse{}, err
+	}
+	return m.response(step)
+}
+
+// Stream consumes the next scripted step as ordered deltas.
+func (m *fixtureModel) Stream(ctx context.Context, _ lebro.ModelRequest) (lebro.StreamReader, error) {
+	step, err := m.take()
+	if err != nil {
+		return nil, err
+	}
+	deltas := make(chan lebro.StreamDelta, 2)
+	if step.toolCall != nil {
+		call := *step.toolCall
+		deltas <- lebro.StreamDelta{ToolCall: &call}
+	} else {
+		deltas <- lebro.StreamDelta{Text: step.content}
+	}
+	deltas <- lebro.StreamDelta{FinishReason: map[bool]lebro.FinishReason{true: lebro.FinishReasonToolCalls, false: lebro.FinishReasonStop}[step.toolCall != nil]}
+	close(deltas)
+
+	return &lebro.StreamReaderFunc{
+		NextFn: func() (lebro.StreamDelta, error) {
+			select {
+			case delta, ok := <-deltas:
+				if !ok {
+					return lebro.StreamDelta{}, io.EOF
+				}
+				return delta, nil
+			case <-ctx.Done():
+				return lebro.StreamDelta{}, ctx.Err()
+			}
+		},
+		CloseFn: func() error { return nil },
+	}, nil
 }
 
 // identityMiddleware is the service boundary: it turns verified request

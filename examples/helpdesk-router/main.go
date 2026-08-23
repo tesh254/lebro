@@ -7,13 +7,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func main() {
@@ -85,8 +85,29 @@ func run(output io.Writer) error {
 func specialistAgent(id, reply string) *lebro.Agent {
 	return mustValue(lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: lebro.AgentID(id), Name: id},
-		Model:      testkit.NewModel(testkit.Text(reply)),
+		Model:      newFixtureModel([]string{reply}),
 	}))
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter; a real
+// deployment supplies openai.New or any other lebro.Model instead.
+type fixtureModel struct {
+	replies []string
+	calls   int
+}
+
+func newFixtureModel(replies []string) *fixtureModel { return &fixtureModel{replies: replies} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.calls >= len(m.replies) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	reply := m.replies[m.calls]
+	m.calls++
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }
 
 // mentions matches when any keyword appears in the task text.

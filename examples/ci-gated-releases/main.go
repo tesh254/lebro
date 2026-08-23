@@ -11,13 +11,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/evals"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func main() {
@@ -51,7 +51,7 @@ func run(output io.Writer) error {
 	evaluate := func(name string, replies []string) (evals.ExperimentRecord, []evals.CaseResult, error) {
 		agent := mustValue(lebro.NewAgent(lebro.AgentConfig{
 			Definition: lebro.AgentDefinition{ID: lebro.AgentID("support-" + name), Name: "Support " + name},
-			Model:      testkit.NewModel(textFixtures(replies)...),
+			Model:      newFixtureModel(replies),
 		}))
 		experiment := mustValue(evals.New(evals.ExperimentConfig{
 			Name:       name,
@@ -111,13 +111,27 @@ func run(output io.Writer) error {
 	return nil
 }
 
-// textFixtures builds one canned reply per dataset case; cases run in order.
-func textFixtures(replies []string) []testkit.Fixture {
-	fixtures := make([]testkit.Fixture, len(replies))
-	for i, reply := range replies {
-		fixtures[i] = testkit.Text(reply)
+// fixtureModel is a deterministic stand-in for a provider adapter: one canned
+// reply per dataset case, consumed in order (the experiment runs cases
+// sequentially). A real gate wraps the same agents with openai.New or any
+// other lebro.Model; nothing else changes.
+type fixtureModel struct {
+	replies []string
+	calls   int
+}
+
+func newFixtureModel(replies []string) *fixtureModel { return &fixtureModel{replies: replies} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.calls >= len(m.replies) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
 	}
-	return fixtures
+	reply := m.replies[m.calls]
+	m.calls++
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }
 
 func report(output io.Writer, label string, record evals.ExperimentRecord) {

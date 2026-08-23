@@ -56,7 +56,9 @@ func run(ctx context.Context, output io.Writer, command string, args []string, s
 		if err := registry.Register(tool); err != nil {
 			return fmt.Errorf("register %q: %w", definition.ID, err)
 		}
-		fmt.Fprintf(output, "discovered %s\n", definition.ID)
+		if _, err := fmt.Fprintf(output, "discovered %s\n", definition.ID); err != nil {
+			return fmt.Errorf("write discovery output: %w", err)
+		}
 	}
 	if toolID == "" {
 		return nil
