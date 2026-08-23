@@ -1,0 +1,21 @@
+httpapi/ai_sdk_stream_test.go
+  s_7c62a3e12989a4::t_f0f3533e391d6b 124-186,197-199
+httpapi/ai_sdk_stream.go
+  s_7c62a3e12989a4::t_b8f0460b97ea90 22,24,27,29,59,174-176,185,192-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9aa8ba3c49bfda4541c63c7be8e422656f8578bc",
+  "prompts": {},
+  "sessions": {
+    "s_7c62a3e12989a4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02e87-b568-7d82-9bf7-ee7539cf286e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
