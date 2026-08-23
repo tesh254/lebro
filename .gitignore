@@ -2,7 +2,6 @@
 coverage.out
 dist/
 bin/
-streaming
 storage-sqlite.db
 
 # The studio package embeds studio/dist at build time. Keep the directory
