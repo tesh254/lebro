@@ -382,9 +382,14 @@ func (cancelObservingModel) Generate(context.Context, lebro.ModelRequest) (lebro
 func (m cancelObservingModel) Stream(ctx context.Context, _ lebro.ModelRequest) (lebro.StreamReader, error) {
 	done := make(chan struct{})
 	go func() {
+		// Either signal means the run stopped consuming the stream: a
+		// cancelled context, or the reader being closed as the run is torn
+		// down. Both become ready at nearly the same moment on teardown, and
+		// select would pick between them randomly, so report cancellation on
+		// either rather than gambling on which arrives first.
+		defer m.onCancel()
 		select {
 		case <-ctx.Done():
-			m.onCancel()
 		case <-done:
 		}
 	}()
