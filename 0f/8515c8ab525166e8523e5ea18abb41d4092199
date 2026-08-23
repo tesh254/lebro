@@ -1,0 +1,58 @@
+examples/model-routing/main.go
+  s_570f9d3bada825::t_dde86d573157d5 8,22-26,111-141
+examples/agent-network/main.go
+  s_570f9d3bada825::t_6969b1c78abcdc 8,10,17,23,26,53-76
+examples/supervised-delegation/main.go
+  s_570f9d3bada825::t_022c25d7528bcf 37-38
+  s_570f9d3bada825::t_92e908e277be4f 51-52
+  s_570f9d3bada825::t_3a1dd908cce500 127-129,132-133
+  s_570f9d3bada825::t_114aa1fe45f641 14
+  s_570f9d3bada825::t_395827a0d4ed47 192-230
+examples/README.md
+  s_570f9d3bada825::t_c83c8f516c960b 26-29
+examples/streaming/main_test.go
+  s_570f9d3bada825::t_e75a982d048960 8
+  s_570f9d3bada825::t_7beebacda37338 36,38,44
+examples/structured-output/main.go
+  s_570f9d3bada825::t_0419ab36b06419 23,66-83
+examples/workflow-agents-tools/main.go
+  s_570f9d3bada825::t_bf504fdf525ebe 55
+  s_570f9d3bada825::t_ff2f704d21637d 98-113
+examples/streaming/main.go
+  s_570f9d3bada825::t_f3e6095c1ddbd4 28-35
+  ai_agent 102-166
+examples/agent-loop/main.go
+  s_570f9d3bada825::t_5309d0ed737d53 146-148,150-184
+  s_570f9d3bada825::t_b3f1191280fbce 123,125-129,131
+  s_570f9d3bada825::t_3d637924dd2bcf 149
+  s_570f9d3bada825::t_18f8f700c7f3b9 67-69
+examples/agent-network/main_test.go
+  s_570f9d3bada825::t_036d10a0f44a7c 3-7,9-11,14-18
+examples/model-fixtures/main.go
+  s_570f9d3bada825::t_2465460495003c 157
+  s_570f9d3bada825::t_b20be8035ab567 32-38
+  s_570f9d3bada825::t_d0911f7ae52de7 184-186
+  s_570f9d3bada825::t_22a52104b44586 1
+  s_570f9d3bada825::t_fbb410637181ed 191-193
+examples/model-fixtures/main_test.go
+  s_570f9d3bada825::t_f1f4c861ce3ec9 50,52-53
+  ai_agent 101
+  s_570f9d3bada825::t_36d45f064a19ef 140,142
+  s_570f9d3bada825::t_a5a8c7ac64dc74 4,14-17,19-32,37,42-43,51,57-58,61-63,65-66,69-71,73,76-80,83-88,91-92,95-97,100,102,107-108,110,116-127
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0f8515c8ab525166e8523e5ea18abb41d4092199",
+  "prompts": {},
+  "sessions": {
+    "s_570f9d3bada825": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd0fa918effeg22oGfOIlm3jDB",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
