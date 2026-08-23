@@ -1,0 +1,22 @@
+examples/agent-network/main_test.go
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-9
+.github/workflows/ci.yml
+  s_33c7e810bad033::t_515990930c0169 20,22-26
+  s_33c7e810bad033::t_860a39a48b7d99 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1a545c3318064d99667f31447030c041db6c2b46",
+  "prompts": {},
+  "sessions": {
+    "s_33c7e810bad033": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ed3-1499-7ef3-b07e-e916f1bef97e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
