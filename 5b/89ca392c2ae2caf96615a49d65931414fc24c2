@@ -1,0 +1,23 @@
+internal/runtime/agent_stream_test.go
+  s_f9e5afa2a06990::t_fe403c6a7d58a8 224-248
+internal/runtime/agent_test.go
+  s_f9e5afa2a06990::t_5d0e074df3bca2 826-868
+internal/runtime/agent.go
+  s_f9e5afa2a06990::t_700359f963d902 174-175,489,1330,1392-1394,1426-1431
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "5b89ca392c2ae2caf96615a49d65931414fc24c2",
+  "prompts": {},
+  "sessions": {
+    "s_f9e5afa2a06990": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ea5-29bf-7231-9809-b314d5a70b87",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
