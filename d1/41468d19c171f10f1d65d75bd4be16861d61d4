@@ -1,0 +1,28 @@
+examples/memory-processor/main.go
+  s_570f9d3bada825::t_ac6a0b4aaf3253 47
+scripts/check-coverage.sh
+  s_570f9d3bada825::t_82d7f58fc5a475 24-26,30
+examples/rag-tools/main.go
+  s_570f9d3bada825::t_892c88343a2468 46-56,58
+examples/multitenant-platform/main.go
+  s_570f9d3bada825::t_2bb4ce256c3798 258-259,265-267,284-288
+  s_570f9d3bada825::t_b080c5d32960e6 211-213
+examples/memory-processor/main_test.go
+  s_570f9d3bada825::t_fd28f110291b6a 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d141468d19c171f10f1d65d75bd4be16861d61d4",
+  "prompts": {},
+  "sessions": {
+    "s_570f9d3bada825": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd0fa918effeg22oGfOIlm3jDB",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
