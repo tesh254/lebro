@@ -8,8 +8,6 @@ import (
 	"unicode/utf8"
 )
 
-var errInvalidDocumentUTF8 = errors.New("lebro: document content must be valid UTF-8")
-
 // RecursiveChunkerConfig configures a chunker that prefers structural text
 // boundaries before falling back to individual runes. Size and Overlap are
 // measured in runes.
@@ -22,7 +20,7 @@ type RecursiveChunkerConfig struct {
 	Overlap int
 	// Separators is an ordered list of preferred boundaries. A nil value uses
 	// paragraph, line, and word boundaries. The empty-string rune fallback is
-	// always added when omitted, ensuring no valid document is unsplittable.
+	// appended when absent, ensuring no valid document is unsplittable.
 	Separators []string
 }
 
@@ -173,10 +171,11 @@ func validateChunkerInput(ctx context.Context, document Document) error {
 }
 
 func splitRunes(text string) []string {
-	runes := []rune(text)
-	parts := make([]string, len(runes))
-	for i, rune := range runes {
-		parts[i] = string(rune)
+	parts := make([]string, 0, utf8.RuneCountInString(text))
+	for start := 0; start < len(text); {
+		_, size := utf8.DecodeRuneInString(text[start:])
+		parts = append(parts, text[start:start+size])
+		start += size
 	}
 	return parts
 }
