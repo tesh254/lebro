@@ -1,0 +1,19 @@
+httpapi/stream_test.go
+  s_570f9d3bada825::t_c1d4a168bd3010 385-390
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9fff5879f636488274b93ea109712f320ae72dd7",
+  "prompts": {},
+  "sessions": {
+    "s_570f9d3bada825": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd0fa918effeg22oGfOIlm3jDB",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
