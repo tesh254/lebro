@@ -75,7 +75,8 @@ func NewServer(config ServerConfig) *Server {
 }
 
 // ExposeAgent makes an agent reachable at /agents/{id}/runs and
-// /agents/{id}/runs/stream, where id is the agent's definition ID. Registering
+// /agents/{id}/runs/stream, and /agents/{id}/runs/ai-sdk/stream, where id is
+// the agent's definition ID. Registering
 // the same ID twice is an error, so a later registration cannot silently
 // shadow an earlier one.
 //
@@ -287,6 +288,8 @@ func (s *Server) handlerForRoute(r route) http.Handler {
 		return http.HandlerFunc(s.handleAgentRun)
 	case "streamAgentRun":
 		return http.HandlerFunc(s.handleAgentStream)
+	case "streamAgentRunAISDK":
+		return http.HandlerFunc(s.handleAgentAISDKStream)
 	case "listWorkflows":
 		return http.HandlerFunc(s.handleListWorkflows)
 	case "createWorkflowRun":

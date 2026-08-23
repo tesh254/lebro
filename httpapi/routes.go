@@ -29,6 +29,12 @@ type route struct {
 	// streaming marks an operation whose success response is an SSE stream
 	// rather than a JSON body.
 	streaming bool
+	// streamingDescription replaces the default SSE contract description for a
+	// route with a distinct streaming wire format.
+	streamingDescription string
+	// streamingRaw reports that the stream is not a StreamEvent envelope and
+	// must be documented as raw protocol data rather than that JSON schema.
+	streamingRaw bool
 	// errorCodes lists the public error codes this operation can produce. The
 	// generated document derives its error responses from them, so a code that
 	// a handler can return but that is missing here is a documentation gap the
@@ -72,6 +78,12 @@ func routes() []route {
 	threadQueryParam := param{
 		name:        "thread_id",
 		description: "Bind the run to a durable thread. Prior messages in the thread are loaded before the run and the new transcript is appended on success. Requires the server to be configured with a Store.",
+		schema:      schemaNameString,
+	}
+	aiSDKVersionParam := param{
+		name:        "version",
+		description: "Required AI SDK wire protocol version: v4 emits the legacy data stream protocol; v5 emits the UI message stream protocol.",
+		required:    true,
 		schema:      schemaNameString,
 	}
 
@@ -130,6 +142,28 @@ func routes() []route {
 			// with a status because no bytes have been written yet. Once the
 			// stream is open a failure can only be a terminal event, which is
 			// why this list is shorter than the non-streaming route's.
+			errorCodes: []ErrorCode{
+				ErrorCodeInvalidRequest,
+				ErrorCodeNotFound,
+				ErrorCodeInvalidInput,
+				ErrorCodeInvalidOutput,
+				ErrorCodeProviderFailure,
+				ErrorCodeCancelled,
+				ErrorCodeInternal,
+			},
+		},
+		{
+			method:               http.MethodPost,
+			path:                 "/agents/{id}/runs/ai-sdk/stream",
+			operationID:          "streamAgentRunAISDK",
+			summary:              "Run an agent using an AI SDK-compatible stream",
+			description:          "Executes the bounded agent loop and maps native stream deltas into the explicitly selected AI SDK protocol. Version v4 uses the legacy data stream protocol; v5 uses the UI message stream protocol. The native SSE route remains unchanged. Closing the connection cancels the run.",
+			pathParams:           []param{agentIDParam},
+			queryParams:          []param{threadQueryParam, aiSDKVersionParam},
+			requestBody:          schemaNameRunRequest,
+			streaming:            true,
+			streamingDescription: "An AI SDK-compatible stream selected by the required version query parameter. v4 is the legacy data stream protocol with text/plain framing; v5 is the UI message stream protocol with Server-Sent Events framing.",
+			streamingRaw:         true,
 			errorCodes: []ErrorCode{
 				ErrorCodeInvalidRequest,
 				ErrorCodeNotFound,
