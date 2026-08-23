@@ -1,0 +1,37 @@
+internal/runtime/agent_test.go
+  s_f9e5afa2a06990::t_ed43994f0661a9 826-860
+  s_f9e5afa2a06990::t_66392c04185d92 748-825
+  s_f9e5afa2a06990::t_dfacede416a921 919
+examples/request-resolvers/main.go
+  s_f9e5afa2a06990::t_09faa3c33d3973 1-49
+api_types.go
+  s_f9e5afa2a06990::t_1dbcb233b141bd 21-23,343,484
+contracts_test.go
+  s_f9e5afa2a06990::t_f26a8f15191db4 500,514
+internal/runtime/agent_stream_test.go
+  s_f9e5afa2a06990::t_f38fe4ec70dd96 188-223
+internal/runtime/agent.go
+  s_f9e5afa2a06990::t_d1369c986eeffe 1387,1394
+  s_f9e5afa2a06990::t_19694aab162054 436,444,472,488,742,745,754,775,806
+  s_f9e5afa2a06990::t_ab58236e2b3f31 51-53,85-86,160-161,172-190,204-210,280-281,293,373-374
+  s_f9e5afa2a06990::t_f32c4eaf75a77e 264-279,357-372,1423-1427
+  s_f9e5afa2a06990::t_b11da5c2185084 432-435,740-741,743-744
+  s_f9e5afa2a06990::t_b676dedb1afe51 837,859,1200,1202-1203
+  s_f9e5afa2a06990::t_f92796935829d9 1329-1331,1335,1365-1386,1388-1393,1395-1422,1428
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "afa20f2de13f340fe112fff6624655d8138a5307",
+  "prompts": {},
+  "sessions": {
+    "s_f9e5afa2a06990": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ea5-29bf-7231-9809-b314d5a70b87",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
