@@ -221,6 +221,31 @@ func TestAgentRunStreamUsesResolvedModelAndInstructions(t *testing.T) {
 	}
 }
 
+func TestAgentRunStreamNormalizesResolverFailure(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent"},
+		Model:      newStreamScriptedModel(textDeltas("unused")),
+		Listener:   recorder,
+		ModelResolver: func(context.Context, RunInput) (ModelSelection, error) {
+			return ModelSelection{}, errors.New("tenant unavailable")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := agent.RunStream(context.Background(), RunInput{})
+	if run != nil || !errors.Is(err, ErrAgentResolver) {
+		t.Fatalf("run = %#v, error = %v", run, err)
+	}
+	terminal, ok := recorder.TerminalEvent()
+	if !ok || terminal.Type != RunEventFailed || !errors.Is(terminal.Error, ErrAgentResolver) {
+		t.Fatalf("terminal event = %#v", terminal)
+	}
+}
+
 func TestAgentRunStreamEquivalenceWithRunForTextOnly(t *testing.T) {
 	t.Parallel()
 

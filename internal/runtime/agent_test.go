@@ -823,6 +823,49 @@ func TestAgentResolverFailureIsNormalizedAndEmitted(t *testing.T) {
 	}
 }
 
+func TestAgentRejectsInvalidModelResolverSelections(t *testing.T) {
+	t.Parallel()
+
+	routerRegistry := NewProviderRegistry()
+	if err := routerRegistry.Register(ProviderEntry{ID: "provider", Model: echoModel{}}); err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewModelRouter(ModelRouterConfig{Registry: routerRegistry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		selection ModelSelection
+	}{
+		{name: "neither", selection: ModelSelection{}},
+		{name: "both", selection: ModelSelection{Model: echoModel{}, Router: router}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := NewRunRecorder()
+			agent, err := NewAgent(AgentConfig{
+				Definition: AgentDefinition{ID: "agent"},
+				Model:      echoModel{},
+				Listener:   recorder,
+				ModelResolver: func(context.Context, RunInput) (ModelSelection, error) {
+					return test.selection, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := agent.Run(context.Background(), RunInput{})
+			if result.Status != RunStatusFailed || !errors.Is(err, ErrAgentResolver) {
+				t.Fatalf("result = %#v, error = %v", result, err)
+			}
+			terminal, ok := recorder.TerminalEvent()
+			if !ok || terminal.Type != RunEventFailed || !errors.Is(terminal.Error, ErrAgentResolver) {
+				t.Fatalf("terminal event = %#v", terminal)
+			}
+		})
+	}
+}
+
 func TestAgentModelResolverSelectsRouter(t *testing.T) {
 	t.Parallel()
 

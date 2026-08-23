@@ -171,7 +171,8 @@ const DefaultAgentMaxSteps = 10
 
 // InstructionsResolver resolves a system instruction string for one run. The
 // runtime passes a caller-owned copy of input, so a resolver cannot alter the
-// agent definition or the caller's input.
+// agent definition or the caller's input. Returning an empty string
+// intentionally suppresses the system message for that run.
 type InstructionsResolver func(context.Context, RunInput) (string, error)
 
 // ModelSelection selects one direct model or one router for a run. Exactly one
@@ -485,7 +486,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		} else {
 			request = *decision.Request
 		}
-		response, attempts, err := a.generateModel(runConfig, runCtx, runID, step, stepID, emitter, request)
+		response, attempts, err := a.generateModel(runCtx, runConfig, runID, step, stepID, emitter, request)
 		allAttempts = append(allAttempts, attempts...)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
@@ -1326,7 +1327,7 @@ func (a *Agent) applyDeadline(ctx context.Context) (context.Context, context.Can
 // generateModel calls the model either directly or through the router, emitting
 // model_attempt events when routing is in use. It returns the response,
 // accumulated model attempts, and any error.
-func (a *Agent) generateModel(config agentRunConfig, ctx context.Context, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
+func (a *Agent) generateModel(ctx context.Context, config agentRunConfig, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
 	if config.router == nil {
 		resp, err := config.model.Generate(ctx, request)
 		return resp, nil, err
@@ -1388,6 +1389,9 @@ func (a *Agent) resolveRunConfig(ctx context.Context, input RunInput) (agentRunC
 		if err != nil {
 			return agentRunConfig{}, resolverAgentError("resolve instructions", err)
 		}
+		if err := (Message{Role: RoleSystem, Content: instructions}).Validate(); err != nil {
+			return agentRunConfig{}, resolverAgentError("resolve instructions", err)
+		}
 		config.instructions = instructions
 	}
 	if a.modelResolver != nil {
@@ -1419,14 +1423,12 @@ func resolverAgentError(action string, err error) *AgentError {
 }
 
 func cloneRunInput(input RunInput) RunInput {
-	return RunInput{
-		Messages:       cloneMessages(input.Messages),
-		ThreadID:       input.ThreadID,
-		Metadata:       cloneMetadata(input.Metadata),
-		OutputSchema:   cloneModelOutputSchema(input.OutputSchema),
-		Memory:         input.Memory.Clone(),
-		memoryRecalled: input.memoryRecalled,
-	}
+	cloned := input
+	cloned.Messages = cloneMessages(input.Messages)
+	cloned.Metadata = cloneMetadata(input.Metadata)
+	cloned.OutputSchema = cloneModelOutputSchema(input.OutputSchema)
+	cloned.Memory = input.Memory.Clone()
+	return cloned
 }
 
 func (a *Agent) cancelledWithAttempts(runID RunID, messages []Message, metadata map[string]string, step int, err error, attempts []ModelAttempt) (RunResult, error) {
