@@ -1,0 +1,93 @@
+examples/document-extraction/main_test.go
+  s_570f9d3bada825::t_a728f4ab17dd71 1-9,12-13,15-28
+  s_570f9d3bada825::t_6af63fbc038ff9 10-11,14
+examples/ci-gated-releases/main_test.go
+  s_570f9d3bada825::t_e512c51bd1f6a5 1-30
+examples/voice-booking/main_test.go
+  s_570f9d3bada825::t_280ec6b6c85615 1-29
+examples/morning-digest/main.go
+  s_570f9d3bada825::t_83efcfa5628d4a 1-125,132-204
+  s_570f9d3bada825::t_10817294985c2e 126-131
+examples/ci-gated-releases/README.md
+  s_570f9d3bada825::t_3df0d0832dbc92 1-42
+examples/docs-support-agent/main_test.go
+  s_570f9d3bada825::t_7c2871b88ca963 1-21,24-33
+  s_570f9d3bada825::t_0ce2471c555502 22-23
+examples/multitenant-platform/main.go
+  s_570f9d3bada825::t_f73fc69bf1e166 51
+  s_570f9d3bada825::t_00b3355a66109e 147
+  s_570f9d3bada825::t_5c619344469e92 211-229
+  s_570f9d3bada825::t_50f2618697d1ab 21-24
+  s_570f9d3bada825::t_b1c85514117efc 49-50
+  s_570f9d3bada825::t_de690d39e39ca7 155-157,165
+  s_570f9d3bada825::t_669cb5a9da6b68 84,106-110
+  s_570f9d3bada825::t_196963c29854e7 151-152,160-164,166-167
+  s_570f9d3bada825::t_5a842ccf926248 85-105
+  s_570f9d3bada825::t_9d9092e2aa139d 174-183
+examples/helpdesk-router/README.md
+  s_570f9d3bada825::t_91f1590d6fb91d 1-41
+examples/voice-booking/README.md
+  s_570f9d3bada825::t_b325f4b54ad249 1-38
+examples/refund-approval/main_test.go
+  s_570f9d3bada825::t_61e99959be9e70 1-6,9-38
+  s_570f9d3bada825::t_cf5fce5ca010df 7-8
+examples/docs-support-agent/README.md
+  s_570f9d3bada825::t_019f9c060e981f 1-46
+examples/refund-approval/README.md
+  s_570f9d3bada825::t_27acdda0b14dbb 1-39
+examples/document-extraction/main.go
+  s_570f9d3bada825::t_7d4fbb47875ff4 154
+  s_570f9d3bada825::t_248a369dcbd1c6 73
+  s_570f9d3bada825::t_2388c1d7a64c80 2-9,43-46,50,64-70,75-152,172
+  s_570f9d3bada825::t_1d2d72e3dec36a 42,47
+  s_570f9d3bada825::t_722d8332b9a26b 55-61
+  s_570f9d3bada825::t_1ee7fb897e710d 22
+  s_570f9d3bada825::t_646981f6fc5c0c 21
+examples/ci-gated-releases/main.go
+  s_570f9d3bada825::t_4cb04b7cbccdbc 20,44,49-50,52-61,66,69,73-75,80-83,85,87,92,94,107,110,114-118,120,123-124,129
+  s_570f9d3bada825::t_c65d67cf659205 15
+  s_570f9d3bada825::t_feca729e8ce9b8 51,67-68,72,84
+  s_570f9d3bada825::t_920a5d7aa8d004 39-41
+  s_570f9d3bada825::t_57a46c74e649b8 62-65
+  s_570f9d3bada825::t_827dab19fa3e15 1-14,16-19,21-38,42-43,45-48,70-71,76-79,88-91,93,95,97-106,108-109,111-113,119,121-122,125-128,130-154
+  s_570f9d3bada825::t_eeffd78bc5aef2 86
+  s_570f9d3bada825::t_3b185a32e052d3 96
+examples/docs-support-agent/main.go
+  s_570f9d3bada825::t_28f950df4a32d4 1-214,222-224,226-242,252-258,262-266,268-285
+  s_570f9d3bada825::t_09bb5f582a8b12 215-221,225
+  s_570f9d3bada825::t_159c2c55e30e97 243-251
+  s_570f9d3bada825::t_a718aef41077b6 259-261,267
+examples/morning-digest/main_test.go
+  s_570f9d3bada825::t_aaad3bc399c643 1-29
+examples/README.md
+  s_570f9d3bada825::t_9299383e73fcb9 239-254
+examples/voice-booking/main.go
+  s_570f9d3bada825::t_2ab00d5eae98dd 1-201
+examples/refund-approval/main.go
+  s_570f9d3bada825::t_9af316858b0bae 64-67
+  s_570f9d3bada825::t_42dea65e987c39 199-202
+examples/helpdesk-router/main.go
+  s_570f9d3bada825::t_d0e8f534d3a5b9 31,86
+  s_570f9d3bada825::t_ef2a4f344e4bee 1-30,32-40,44-85,88-137
+  s_570f9d3bada825::t_3dfd99953bc027 87
+examples/multitenant-platform/README.md
+  s_570f9d3bada825::t_f54d051b9f97fa 1-41
+examples/morning-digest/README.md
+  s_570f9d3bada825::t_1e446cdb69fe66 1-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8a4eed7318fcceb4f043f67ba903b1ce197d0b6c",
+  "prompts": {},
+  "sessions": {
+    "s_570f9d3bada825": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd0fa918effeg22oGfOIlm3jDB",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
