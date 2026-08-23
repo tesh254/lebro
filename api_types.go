@@ -190,6 +190,10 @@ type (
 	Chunker                     = runtime.Chunker
 	CharacterChunker            = runtime.CharacterChunker
 	CharacterChunkerConfig      = runtime.CharacterChunkerConfig
+	RecursiveChunker            = runtime.RecursiveChunker
+	RecursiveChunkerConfig      = runtime.RecursiveChunkerConfig
+	SlidingWindowChunker        = runtime.SlidingWindowChunker
+	SlidingWindowChunkerConfig  = runtime.SlidingWindowChunkerConfig
 	EmbeddingModel              = runtime.EmbeddingModel
 	Indexer                     = runtime.Indexer
 	IndexerConfig               = runtime.IndexerConfig

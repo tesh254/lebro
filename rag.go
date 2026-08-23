@@ -6,6 +6,18 @@ func NewCharacterChunker(config CharacterChunkerConfig) (*CharacterChunker, erro
 	return runtime.NewCharacterChunker(config)
 }
 
+// NewRecursiveChunker creates a structural chunker that prefers configured
+// separators before falling back to rune boundaries.
+func NewRecursiveChunker(config RecursiveChunkerConfig) (*RecursiveChunker, error) {
+	return runtime.NewRecursiveChunker(config)
+}
+
+// NewSlidingWindowChunker creates a fixed-width, optionally overlapping
+// rune-window chunker.
+func NewSlidingWindowChunker(config SlidingWindowChunkerConfig) (*SlidingWindowChunker, error) {
+	return runtime.NewSlidingWindowChunker(config)
+}
+
 func NewIndexer(config IndexerConfig) (*Indexer, error) { return runtime.NewIndexer(config) }
 func NewVectorRetriever(config VectorRetrieverConfig) (*VectorRetriever, error) {
 	return runtime.NewVectorRetriever(config)

@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"unicode/utf8"
 )
 
 // DefaultChunkSize is the character-window size used when a
 // CharacterChunkerConfig leaves Size zero.
 const DefaultChunkSize = 1000
+
+var errInvalidDocumentUTF8 = errors.New("lebro: document content must be valid UTF-8")
 
 // CharacterChunkerConfig configures a fixed-width character-window chunker.
 //
@@ -43,12 +44,9 @@ var _ Chunker = (*CharacterChunker)(nil)
 // NewCharacterChunker validates the configuration and returns a chunker safe
 // for concurrent use.
 func NewCharacterChunker(config CharacterChunkerConfig) (*CharacterChunker, error) {
-	size := config.Size
-	if size == 0 {
-		size = DefaultChunkSize
-	}
-	if size < 0 {
-		return nil, errors.New("lebro: chunk size must not be negative")
+	size, err := chunkerSize(config.Size)
+	if err != nil {
+		return nil, err
 	}
 	if config.Overlap < 0 {
 		return nil, errors.New("lebro: chunk overlap must not be negative")
@@ -70,26 +68,8 @@ func (c *CharacterChunker) Chunk(ctx context.Context, document Document) ([]Chun
 	if c == nil {
 		return nil, errors.New("lebro: character chunker is nil")
 	}
-	if ctx == nil {
-		return nil, errors.New("lebro: chunker context is nil")
-	}
-	if err := ctx.Err(); err != nil {
+	if err := validateChunkerInput(ctx, document); err != nil {
 		return nil, err
-	}
-	if err := document.Validate(); err != nil {
-		return nil, &RAGError{Kind: RAGErrorInvalidDocument, DocumentID: document.ID, Err: err}
-	}
-	// Rune conversion replaces each invalid byte with U+FFFD, which would index
-	// and later retrieve content that differs from what was ingested. Rejecting
-	// it keeps ingestion lossless rather than silently rewriting the document;
-	// callers that expect arbitrary bytes should decode or sanitize upstream,
-	// where the right substitution is known.
-	if !utf8.ValidString(document.Content) {
-		return nil, &RAGError{
-			Kind:       RAGErrorInvalidDocument,
-			DocumentID: document.ID,
-			Err:        errors.New("lebro: document content must be valid UTF-8"),
-		}
 	}
 
 	// Convert once: indexing runes directly keeps window boundaries aligned to
