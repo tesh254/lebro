@@ -153,7 +153,7 @@ func (s *Server) requestBodyRequired(r route) bool {
 func (s *Server) operationDescription(r route) string {
 	description := r.description
 	switch r.operationID {
-	case "createAgentRun", "streamAgentRun":
+	case "createAgentRun", "streamAgentRun", "streamAgentRunAISDK":
 		if ids := summaryIDs(s.agentSummaries()); len(ids) > 0 {
 			description += "\n\nExposed agents: " + strings.Join(ids, ", ") + "."
 		} else {
@@ -224,13 +224,24 @@ func (s *Server) openAPIResponses(r route) map[string]any {
 	responses := map[string]any{}
 
 	if r.streaming {
-		responses["200"] = map[string]any{
-			"description": "An ordered Server-Sent Events stream. Each event's data is a StreamEvent; the stream ends with exactly one terminal event.",
-			"content": map[string]any{
-				"text/event-stream": map[string]any{
-					"schema": schemaRef(schemaNameStreamEvent),
-				},
+		description := "An ordered Server-Sent Events stream. Each event's data is a StreamEvent; the stream ends with exactly one terminal event."
+		if r.streamingDescription != "" {
+			description = r.streamingDescription
+		}
+		content := map[string]any{
+			"text/event-stream": map[string]any{
+				"schema": schemaRef(schemaNameStreamEvent),
 			},
+		}
+		if r.streamingRaw {
+			content = map[string]any{
+				"text/plain":        map[string]any{"schema": map[string]any{"type": "string"}},
+				"text/event-stream": map[string]any{"schema": map[string]any{"type": "string"}},
+			}
+		}
+		responses["200"] = map[string]any{
+			"description": description,
+			"content":     content,
 		}
 	} else {
 		responses["200"] = map[string]any{

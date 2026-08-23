@@ -122,6 +122,7 @@ func TestOpenAPICoversEveryServedRoute(t *testing.T) {
 		"GET /agents",
 		"POST /agents/{id}/runs",
 		"POST /agents/{id}/runs/stream",
+		"POST /agents/{id}/runs/ai-sdk/stream",
 		"GET /workflows",
 		"POST /workflows/{id}/runs",
 		"GET /threads/{id}",
@@ -132,8 +133,8 @@ func TestOpenAPICoversEveryServedRoute(t *testing.T) {
 			t.Errorf("route %s is served but absent from the OpenAPI document", want)
 		}
 	}
-	if len(documented) != 9 {
-		t.Errorf("documented routes = %d, want 9: %v", len(documented), documented)
+	if len(documented) != 10 {
+		t.Errorf("documented routes = %d, want 10: %v", len(documented), documented)
 	}
 }
 
@@ -193,6 +194,26 @@ func TestOpenAPIReferencesResolve(t *testing.T) {
 		}
 		if _, defined := document.Components.Schemas[name]; !defined {
 			t.Errorf("reference %q does not resolve to a defined schema", ref)
+		}
+	}
+}
+
+func TestAISDKStreamOpenAPIContract(t *testing.T) {
+	server := httpapi.NewServer(httpapi.ServerConfig{})
+	document := generateDocument(t, server)
+	operation := document.Paths["/agents/{id}/runs/ai-sdk/stream"]["post"]
+	var versionFound bool
+	for _, parameter := range operation.Parameters {
+		if parameter.Name == "version" && parameter.In == "query" && parameter.Required {
+			versionFound = true
+		}
+	}
+	if !versionFound {
+		t.Fatal("AI SDK stream does not document required version query parameter")
+	}
+	for _, contentType := range []string{"text/plain", "text/event-stream"} {
+		if _, ok := operation.Responses["200"].Content[contentType]; !ok {
+			t.Errorf("AI SDK stream does not document %s response", contentType)
 		}
 	}
 }

@@ -1224,6 +1224,7 @@ _ = http.ListenAndServe(":8080", server.Handler())
 | `GET /agents`, `GET /workflows` | Enumerate what is exposed |
 | `POST /agents/{id}/runs` | Run an agent to completion |
 | `POST /agents/{id}/runs/stream` | Run an agent, streaming Server-Sent Events |
+| `POST /agents/{id}/runs/ai-sdk/stream?version=v4|v5` | Run an agent using an explicitly versioned AI SDK stream protocol |
 | `POST /workflows/{id}/runs` | Run a workflow to completion |
 | `GET /threads/{id}`, `GET /threads/{id}/messages` | Read durable conversations |
 | `GET /openapi.json` | The generated contract |
@@ -1244,6 +1245,14 @@ vocabulary, and always terminates with exactly one terminal event, so a client
 can distinguish a completed run from a dropped connection. The terminal event
 carries the run's total token usage, summed across every model call. Closing the
 connection cancels the run.
+
+`POST /agents/{id}/runs/ai-sdk/stream` is an opt-in compatibility adapter.
+Pass `version=v4` for AI SDK 4's legacy data stream protocol or `version=v5`
+for AI SDK 5's UI message stream protocol; an omitted or unknown version is a
+400 response before the run starts. The adapter maps text, tool calls,
+structured output, total usage, and terminal errors. It does not change the
+native SSE route. Tool-call arguments follow the configured `Redactor`, so the
+default policy strips them and `PassthroughRedactor` exposes them deliberately.
 
 A request to a route that exists but not for that method is answered `405` with
 an `Allow` header, rather than a `404` that would suggest the resource does not
