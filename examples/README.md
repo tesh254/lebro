@@ -23,9 +23,10 @@ Run the deterministic, network-free model protocol and fixture example:
 go run ./examples/model-fixtures
 ```
 
-This example imports `internal/testkit`, which is deliberately available only
-to this repository's tests and examples. Production packages do not depend on
-the fixture harness.
+Every example is self-contained: scripted models and other stand-ins live
+in-file, so a build can be copied out of this repository and compiled against
+the public module alone. Production packages do not depend on any example
+helper.
 
 Run the schema-backed local tool execution example:
 

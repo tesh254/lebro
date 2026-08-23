@@ -10,7 +10,6 @@ import (
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
 
@@ -53,7 +52,7 @@ func run(output io.Writer) error {
 	}
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "summary", Model: "fixture"},
-		Model:      testkit.NewModel(testkit.Text("Nairobi is 24.5C.")),
+		Model:      newFixtureModel("Nairobi is 24.5C."),
 	})
 	if err != nil {
 		return err
@@ -95,4 +94,20 @@ func must(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter: it always
+// replies with the single scripted turn. A real deployment supplies openai.New
+// or any other lebro.Model instead.
+type fixtureModel struct {
+	reply string
+}
+
+func newFixtureModel(reply string) *fixtureModel { return &fixtureModel{reply: reply} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: m.reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }

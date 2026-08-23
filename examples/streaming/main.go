@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func main() {
@@ -26,14 +25,14 @@ func run(output io.Writer) error {
 	buf := bufio.NewWriter(output)
 	defer func() { _ = buf.Flush() }()
 
-	model := testkit.NewModel(testkit.Stream(
-		testkit.StreamChunk{Text: "The ", Delay: 100 * time.Millisecond},
-		testkit.StreamChunk{Text: "streaming ", Delay: 150 * time.Millisecond},
-		testkit.StreamChunk{Text: "agent ", Delay: 150 * time.Millisecond},
-		testkit.StreamChunk{Text: "is ", Delay: 100 * time.Millisecond},
-		testkit.StreamChunk{Text: "now ", Delay: 120 * time.Millisecond},
-		testkit.StreamChunk{Text: "live.", Delay: 80 * time.Millisecond},
-	))
+	model := newFixtureModel([]fixtureChunk{
+		{text: "The ", delay: 100 * time.Millisecond},
+		{text: "streaming ", delay: 150 * time.Millisecond},
+		{text: "agent ", delay: 150 * time.Millisecond},
+		{text: "is ", delay: 100 * time.Millisecond},
+		{text: "now ", delay: 120 * time.Millisecond},
+		{text: "live.", delay: 80 * time.Millisecond},
+	})
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "streaming-echo", Model: "fixture-model", Instructions: "be brief"},
 		Model:      model,
@@ -100,3 +99,68 @@ func writef(writer io.Writer, format string, values ...any) {
 		panic(err)
 	}
 }
+
+// fixtureChunk is one scripted streaming delta and the pause before it.
+type fixtureChunk struct {
+	text  string
+	delay time.Duration
+}
+
+// fixtureModel is a deterministic stand-in for a streaming provider adapter.
+// Generate returns the full reply in one turn; Stream delivers the same words
+// chunk by chunk with their delays, honoring cancellation so a cancelled run
+// releases the caller immediately. A real deployment supplies openai.New or
+// any other lebro.Model instead.
+type fixtureModel struct {
+	chunks []fixtureChunk
+}
+
+func newFixtureModel(chunks []fixtureChunk) *fixtureModel { return &fixtureModel{chunks: chunks} }
+
+func (m *fixtureModel) fullText() string {
+	var text string
+	for _, chunk := range m.chunks {
+		text += chunk.text
+	}
+	return text
+}
+
+// Generate consumes the whole script synchronously.
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: m.fullText()},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
+}
+
+// Stream delivers the script chunk by chunk. Cancellation between chunks (or
+// while a reader waits) stops delivery so no goroutine outlives the run.
+func (m *fixtureModel) Stream(ctx context.Context, _ lebro.ModelRequest) (lebro.StreamReader, error) {
+	index := 0
+	return &lebro.StreamReaderFunc{
+		NextFn: func() (lebro.StreamDelta, error) {
+			if index >= len(m.chunks) {
+				return lebro.StreamDelta{}, io.EOF
+			}
+			chunk := m.chunks[index]
+			if chunk.delay > 0 {
+				timer := time.NewTimer(chunk.delay)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return lebro.StreamDelta{}, ctx.Err()
+				}
+			}
+			index++
+			delta := lebro.StreamDelta{Text: chunk.text}
+			if index == len(m.chunks) {
+				delta.FinishReason = lebro.FinishReasonStop
+			}
+			return delta, nil
+		},
+		CloseFn: func() error { return nil },
+	}, nil
+}
+
+var _ lebro.StreamingModel = (*fixtureModel)(nil)

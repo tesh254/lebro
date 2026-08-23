@@ -5,24 +5,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(output io.Writer) error {
 	specialist, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "researcher", Name: "Researcher", Instructions: "Answer concisely."},
-		Model:      testkit.NewModel(testkit.Text("Lebro is written in Go.")),
+		Model:      newFixtureModel([]string{"Lebro is written in Go."}),
 	})
 	if err != nil {
 		return err
@@ -49,6 +50,28 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("status: %s\nroutes: %d\nanswer: %s\n", result.Status, len(record.StepOutputs), result.Messages[len(result.Messages)-1].Content)
-	return nil
+	_, err = fmt.Fprintf(output, "status: %s\nroutes: %d\nanswer: %s\n", result.Status, len(record.StepOutputs), result.Messages[len(result.Messages)-1].Content)
+	return err
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter: it replies
+// with the next entry per call. A real deployment supplies openai.New or any
+// other lebro.Model instead.
+type fixtureModel struct {
+	replies []string
+	calls   int
+}
+
+func newFixtureModel(replies []string) *fixtureModel { return &fixtureModel{replies: replies} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.calls >= len(m.replies) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	reply := m.replies[m.calls]
+	m.calls++
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }
