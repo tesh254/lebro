@@ -1,0 +1,84 @@
+examples/memory-processor/main_test.go
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-2,8
+  s_570f9d3bada825::t_404f2e76f12014 3-7,9-20
+examples/refund-approval/main.go
+  s_570f9d3bada825::t_84cf2c37b227d6 210-213,216,222,228,230-233
+examples/rag-tools/main_test.go
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-2,8
+  s_570f9d3bada825::t_41fb282c733ed2 3-7,9-20
+examples/ci-gated-releases/main.go
+  s_570f9d3bada825::t_88ad6c45d19819 114-127,129-134
+  s_570f9d3bada825::t_8376d9f8abc063 54
+  s_570f9d3bada825::t_df6d6a3e5ff15c 14
+examples/request-resolvers/main_test.go
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-2,8
+  s_570f9d3bada825::t_6b144b5fd42e28 3-7,9-17
+scripts/check-coverage.sh
+  s_570f9d3bada825::t_0727314d37b269 22-30
+examples/memory-processor/main.go
+  s_570f9d3bada825::t_b61b1655ab62d4 8,15-21,32,37,41,45,47-48
+Makefile
+  s_33c7e810bad033::t_515990930c0169 8,16-18
+  s_570f9d3bada825::t_8a96fc42ce3a28 25-27
+examples/thread-history/main.go
+  s_570f9d3bada825::t_09b24c1c7e541e 8-9,16-22,26-42,44-46,48
+examples/multitenant-platform/main.go
+  s_570f9d3bada825::t_bcb6f0b347405d 142-143,147-148
+  s_570f9d3bada825::t_3d58af4daa2f27 47-49,53-54
+  s_570f9d3bada825::t_3cff9672875318 87,91
+  s_570f9d3bada825::t_7fdb68f4f5b30a 81
+  s_570f9d3bada825::t_3d5511dd5eda6a 210-296
+examples/workflow-loops/main.go
+  s_570f9d3bada825::t_0ca039df9dd7f6 8-9,15-21,48,52,54-55
+.github/workflows/release.yml
+  s_570f9d3bada825::t_65306fe23ed39f 78-81
+  s_570f9d3bada825::t_67a267df4bd70f 10-14
+  s_33c7e810bad033::t_7759e63d23e7d7 4-8,20-38,56-63,65,69-71,75,77
+  s_570f9d3bada825::t_4152d227097712 39-55
+examples/rag-chunkers/main_test.go
+  s_570f9d3bada825::t_42f04ae042d27c 3-7,9-17,20-25
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-2,8
+  s_570f9d3bada825::t_109d384e7b2b8a 18
+  s_570f9d3bada825::t_e32ac0e785f71a 19
+examples/thread-history/main_test.go
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-2,8
+  s_570f9d3bada825::t_2f9ee90b275726 3-7,9-17
+examples/workflow-loops/main_test.go
+  s_570f9d3bada825::t_33db002abf03e6 3-7,9-17
+  s_33c7e810bad033::t_e37fc5cf94aadb 1-2,8
+examples/request-resolvers/main.go
+  s_570f9d3bada825::t_ef332772982144 7,9,16-24,46,51-52,54-72,74-79
+examples/helpdesk-router/main.go
+  s_570f9d3bada825::t_8e9025c38ceacf 10
+  s_570f9d3bada825::t_9a50cc2834462b 88,92-110
+examples/tenant-policy/main.go
+  s_570f9d3bada825::t_243b46d130feb0 30,53-71
+examples/mcp-client-command/main.go
+  s_570f9d3bada825::t_44f007127c68a1 59-61
+examples/rag-chunkers/main.go
+  s_570f9d3bada825::t_47c34e1ba683f9 9-10,16-22,28-35,43-46,49-51,54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c945bb4382a99d83762c8923a34ad11c249d70ee",
+  "prompts": {},
+  "sessions": {
+    "s_33c7e810bad033": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ed3-1499-7ef3-b07e-e916f1bef97e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    },
+    "s_570f9d3bada825": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fd0fa918effeg22oGfOIlm3jDB",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
