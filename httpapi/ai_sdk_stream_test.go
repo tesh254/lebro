@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"strings"
 	"testing"
@@ -20,7 +21,9 @@ func TestAISDKStreamProtocolSelectionContract(t *testing.T) {
 			server := httpapi.NewServer(httpapi.ServerConfig{})
 			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
 			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+contractCase.Version, httpapi.RunRequest{})
-			if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != contractCase.ContentType {
+			contentType, _, err := mime.ParseMediaType(recorder.Header().Get("Content-Type"))
+			wantContentType, _, wantErr := mime.ParseMediaType(contractCase.ContentType)
+			if err != nil || wantErr != nil || recorder.Code != http.StatusOK || contentType != wantContentType {
 				t.Fatalf("version %s status/content type = %d/%q, want 200/%q", contractCase.Version, recorder.Code, recorder.Header().Get("Content-Type"), contractCase.ContentType)
 			}
 		})

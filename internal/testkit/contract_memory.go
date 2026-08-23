@@ -65,8 +65,10 @@ func WorkingMemoryContractSuite(t *testing.T, newStore StoreFactory) {
 		t.Fatalf("cleared fact error = %v, want ErrNotFound", err)
 	}
 	for _, scope := range []lebro.WorkingMemoryScope{ownerB, otherTenant} {
-		if _, err := repo.GetWorkingMemoryFact(ctx, scope, "name"); err != nil {
-			t.Fatalf("clear leaked into %v: %v", scope, err)
+		if _, err := repo.GetWorkingMemoryFact(ctx, scope, "name"); errors.Is(err, lebro.ErrNotFound) {
+			t.Fatalf("clear leaked into %v", scope)
+		} else if err != nil {
+			t.Fatalf("get preserved fact in %v: %v", scope, err)
 		}
 	}
 }

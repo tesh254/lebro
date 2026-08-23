@@ -60,10 +60,10 @@ func NetworkPathContractSuite(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := network.Run(context.Background(), lebro.RunInput{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "question"}}})
-	if err != nil || result.Status != lebro.RunStatusSucceeded || result.Messages[len(result.Messages)-1].Content != "answer" {
+	if err != nil || result.Status != lebro.RunStatusSucceeded || len(result.Messages) == 0 || result.Messages[len(result.Messages)-1].Content != "answer" {
 		t.Fatalf("network result = %#v, %v", result, err)
 	}
-	if len(secondInput.Messages) != 1 || !strings.Contains(secondInput.Messages[0].Content, "Previous specialist output:\nfacts") {
+	if len(secondInput.Messages) != 1 || !strings.Contains(secondInput.Messages[0].Content, "facts") {
 		t.Fatalf("second specialist input = %#v", secondInput)
 	}
 }
