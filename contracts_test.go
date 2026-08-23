@@ -497,6 +497,7 @@ func TestMAD17AgentLoopPublicContract(t *testing.T) {
 		AgentErrorProviderFailure:      "provider_failure",
 		AgentErrorStepLimitExhausted:   "step_limit_exhausted",
 		AgentErrorCancelled:            "cancelled",
+		AgentErrorResolver:             "resolver",
 	}
 	for kind, want := range kinds {
 		if string(kind) != want {
@@ -510,6 +511,7 @@ func TestMAD17AgentLoopPublicContract(t *testing.T) {
 	sentinels := []error{
 		ErrAgentUnknownTool, ErrAgentInvalidToolArguments, ErrAgentInvalidToolOutput,
 		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentStepLimitExhausted, ErrAgentCancelled,
+		ErrAgentResolver,
 	}
 	for _, sentinel := range sentinels {
 		if sentinel == nil {

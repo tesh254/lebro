@@ -48,6 +48,9 @@ const (
 	AgentErrorUnauthorized AgentErrorKind = "unauthorized"
 	// AgentErrorProcessor means a configured processor blocked or failed a run.
 	AgentErrorProcessor AgentErrorKind = "processor"
+	// AgentErrorResolver means a request-scoped instructions or model resolver
+	// failed, or returned an invalid model selection.
+	AgentErrorResolver AgentErrorKind = "resolver"
 )
 
 var (
@@ -79,6 +82,8 @@ var (
 	ErrAgentUnauthorized = errors.New("lebro: agent unauthorized")
 	// ErrAgentProcessor matches runs stopped by a processor.
 	ErrAgentProcessor = errors.New("lebro: agent processor failure")
+	// ErrAgentResolver matches failures resolving request-scoped agent settings.
+	ErrAgentResolver = errors.New("lebro: agent resolver failure")
 )
 
 // AgentError preserves the category, failing step, and cause of an agent-loop
@@ -152,6 +157,8 @@ func agentErrorSentinel(kind AgentErrorKind) error {
 		return ErrAgentUnauthorized
 	case AgentErrorProcessor:
 		return ErrAgentProcessor
+	case AgentErrorResolver:
+		return ErrAgentResolver
 	default:
 		return errors.New("lebro: agent failure")
 	}
@@ -161,6 +168,25 @@ func agentErrorSentinel(kind AgentErrorKind) error {
 // unbounded loop from exhausting a provider budget while still allowing a
 // multi-turn tool conversation to complete.
 const DefaultAgentMaxSteps = 10
+
+// InstructionsResolver resolves a system instruction string for one run. The
+// runtime passes a caller-owned copy of input, so a resolver cannot alter the
+// agent definition or the caller's input.
+type InstructionsResolver func(context.Context, RunInput) (string, error)
+
+// ModelSelection selects one direct model or one router for a run. Exactly one
+// of Model and Router must be set when returned by a ModelResolver. ModelName
+// is sent to the selected model and may be empty when the adapter does not use
+// a provider-facing model name.
+type ModelSelection struct {
+	Model     Model
+	Router    *ModelRouter
+	ModelName string
+}
+
+// ModelResolver selects the model or router for one run. The selected value is
+// retained only by that run and is never written to the shared Agent.
+type ModelResolver func(context.Context, RunInput) (ModelSelection, error)
 
 // AgentConfig describes a bounded tool-using agent. Model and Definition are
 // required; Tools may be nil for a text-only agent. A non-nil Tools registry
@@ -175,6 +201,13 @@ type AgentConfig struct {
 	// Router optionally routes model calls through a provider registry with
 	// routing policies and fallback chains. When set, Model is ignored.
 	Router *ModelRouter
+	// InstructionsResolver optionally overrides Definition.Instructions for one
+	// run. Its result is resolved once before the first model call.
+	InstructionsResolver InstructionsResolver
+	// ModelResolver optionally overrides Router and Model for one run. Its
+	// result is resolved once before the first model call and takes precedence
+	// over the configured Router and Model.
+	ModelResolver ModelResolver
 	// Tools resolves schema-backed tool handlers by stable ID. May be nil when
 	// Definition.Tools is empty.
 	Tools *ToolRegistry
@@ -228,22 +261,24 @@ type AgentConfig struct {
 // back until a terminal response is produced or a configured bound is reached.
 // The zero value is not usable; construct one with NewAgent.
 type Agent struct {
-	definition     AgentDefinition
-	model          Model
-	router         *ModelRouter
-	tools          *ToolRegistry
-	outputSchema   *ModelOutputSchema
-	compiledOutput CompiledSchema
-	schemaCompiler SchemaCompiler
-	maxSteps       int
-	deadline       time.Duration
-	allowed        map[ToolID]struct{}
-	listener       RunListener
-	clock          Clock
-	idSource       IDSource
-	store          Store
-	policy         Policy
-	processors     ProcessorPipeline
+	definition           AgentDefinition
+	model                Model
+	router               *ModelRouter
+	tools                *ToolRegistry
+	outputSchema         *ModelOutputSchema
+	compiledOutput       CompiledSchema
+	schemaCompiler       SchemaCompiler
+	maxSteps             int
+	deadline             time.Duration
+	allowed              map[ToolID]struct{}
+	listener             RunListener
+	clock                Clock
+	idSource             IDSource
+	store                Store
+	policy               Policy
+	processors           ProcessorPipeline
+	instructionsResolver InstructionsResolver
+	modelResolver        ModelResolver
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -255,7 +290,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	if config.Definition.ID == "" {
 		return nil, errors.New("lebro: agent definition ID is required")
 	}
-	if config.Router == nil && (config.Model == nil || isNilInterface(config.Model)) {
+	if config.Router == nil && (config.Model == nil || isNilInterface(config.Model)) && config.ModelResolver == nil {
 		return nil, errors.New("lebro: agent model or router is required")
 	}
 	if len(config.Definition.Tools) > 0 && (config.Tools == nil) {
@@ -319,22 +354,24 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		}
 	}
 	return &Agent{
-		definition:     definition,
-		model:          config.Model,
-		router:         config.Router,
-		tools:          config.Tools,
-		outputSchema:   outputSchema,
-		compiledOutput: compiledOutput,
-		schemaCompiler: config.SchemaCompiler,
-		maxSteps:       maxSteps,
-		deadline:       config.Deadline,
-		allowed:        allowed,
-		listener:       config.Listener,
-		clock:          clock,
-		idSource:       idSource,
-		store:          config.Store,
-		policy:         config.Policy,
-		processors:     processors,
+		definition:           definition,
+		model:                config.Model,
+		router:               config.Router,
+		tools:                config.Tools,
+		outputSchema:         outputSchema,
+		compiledOutput:       compiledOutput,
+		schemaCompiler:       config.SchemaCompiler,
+		maxSteps:             maxSteps,
+		deadline:             config.Deadline,
+		allowed:              allowed,
+		listener:             config.Listener,
+		clock:                clock,
+		idSource:             idSource,
+		store:                config.Store,
+		policy:               config.Policy,
+		processors:           processors,
+		instructionsResolver: config.InstructionsResolver,
+		modelResolver:        config.ModelResolver,
 	}, nil
 }
 
@@ -392,6 +429,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		input = *decision.Input
 	}
 	metadata = cloneMetadata(input.Metadata)
+	runConfig, resolverErr := a.resolveRunConfig(runCtx, input)
+	if resolverErr != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, resolverErr)
+		return a.fail(runID, input, 0, resolverErr)
+	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -399,7 +441,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return a.fail(runID, input, 0, err)
 	}
 
-	transcript, err := a.buildInitialTranscript(input)
+	transcript, err := a.buildInitialTranscript(input, runConfig.instructions)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
 		return a.fail(runID, input, 0, err)
@@ -427,7 +469,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		modelStart := emitter.emitModelStarted(runID, step, stepID)
 
 		request := ModelRequest{
-			Model:        a.definition.Model,
+			Model:        runConfig.modelName,
 			Messages:     cloneMessages(transcript),
 			Tools:        cloneToolDefinitions(toolDefinitions),
 			OutputSchema: cloneModelOutputSchema(outputSchema),
@@ -443,7 +485,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		} else {
 			request = *decision.Request
 		}
-		response, attempts, err := a.generateModel(runCtx, runID, step, stepID, emitter, request)
+		response, attempts, err := a.generateModel(runConfig, runCtx, runID, step, stepID, emitter, request)
 		allAttempts = append(allAttempts, attempts...)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
@@ -695,6 +737,12 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		input = *decision.Input
 	}
 	metadata := cloneMetadata(input.Metadata)
+	runConfig, resolverErr := a.resolveRunConfig(runCtx, input)
+	if resolverErr != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, resolverErr)
+		return nil, resolverErr
+	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -703,7 +751,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		return nil, err
 	}
 
-	transcript, err := a.buildInitialTranscript(input)
+	transcript, err := a.buildInitialTranscript(input, runConfig.instructions)
 	if err != nil {
 		cancel()
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
@@ -724,7 +772,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		return nil, err
 	}
 
-	streamingModel := a.streamingModelForRun()
+	streamingModel := runConfig.streamingModel()
 
 	deltas := make(chan StreamDelta, 1)
 	done := make(chan streamOutcome, 1)
@@ -755,6 +803,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		loadedCount:     loadedCount,
 		memory:          input.Memory.Clone(),
 		memoryRecalled:  input.memoryRecalled,
+		modelName:       runConfig.modelName,
 	})
 
 	return run, nil
@@ -785,6 +834,7 @@ type streamRunParams struct {
 	loadedCount     int
 	memory          *MemoryProcessorConfig
 	memoryRecalled  bool
+	modelName       string
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -806,7 +856,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		modelStart := p.emitter.emitModelStarted(p.runID, step, stepID)
 
 		request := ModelRequest{
-			Model:        a.definition.Model,
+			Model:        p.modelName,
 			Messages:     cloneMessages(transcript),
 			Tools:        cloneToolDefinitions(p.toolDefinitions),
 			OutputSchema: cloneModelOutputSchema(p.outputSchema),
@@ -1147,10 +1197,10 @@ func sendDelta(ctx context.Context, ch chan<- StreamDelta, delta StreamDelta) bo
 	}
 }
 
-func (a *Agent) buildInitialTranscript(input RunInput) ([]Message, error) {
+func (a *Agent) buildInitialTranscript(input RunInput, instructions string) ([]Message, error) {
 	messages := make([]Message, 0, len(input.Messages)+1)
-	if a.definition.Instructions != "" {
-		system := Message{Role: RoleSystem, Content: a.definition.Instructions}
+	if instructions != "" {
+		system := Message{Role: RoleSystem, Content: instructions}
 		if err := system.Validate(); err != nil {
 			return nil, &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: err}
 		}
@@ -1276,13 +1326,13 @@ func (a *Agent) applyDeadline(ctx context.Context) (context.Context, context.Can
 // generateModel calls the model either directly or through the router, emitting
 // model_attempt events when routing is in use. It returns the response,
 // accumulated model attempts, and any error.
-func (a *Agent) generateModel(ctx context.Context, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
-	if a.router == nil {
-		resp, err := a.model.Generate(ctx, request)
+func (a *Agent) generateModel(config agentRunConfig, ctx context.Context, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
+	if config.router == nil {
+		resp, err := config.model.Generate(ctx, request)
 		return resp, nil, err
 	}
 
-	result, err := a.router.generateWithAttempts(ctx, request, &agentModelAttemptObserver{
+	result, err := config.router.generateWithAttempts(ctx, request, &agentModelAttemptObserver{
 		emitter: emitter,
 		runID:   runID,
 		step:    step,
@@ -1312,11 +1362,71 @@ func (o *agentModelAttemptObserver) modelAttemptFinished(attempt ModelAttempt) {
 // streamingModelForRun returns the streaming model for the current run. When
 // using a router, it returns the router itself (which implements StreamingModel).
 // When using a direct model, it returns the streaming adapter if available.
-func (a *Agent) streamingModelForRun() StreamingModel {
-	if a.router != nil {
-		return a.router
+func (c agentRunConfig) streamingModel() StreamingModel {
+	if c.router != nil {
+		return c.router
 	}
-	return AsStreamingModel(a.model)
+	return AsStreamingModel(c.model)
+}
+
+type agentRunConfig struct {
+	instructions string
+	model        Model
+	router       *ModelRouter
+	modelName    string
+}
+
+func (a *Agent) resolveRunConfig(ctx context.Context, input RunInput) (agentRunConfig, *AgentError) {
+	config := agentRunConfig{
+		instructions: a.definition.Instructions,
+		model:        a.model,
+		router:       a.router,
+		modelName:    a.definition.Model,
+	}
+	if a.instructionsResolver != nil {
+		instructions, err := a.instructionsResolver(ctx, cloneRunInput(input))
+		if err != nil {
+			return agentRunConfig{}, resolverAgentError("resolve instructions", err)
+		}
+		config.instructions = instructions
+	}
+	if a.modelResolver != nil {
+		selection, err := a.modelResolver(ctx, cloneRunInput(input))
+		if err != nil {
+			return agentRunConfig{}, resolverAgentError("resolve model", err)
+		}
+		if err := selection.validate(); err != nil {
+			return agentRunConfig{}, resolverAgentError("resolve model", err)
+		}
+		config.model = selection.Model
+		config.router = selection.Router
+		config.modelName = selection.ModelName
+	}
+	return config, nil
+}
+
+func (s ModelSelection) validate() error {
+	hasModel := s.Model != nil && !isNilInterface(s.Model)
+	hasRouter := s.Router != nil
+	if hasModel == hasRouter {
+		return errors.New("lebro: model resolver must select exactly one model or router")
+	}
+	return nil
+}
+
+func resolverAgentError(action string, err error) *AgentError {
+	return &AgentError{Kind: AgentErrorResolver, Step: 0, Err: fmt.Errorf("lebro: %s: %w", action, err)}
+}
+
+func cloneRunInput(input RunInput) RunInput {
+	return RunInput{
+		Messages:       cloneMessages(input.Messages),
+		ThreadID:       input.ThreadID,
+		Metadata:       cloneMetadata(input.Metadata),
+		OutputSchema:   cloneModelOutputSchema(input.OutputSchema),
+		Memory:         input.Memory.Clone(),
+		memoryRecalled: input.memoryRecalled,
+	}
 }
 
 func (a *Agent) cancelledWithAttempts(runID RunID, messages []Message, metadata map[string]string, step int, err error, attempts []ModelAttempt) (RunResult, error) {

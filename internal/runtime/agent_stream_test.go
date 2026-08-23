@@ -185,6 +185,42 @@ func TestAgentRunStreamTextOnlyEmitsOrderedDeltas(t *testing.T) {
 	}
 }
 
+func TestAgentRunStreamUsesResolvedModelAndInstructions(t *testing.T) {
+	t.Parallel()
+
+	configured := newStreamScriptedModel(textDeltas("configured"))
+	selected := newStreamScriptedModel(textDeltas("selected"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Instructions: "configured", Model: "configured-model"},
+		Model:      configured,
+		InstructionsResolver: func(context.Context, RunInput) (string, error) {
+			return "resolved", nil
+		},
+		ModelResolver: func(context.Context, RunInput) (ModelSelection, error) {
+			return ModelSelection{Model: selected, ModelName: "resolved-model"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range run.Deltas {
+	}
+	result, err := run.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[0].Content != "resolved" || result.Messages[len(result.Messages)-1].Content != "selected" {
+		t.Fatalf("result messages = %#v", result.Messages)
+	}
+	if len(configured.Calls()) != 0 || len(selected.Calls()) != 1 || selected.Calls()[0].Model != "resolved-model" {
+		t.Fatalf("configured calls = %#v, selected calls = %#v", configured.Calls(), selected.Calls())
+	}
+}
+
 func TestAgentRunStreamEquivalenceWithRunForTextOnly(t *testing.T) {
 	t.Parallel()
 

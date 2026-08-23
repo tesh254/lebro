@@ -18,6 +18,9 @@ type (
 	AgentConfig                 = runtime.AgentConfig
 	AgentError                  = runtime.AgentError
 	AgentErrorKind              = runtime.AgentErrorKind
+	InstructionsResolver        = runtime.InstructionsResolver
+	ModelResolver               = runtime.ModelResolver
+	ModelSelection              = runtime.ModelSelection
 	RunInput                    = runtime.RunInput
 	MemoryProcessor             = runtime.MemoryProcessor
 	MemoryProcessorConfig       = runtime.MemoryProcessorConfig
@@ -337,6 +340,7 @@ const (
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
 	AgentErrorUnauthorized            = runtime.AgentErrorUnauthorized
 	AgentErrorProcessor               = runtime.AgentErrorProcessor
+	AgentErrorResolver                = runtime.AgentErrorResolver
 
 	ActionAgentRun     = runtime.ActionAgentRun
 	ActionToolCall     = runtime.ActionToolCall
@@ -477,6 +481,7 @@ var (
 
 	ErrPolicyDenied   = runtime.ErrPolicyDenied
 	ErrAgentProcessor = runtime.ErrAgentProcessor
+	ErrAgentResolver  = runtime.ErrAgentResolver
 
 	ErrProcessorFailed          = runtime.ErrProcessorFailed
 	ErrProcessorCancelled       = runtime.ErrProcessorCancelled
