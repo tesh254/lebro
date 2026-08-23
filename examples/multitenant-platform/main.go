@@ -208,7 +208,9 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 }
 
 // fixtureStep scripts one model call: either a tool-call request or a final
-// text turn. stream=true delivers it through Model.Stream instead of Generate.
+// text turn. stream=true marks a step the streaming protocol must consume —
+// Generate refuses such a step, so a test that expected the streaming path
+// but got the synchronous one fails instead of passing by accident.
 type fixtureStep struct {
 	content  string
 	toolCall *lebro.ModelToolCall
@@ -253,11 +255,15 @@ func (m *fixtureModel) response(step fixtureStep) (lebro.ModelResponse, error) {
 	return lebro.ModelResponse{Message: message, FinishReason: finish}, nil
 }
 
-// Generate consumes the next scripted step synchronously.
+// Generate consumes the next scripted step synchronously; it refuses a step
+// marked stream=true so the streaming path cannot silently pass for it.
 func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
 	step, err := m.take()
 	if err != nil {
 		return lebro.ModelResponse{}, err
+	}
+	if step.stream {
+		return lebro.ModelResponse{}, errors.New("fixture model: stream-only step consumed through Generate")
 	}
 	return m.response(step)
 }
@@ -275,7 +281,11 @@ func (m *fixtureModel) Stream(ctx context.Context, _ lebro.ModelRequest) (lebro.
 	} else {
 		deltas <- lebro.StreamDelta{Text: step.content}
 	}
-	deltas <- lebro.StreamDelta{FinishReason: map[bool]lebro.FinishReason{true: lebro.FinishReasonToolCalls, false: lebro.FinishReasonStop}[step.toolCall != nil]}
+	finish := lebro.FinishReasonStop
+	if step.toolCall != nil {
+		finish = lebro.FinishReasonToolCalls
+	}
+	deltas <- lebro.StreamDelta{FinishReason: finish}
 	close(deltas)
 
 	return &lebro.StreamReaderFunc{

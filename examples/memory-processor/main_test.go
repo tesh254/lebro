@@ -12,7 +12,7 @@ func TestRunApprovesAndStoresFact(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	for _, want := range []string{"approved: true", `"Ada"`} {
+	for _, want := range []string{"approved: true", `name: "Ada"`} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output = %q, want it to contain %q", out, want)
 		}

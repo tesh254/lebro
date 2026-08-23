@@ -43,12 +43,19 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	tools := []lebro.Tool{
-		must(lebro.NewVectorQueryTool(lebro.VectorQueryToolConfig{ID: "search_handbook", Retriever: vectorFixture{}})),
-		must(lebro.NewDocumentChunkerTool(lebro.DocumentChunkerToolConfig{ID: "chunk_handbook", Chunker: chunker, Document: lebro.Document{ID: "handbook", Content: "Refunds are available for 30 days."}})),
-		must(lebro.NewGraphRetrievalTool(lebro.GraphRetrievalToolConfig{ID: "search_policy_graph", Retriever: graphFixture{}, MaxDepth: 2, MaxResults: 5})),
+	vectorQuery, err := lebro.NewVectorQueryTool(lebro.VectorQueryToolConfig{ID: "search_handbook", Retriever: vectorFixture{}})
+	if err != nil {
+		return err
 	}
-	for _, tool := range tools {
+	chunkerTool, err := lebro.NewDocumentChunkerTool(lebro.DocumentChunkerToolConfig{ID: "chunk_handbook", Chunker: chunker, Document: lebro.Document{ID: "handbook", Content: "Refunds are available for 30 days."}})
+	if err != nil {
+		return err
+	}
+	graphTool, err := lebro.NewGraphRetrievalTool(lebro.GraphRetrievalToolConfig{ID: "search_policy_graph", Retriever: graphFixture{}, MaxDepth: 2, MaxResults: 5})
+	if err != nil {
+		return err
+	}
+	for _, tool := range []lebro.Tool{vectorQuery, chunkerTool, graphTool} {
 		if err := registry.Register(tool); err != nil {
 			return err
 		}
@@ -60,11 +67,4 @@ func run(output io.Writer) error {
 	}
 	_, err = fmt.Fprintln(output, string(result.Output)) // max_depth is clamped to 2.
 	return err
-}
-
-func must(tool lebro.Tool, err error) lebro.Tool {
-	if err != nil {
-		panic(err)
-	}
-	return tool
 }

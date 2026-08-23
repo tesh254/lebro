@@ -21,10 +21,13 @@ profile="${COVERAGE_PROFILE:-coverage.out}"
 update=false
 # Arguments: [--update] [profile]. A positional profile overrides the
 # COVERAGE_PROFILE default, so `check-coverage.sh coverage.out` from CI names
-# the file it writes instead of the argument being ignored.
+# the file it writes instead of the argument being ignored. Any other - or --
+# prefixed argument is rejected, so a typo like --uptdate fails loudly rather
+# than becoming a filename.
 for arg in "$@"; do
 	case "$arg" in
 	--update) update=true ;;
+	-*) echo "unknown option $arg (supported: --update [profile])" >&2; exit 2 ;;
 	*) profile="$arg" ;;
 	esac
 done

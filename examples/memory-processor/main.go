@@ -44,7 +44,7 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(output, string(fact.Value))
+	_, err = fmt.Fprintf(output, "%s: %s\n", "name", fact.Value)
 	return err
 }
 
