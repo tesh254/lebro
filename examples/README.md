@@ -236,6 +236,22 @@ go run ./examples/voice
 
 ## Real-world starting points
 
+Complete, product-shaped builds — each a standalone directory with its own
+README explaining what it composes and how to swap in production providers:
+
+| Build | Directory |
+| --- | --- |
+| Docs support agent | `docs-support-agent` |
+| Extraction service | `document-extraction` |
+| Refund approver | `refund-approval` |
+| Morning digest | `morning-digest` |
+| Helpdesk front desk | `helpdesk-router` |
+| Multi-tenant API | `multitenant-platform` |
+| Voice booking line | `voice-booking` |
+| CI-gated releases | `ci-gated-releases` |
+
+The single-feature examples behind each build:
+
 | Build | Start with |
 | --- | --- |
 | Docs support agent | `rag-retrieval`, `thread-history`, `channels` |
