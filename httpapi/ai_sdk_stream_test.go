@@ -121,6 +121,69 @@ func TestAISDKStreamMapsToolCallsAndTerminalErrors(t *testing.T) {
 	}
 }
 
+func TestAISDKStreamDefaultRedactorKeepsToolCallWithoutArguments(t *testing.T) {
+	const secret = "tool arguments must stay private"
+	for _, version := range []string{"v4", "v5"} {
+		t.Run(version, func(t *testing.T) {
+			registry := mustValue(lebro.NewToolRegistry(lebrojsonschema.NewCompiler()))
+			must(t, registry.Register(echoTool{}))
+			calls, err := lebro.NewModelToolCalls(lebro.ModelToolCall{ID: "call-1", ToolID: "echo", Arguments: json.RawMessage(`{"value":"` + secret + `"}`)})
+			must(t, err)
+			step := 0
+			agent := newAgentWithConfig(t, lebro.AgentConfig{
+				Definition: lebro.AgentDefinition{ID: "assistant", Tools: []lebro.ToolID{"echo"}},
+				Tools:      registry,
+				Model: modelFunc(func(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
+					step++
+					if step == 1 {
+						return lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: calls}, FinishReason: lebro.FinishReasonToolCalls}, nil
+					}
+					return textResponse("done"), nil
+				}),
+			})
+			server := httpapi.NewServer(httpapi.ServerConfig{})
+			must(t, server.ExposeAgent(agent))
+			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+version, httpapi.RunRequest{})
+			body := recorder.Body.String()
+			if strings.Contains(body, secret) {
+				t.Fatalf("redactor leaked tool arguments: %s", body)
+			}
+			if version == "v4" && !strings.Contains(body, `"args":{}`) {
+				t.Fatalf("v4 did not preserve redacted tool call: %s", body)
+			}
+			if version == "v5" && !strings.Contains(body, `"input":{}`) {
+				t.Fatalf("v5 did not preserve redacted tool call: %s", body)
+			}
+		})
+	}
+}
+
+func TestAISDKStreamFailureEmitsAccumulatedUsage(t *testing.T) {
+	for _, version := range []string{"v4", "v5"} {
+		t.Run(version, func(t *testing.T) {
+			model := streamingModel{deltas: []lebro.StreamDelta{
+				{Text: "partial", Usage: lebro.ModelUsage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}},
+				{Err: context.DeadlineExceeded},
+			}}
+			server := httpapi.NewServer(httpapi.ServerConfig{})
+			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+version, httpapi.RunRequest{})
+			body := recorder.Body.String()
+			if version == "v4" {
+				usage, failure := strings.Index(body, `"usage":{"completionTokens":3,"promptTokens":2}`), strings.Index(body, "3:")
+				if usage < 0 || failure < 0 || usage > failure {
+					t.Fatalf("v4 usage must precede failure: %s", body)
+				}
+				return
+			}
+			usage, failure := strings.Index(body, `"type":"data-lebro-usage"`), strings.Index(body, `"type":"error"`)
+			if usage < 0 || failure < 0 || usage > failure {
+				t.Fatalf("v5 usage must precede failure: %s", body)
+			}
+		})
+	}
+}
+
 func TestAISDKStreamRequiresKnownVersion(t *testing.T) {
 	server := httpapi.NewServer(httpapi.ServerConfig{})
 	must(t, server.ExposeAgent(newAgent(t, "assistant", &scriptedModel{})))
@@ -130,5 +193,9 @@ func TestAISDKStreamRequiresKnownVersion(t *testing.T) {
 			t.Errorf("%s status = %d", target, recorder.Code)
 		}
 		assertErrorCode(t, recorder, httpapi.ErrorCodeInvalidRequest)
+	}
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/missing/runs/ai-sdk/stream?version=v6", httpapi.RunRequest{})
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("missing agent with invalid version status = %d", recorder.Code)
 	}
 }

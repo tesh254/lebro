@@ -19,14 +19,14 @@ const (
 // handleAgentAISDKStream is an opt-in adapter for AI SDK clients. It does not
 // share framing with handleAgentStream, preserving the native SSE contract.
 func (s *Server) handleAgentAISDKStream(w http.ResponseWriter, r *http.Request) {
-	version, ok := aiSDKVersion(r.URL.Query().Get("version"))
-	if !ok {
-		writeError(w, r, ErrorCodeInvalidRequest)
-		return
-	}
 	agent, ok := s.lookupAgent(r.PathValue("id"))
 	if !ok {
 		writeError(w, r, ErrorCodeNotFound)
+		return
+	}
+	version, ok := aiSDKVersion(r.URL.Query().Get("version"))
+	if !ok {
+		writeError(w, r, ErrorCodeInvalidRequest)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -56,6 +56,7 @@ func (s *Server) handleAgentAISDKStream(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Content-Type", "text/event-stream")
 	}
 	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
@@ -170,6 +171,9 @@ func (w *aiSDKStreamWriter) terminal(result lebro.RunResult, runErr error, total
 		} else if result.Status == lebro.RunStatusCancelled {
 			code = ErrorCodeCancelled
 		}
+		if total != (lebro.ModelUsage{}) && !w.usage(total) {
+			return false
+		}
 		if w.version == aiSDKStreamV4 {
 			return w.writeV4("3", errorBody(code).Message)
 		}
@@ -178,11 +182,18 @@ func (w *aiSDKStreamWriter) terminal(result lebro.RunResult, runErr error, total
 	if w.version == aiSDKStreamV4 {
 		return w.writeV4JSON("d", map[string]any{"finishReason": w.aiSDKFinishReason(), "usage": aiSDKV4Usage(total)})
 	}
-	return w.writeV5(map[string]any{"type": "data-lebro-usage", "data": aiSDKV5Usage(total)}) &&
+	return w.usage(total) &&
 		w.writeV5(map[string]any{"type": "data-lebro-finish-reason", "data": w.aiSDKFinishReason()}) &&
 		w.writeV5(map[string]any{"type": "text-end", "id": w.textID}) &&
 		w.writeV5(map[string]any{"type": "finish-step"}) &&
 		w.writeV5(map[string]any{"type": "finish"})
+}
+
+func (w *aiSDKStreamWriter) usage(total lebro.ModelUsage) bool {
+	if w.version == aiSDKStreamV4 {
+		return w.writeV4JSON("2", []any{map[string]any{"usage": aiSDKV4Usage(total)}})
+	}
+	return w.writeV5(map[string]any{"type": "data-lebro-usage", "data": aiSDKV5Usage(total)})
 }
 
 func (w *aiSDKStreamWriter) aiSDKFinishReason() string {
