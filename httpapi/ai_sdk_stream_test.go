@@ -3,14 +3,32 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"mime"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/httpapi"
+	"github.com/tesh254/lebro/internal/testkit"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
+
+func TestAISDKStreamProtocolSelectionContract(t *testing.T) {
+	for _, contractCase := range testkit.AISDKStreamContractCases() {
+		t.Run(contractCase.Version, func(t *testing.T) {
+			model := streamingModel{deltas: []lebro.StreamDelta{{Text: "ok", FinishReason: lebro.FinishReasonStop}}}
+			server := httpapi.NewServer(httpapi.ServerConfig{})
+			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+contractCase.Version, httpapi.RunRequest{})
+			contentType, _, err := mime.ParseMediaType(recorder.Header().Get("Content-Type"))
+			wantContentType, _, wantErr := mime.ParseMediaType(contractCase.ContentType)
+			if err != nil || wantErr != nil || recorder.Code != http.StatusOK || contentType != wantContentType {
+				t.Fatalf("version %s status/content type = %d/%q, want 200/%q", contractCase.Version, recorder.Code, recorder.Header().Get("Content-Type"), contractCase.ContentType)
+			}
+		})
+	}
+}
 
 func TestAISDKV4StreamFixture(t *testing.T) {
 	model := streamingModel{deltas: []lebro.StreamDelta{
