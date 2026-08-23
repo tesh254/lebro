@@ -745,6 +745,162 @@ func TestAgentDoesNotMutateCallerInput(t *testing.T) {
 	}
 }
 
+func TestAgentResolvesInstructionsAndModelPerRun(t *testing.T) {
+	t.Parallel()
+
+	configured := newScriptedModel(textResponse("configured"))
+	selected := newScriptedModel(textResponse("selected"))
+	input := RunInput{
+		Messages: []Message{{Role: RoleUser, Content: "hello"}},
+		Metadata: map[string]string{"tenant": "acme"},
+	}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Instructions: "configured instructions", Model: "configured-model"},
+		Model:      configured,
+		InstructionsResolver: func(_ context.Context, got RunInput) (string, error) {
+			if got.Metadata["tenant"] != "acme" {
+				t.Fatalf("resolver input metadata = %#v", got.Metadata)
+			}
+			got.Metadata["tenant"] = "mutated"
+			got.Messages[0].Content = "mutated"
+			return "tenant instructions", nil
+		},
+		ModelResolver: func(_ context.Context, got RunInput) (ModelSelection, error) {
+			if got.Messages[0].Content != "hello" || got.Metadata["tenant"] != "acme" {
+				t.Fatalf("model resolver input = %#v", got)
+			}
+			return ModelSelection{Model: selected, ModelName: "tenant-model"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[0].Content != "tenant instructions" || result.Messages[len(result.Messages)-1].Content != "selected" {
+		t.Fatalf("result messages = %#v", result.Messages)
+	}
+	if len(configured.calls) != 0 || len(selected.calls) != 1 || selected.calls[0].Model != "tenant-model" {
+		t.Fatalf("configured calls = %d, selected calls = %#v", len(configured.calls), selected.calls)
+	}
+	if input.Metadata["tenant"] != "acme" || input.Messages[0].Content != "hello" {
+		t.Fatalf("caller input mutated: %#v", input)
+	}
+	if agent.definition.Instructions != "configured instructions" || agent.definition.Model != "configured-model" {
+		t.Fatalf("agent definition mutated: %#v", agent.definition)
+	}
+}
+
+func TestAgentResolverFailureIsNormalizedAndEmitted(t *testing.T) {
+	t.Parallel()
+
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent"},
+		Model:      echoModel{},
+		Listener:   recorder,
+		ModelResolver: func(context.Context, RunInput) (ModelSelection, error) {
+			return ModelSelection{}, errors.New("tenant unavailable")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Run(context.Background(), RunInput{})
+	if result.Status != RunStatusFailed || !errors.Is(err, ErrAgentResolver) {
+		t.Fatalf("result = %#v, error = %v", result, err)
+	}
+	var agentErr *AgentError
+	if !errors.As(err, &agentErr) || agentErr.Kind != AgentErrorResolver || agentErr.Step != 0 {
+		t.Fatalf("error = %#v", err)
+	}
+	terminal, ok := recorder.TerminalEvent()
+	if !ok || terminal.Type != RunEventFailed || !errors.Is(terminal.Error, ErrAgentResolver) {
+		t.Fatalf("terminal event = %#v", terminal)
+	}
+}
+
+func TestAgentRejectsInvalidModelResolverSelections(t *testing.T) {
+	t.Parallel()
+
+	routerRegistry := NewProviderRegistry()
+	if err := routerRegistry.Register(ProviderEntry{ID: "provider", Model: echoModel{}}); err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewModelRouter(ModelRouterConfig{Registry: routerRegistry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		selection ModelSelection
+	}{
+		{name: "neither", selection: ModelSelection{}},
+		{name: "both", selection: ModelSelection{Model: echoModel{}, Router: router}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := NewRunRecorder()
+			agent, err := NewAgent(AgentConfig{
+				Definition: AgentDefinition{ID: "agent"},
+				Model:      echoModel{},
+				Listener:   recorder,
+				ModelResolver: func(context.Context, RunInput) (ModelSelection, error) {
+					return test.selection, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := agent.Run(context.Background(), RunInput{})
+			if result.Status != RunStatusFailed || !errors.Is(err, ErrAgentResolver) {
+				t.Fatalf("result = %#v, error = %v", result, err)
+			}
+			terminal, ok := recorder.TerminalEvent()
+			if !ok || terminal.Type != RunEventFailed || !errors.Is(terminal.Error, ErrAgentResolver) {
+				t.Fatalf("terminal event = %#v", terminal)
+			}
+		})
+	}
+}
+
+func TestAgentModelResolverSelectsRouter(t *testing.T) {
+	t.Parallel()
+
+	configured := newScriptedModel(textResponse("configured"))
+	selected := newScriptedModel(textResponse("routed"))
+	registry := NewProviderRegistry()
+	if err := registry.Register(ProviderEntry{ID: "selected", Model: selected}); err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewModelRouter(ModelRouterConfig{Registry: registry, Policy: RoutingPolicy{Primary: "selected"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "configured-model"},
+		Model:      configured,
+		ModelResolver: func(context.Context, RunInput) (ModelSelection, error) {
+			return ModelSelection{Router: router, ModelName: "routed-model"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Run(context.Background(), RunInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Messages[len(result.Messages)-1].Content != "routed" || len(configured.calls) != 0 {
+		t.Fatalf("result = %#v, configured calls = %d", result, len(configured.calls))
+	}
+	if len(selected.calls) != 1 || selected.calls[0].Model != "routed-model" || len(result.ModelAttempts) != 1 || result.ModelAttempts[0].Provider != "selected" {
+		t.Fatalf("selected calls = %#v, attempts = %#v", selected.calls, result.ModelAttempts)
+	}
+}
+
 func TestAgentRunIsConcurrencySafe(t *testing.T) {
 	t.Parallel()
 
@@ -803,7 +959,7 @@ func TestAgentSentinelErrorsAreDistinct(t *testing.T) {
 	t.Parallel()
 	sentinels := []error{
 		ErrAgentUnknownTool, ErrAgentInvalidToolArguments, ErrAgentInvalidToolOutput,
-		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentStepLimitExhausted, ErrAgentCancelled,
+		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentStepLimitExhausted, ErrAgentCancelled, ErrAgentResolver,
 	}
 	for i, a := range sentinels {
 		for j, b := range sentinels {
