@@ -1,0 +1,41 @@
+internal/testkit/contract_memory.go
+  s_181cc90d891712::t_b856bb03ad912d 105
+  s_181cc90d891712::t_f2fe01198c7b9c 146-147
+  s_181cc90d891712::t_307e07a6709cdd 74-84,91-104,106-109
+  s_181cc90d891712::t_78b794e7bdd214 1-4,6-13,16-73,110-145,148-171
+  s_181cc90d891712::t_8ab47bd4638428 5
+  s_181cc90d891712::t_891c173a2e5d22 14-15
+  s_181cc90d891712::t_79efeb0a798abc 85-90
+httpapi/ai_sdk_stream_test.go
+  s_181cc90d891712::t_661410e9afb72e 12,16-28
+internal/runtime/postgres_vector_test.go
+  s_181cc90d891712::t_09bb3c98f98ecb 48-69,73,77-81,85,89-92
+  s_181cc90d891712::t_fe1d617cce192a 70-72,74-76,82-84,86-88
+internal/testkit/contract_parity.go
+  s_181cc90d891712::t_95111b581efcc9 1-11,13-36,39-96,100-105
+  s_181cc90d891712::t_891c173a2e5d22 12,37-38
+  s_181cc90d891712::t_4fda9aba4d6994 97-99
+internal/runtime/contract_suite_test.go
+  s_181cc90d891712::t_307e07a6709cdd 51-57,67-70
+  s_181cc90d891712::t_95111b581efcc9 36-43
+  s_181cc90d891712::t_09bb3c98f98ecb 44-50,58-66,71-103
+internal/runtime/postgres_contract_test.go
+  s_181cc90d891712::t_307e07a6709cdd 81-111
+  s_181cc90d891712::t_09bb3c98f98ecb 50-80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8eca6e475088d945c733a0dd9cc6643b770882dc",
+  "prompts": {},
+  "sessions": {
+    "s_181cc90d891712": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02eba-b4e4-73f3-904c-c6838b710b41",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
