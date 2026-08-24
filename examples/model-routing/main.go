@@ -5,12 +5,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func main() {
@@ -19,15 +19,11 @@ func main() {
 
 func run(output io.Writer) error {
 	// Create two fixture models: one that fails, one that succeeds.
-	failModel := testkit.NewModel(
-		testkit.Failure(&lebro.ModelError{
-			Kind:    lebro.ModelErrorUnavailable,
-			Message: "provider down",
-		}),
-	)
-	okModel := testkit.NewModel(
-		testkit.Text("Hello from fallback provider!"),
-	)
+	failModel := newFailingModel(&lebro.ModelError{
+		Kind:    lebro.ModelErrorUnavailable,
+		Message: "provider down",
+	})
+	okModel := newFixtureModel([]string{"Hello from fallback provider!"})
 
 	// Register both providers in a registry.
 	registry := lebro.NewProviderRegistry()
@@ -110,6 +106,39 @@ func run(output io.Writer) error {
 	}
 
 	return nil
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter; a real
+// deployment registers openai.New or any other lebro.Model instead.
+type fixtureModel struct {
+	replies []string
+	calls   int
+}
+
+func newFixtureModel(replies []string) *fixtureModel { return &fixtureModel{replies: replies} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.calls >= len(m.replies) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	reply := m.replies[m.calls]
+	m.calls++
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
+}
+
+// failingModel always returns the supplied provider error, standing in for a
+// primary provider that is down.
+type failingModel struct {
+	err error
+}
+
+func newFailingModel(err error) *failingModel { return &failingModel{err: err} }
+
+func (m *failingModel) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
+	return lebro.ModelResponse{}, m.err
 }
 
 func writef(output io.Writer, format string, args ...any) {

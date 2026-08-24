@@ -4,16 +4,24 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func main() {
-	standard := testkit.NewModel(testkit.Text("standard tenant response"))
-	premium := testkit.NewModel(testkit.Text("premium tenant response"))
+	if err := run(os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run(output io.Writer) error {
+	standard := newFixtureModel([]string{"standard tenant response"})
+	premium := newFixtureModel([]string{"premium tenant response"})
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{
 			ID:           "support",
@@ -35,15 +43,38 @@ func main() {
 		},
 	})
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	result, err := agent.Run(context.Background(), lebro.RunInput{
 		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "I need help."}},
-		Metadata: map[string]string{"tier": "premium"},
-	})
+		Metadata: map[string]string{"tier": "premium"}},
+	)
 	if err != nil {
-		panic(err)
+		return err
 	}
-	fmt.Fprintln(os.Stdout, result.Messages[len(result.Messages)-1].Content)
+	_, err = fmt.Fprintln(output, result.Messages[len(result.Messages)-1].Content)
+	return err
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter: it replies
+// with the next entry per call. A real deployment supplies openai.New or any
+// other lebro.Model instead; resolvers are unchanged by the swap.
+type fixtureModel struct {
+	replies []string
+	calls   int
+}
+
+func newFixtureModel(replies []string) *fixtureModel { return &fixtureModel{replies: replies} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.calls >= len(m.replies) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	reply := m.replies[m.calls]
+	m.calls++
+	return lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: reply},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }

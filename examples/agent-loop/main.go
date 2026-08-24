@@ -11,7 +11,6 @@ import (
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
 
@@ -65,9 +64,9 @@ func run(output io.Writer) error {
 		return err
 	}
 
-	model := testkit.NewModel(
-		testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather.lookup", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}),
-		testkit.Text("The temperature in Nairobi is 24.5C."),
+	model := newFixtureModel(
+		fixtureStep{toolCalls: []lebro.ModelToolCall{{ID: "call-1", ToolID: "weather.lookup", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}}},
+		fixtureStep{content: "The temperature in Nairobi is 24.5C."},
 	)
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{
@@ -121,11 +120,15 @@ func run(output io.Writer) error {
 }
 
 func runExhaustingAgent(registry *lebro.ToolRegistry) (lebro.RunResult, error) {
-	fixtures := make([]testkit.Fixture, 0, 4)
+	steps := make([]fixtureStep, 0, 4)
 	for i := 0; i < 4; i++ {
-		fixtures = append(fixtures, testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather.lookup", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}))
+		steps = append(steps, fixtureStep{toolCalls: []lebro.ModelToolCall{{
+			ID:        fmt.Sprintf("call-%d", i+1),
+			ToolID:    "weather.lookup",
+			Arguments: json.RawMessage(`{"city":"Nairobi"}`),
+		}}})
 	}
-	looping := testkit.NewModel(fixtures...)
+	looping := newFixtureModel(steps...)
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "loop", Model: "fixture-model", Tools: []lebro.ToolID{"weather.lookup"}},
 		Model:      looping,
@@ -138,6 +141,45 @@ func runExhaustingAgent(registry *lebro.ToolRegistry) (lebro.RunResult, error) {
 	return agent.Run(context.Background(), lebro.RunInput{
 		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "loop forever"}},
 	})
+}
+
+// fixtureStep scripts one model call: either a tool-call request or a final
+// text turn.
+type fixtureStep struct {
+	content   string
+	toolCalls []lebro.ModelToolCall
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter: one
+// scripted step per call, consumed in order. A real deployment supplies
+// openai.New or any other lebro.Model instead.
+type fixtureModel struct {
+	steps []fixtureStep
+	next  int
+}
+
+func newFixtureModel(steps ...fixtureStep) *fixtureModel {
+	return &fixtureModel{steps: steps}
+}
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.next >= len(m.steps) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	step := m.steps[m.next]
+	m.next++
+	message := lebro.Message{Role: lebro.RoleAssistant, Content: step.content}
+	finish := lebro.FinishReasonStop
+	if len(step.toolCalls) > 0 {
+		calls, err := lebro.NewModelToolCalls(step.toolCalls...)
+		if err != nil {
+			return lebro.ModelResponse{}, err
+		}
+		message.Content = ""
+		message.ToolCalls = calls
+		finish = lebro.FinishReasonToolCalls
+	}
+	return lebro.ModelResponse{Message: message, FinishReason: finish}, nil
 }
 
 func writef(output io.Writer, format string, args ...any) {

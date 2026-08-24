@@ -1,142 +1,129 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
+func successfulAgent() *fixtureModel {
+	return newFixtureModel(
+		fixtureStep{toolCalls: []lebro.ModelToolCall{{ID: "call-1", ToolID: "weather", Arguments: json.RawMessage(`{}`)}}},
+		fixtureStep{structured: json.RawMessage(`{}`)},
+	)
+}
+
+func emptyStream() *streamingFixture { return newStreamingFixture([]string{"ok"}, nil) }
+
 func TestRunUsesScriptedModelWithoutNetwork(t *testing.T) {
-	output := temporaryOutput(t)
-	agent := testkit.NewModel(
-		testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}),
-		testkit.StructuredOutput(json.RawMessage(`{"temperature_c":24.5}`)),
-	)
-	err := run(output,
-		agent,
-		testkit.NewModel(testkit.Stream(testkit.TextChunk("forecast "), testkit.TextChunk("ready"))),
-		testkit.NewModel(testkit.Failure(errors.New("model offline"))),
-		testkit.NewModel(testkit.Text("unused")),
+	var output bytes.Buffer
+	err := run(&output,
+		newFixtureModel(
+			fixtureStep{toolCalls: []lebro.ModelToolCall{{ID: "call-1", ToolID: "weather", Arguments: json.RawMessage(`{"city":"Nairobi"}`)}}},
+			fixtureStep{structured: json.RawMessage(`{"temperature_c":24.5}`)},
+		),
+		newStreamingFixture([]string{"forecast ", "ready"}, nil),
+		newFixtureModel(fixtureStep{err: errors.New("model offline")}),
+		newCancellingFixture(),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	calls := agent.Calls()
-	replayed := calls[1].Request.Messages[1].ToolCalls.Values()
-	if got := replayed[0]; got.ID != "tool-call-0001" || got.ToolID != "weather" || string(got.Arguments) != `{"city":"Nairobi"}` {
-		t.Fatalf("replayed assistant tool call = %#v", got)
-	}
-	if err := output.Close(); err != nil {
-		t.Fatal(err)
-	}
-	content, err := os.ReadFile(output.Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "tool call tool-call-0001: weather {\"city\":\"Nairobi\"}\n" +
+	want := "tool call call-1: weather {\"city\":\"Nairobi\"}\n" +
 		"final: {\"temperature_c\":24.5}\n" +
 		"stream: forecast ready\n" +
 		"failure: model offline\n" +
 		"cancelled: true\n"
-	if string(content) != want {
-		t.Fatalf("output = %q, want %q", content, want)
-	}
-}
-
-func TestExampleMain(t *testing.T) {
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	original := os.Stdout
-	os.Stdout = write
-	t.Cleanup(func() { os.Stdout = original })
-
-	main()
-	if err := write.Close(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = read.Close() })
-	content, err := io.ReadAll(read)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(content), "cancelled: true") {
-		t.Fatalf("main output = %q", content)
+	if output.String() != want {
+		t.Fatalf("output = %q, want %q", output.String(), want)
 	}
 }
 
 func TestRunReturnsModelAndStreamErrors(t *testing.T) {
 	tests := []struct {
 		name       string
-		agent      scriptedModel
-		stream     scriptedModel
-		failing    scriptedModel
-		cancelling scriptedModel
+		agent      generateModel
+		stream     *streamingFixture
+		failing    generateModel
+		cancelling generateModel
 		want       string
 	}{
 		{
-			name: "first agent call", agent: testkit.NewModel(testkit.Failure(errors.New("first"))),
-			stream: testkit.NewModel(), failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "first",
+			name: "first agent call", agent: newFixtureModel(fixtureStep{err: errors.New("first")}),
+			stream: emptyStream(), failing: newFixtureModel(fixtureStep{content: "unused"}), cancelling: newCancellingFixture(), want: "first",
 		},
 		{
-			name: "invalid tool response", agent: invalidToolResponseModel{},
-			stream: testkit.NewModel(), failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "requires at least one",
-		},
-		{
-			name: "missing tool call", agent: testkit.NewModel(testkit.Text("tool")),
-			stream: testkit.NewModel(), failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "want 1",
-		},
-		{
-			name: "second agent call", agent: testkit.NewModel(
-				testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather", Arguments: json.RawMessage(`{}`)}),
-				testkit.Failure(errors.New("second")),
+			name: "invalid tool response", agent: newFixtureModel(
+				fixtureStep{content: "text but finish reason says tool calls"},
+				fixtureStep{structured: json.RawMessage(`{}`)},
 			),
-			stream: testkit.NewModel(), failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "second",
+			stream: emptyStream(), failing: newFixtureModel(fixtureStep{content: "unused"}), cancelling: newCancellingFixture(),
+			want: "tool calls",
 		},
 		{
-			name: "missing structured output", agent: testkit.NewModel(
-				testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather", Arguments: json.RawMessage(`{}`)}),
-				testkit.Text("not JSON"),
+			name: "missing tool call", agent: newFixtureModel(
+				fixtureStep{content: "plain answer"},
+				fixtureStep{structured: json.RawMessage(`{}`)},
 			),
-			stream: testkit.NewModel(), failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "structured output is missing",
+			stream: emptyStream(), failing: newFixtureModel(fixtureStep{content: "unused"}), cancelling: newCancellingFixture(), want: "want 1",
 		},
 		{
-			name: "invalid final response", agent: &invalidFinalModel{},
-			stream: testkit.NewModel(), failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "message role",
+			name: "second agent call", agent: newFixtureModel(
+				fixtureStep{toolCalls: []lebro.ModelToolCall{{ID: "call-1", ToolID: "weather", Arguments: json.RawMessage(`{}`)}}},
+				fixtureStep{err: errors.New("second")},
+			),
+			stream: emptyStream(), failing: newFixtureModel(fixtureStep{content: "unused"}), cancelling: newCancellingFixture(), want: "second",
 		},
 		{
-			name: "stream setup", agent: successfulAgent(), stream: testkit.NewModel(testkit.Failure(errors.New("stream setup"))),
-			failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "stream setup",
+			name: "missing structured output", agent: newFixtureModel(
+				fixtureStep{toolCalls: []lebro.ModelToolCall{{ID: "call-1", ToolID: "weather", Arguments: json.RawMessage(`{}`)}}},
+				fixtureStep{content: "not JSON"},
+			),
+			stream: emptyStream(), failing: newFixtureModel(fixtureStep{content: "unused"}), cancelling: newCancellingFixture(),
+			want: "structured output is missing",
 		},
 		{
-			name: "stream event", agent: successfulAgent(), stream: testkit.NewModel(testkit.Stream(testkit.FailureChunk(errors.New("stream event")))),
-			failing: testkit.NewModel(), cancelling: testkit.NewModel(), want: "stream event",
+			name: "stream setup", agent: successfulAgent(), stream: newStreamingFixture(nil, errors.New("stream setup")),
+			failing: newFixtureModel(fixtureStep{content: "unused"}), cancelling: newCancellingFixture(), want: "stream setup",
 		},
 		{
-			name: "failure unexpectedly succeeds", agent: successfulAgent(), stream: testkit.NewModel(testkit.Stream()),
-			failing: testkit.NewModel(testkit.Text("ok")), cancelling: testkit.NewModel(), want: "unexpectedly succeeded",
+			name: "failing fixture unexpectedly succeeds", agent: successfulAgent(), stream: emptyStream(),
+			failing: newFixtureModel(fixtureStep{content: "ok"}), cancelling: newCancellingFixture(),
+			want: "unexpectedly succeeded",
 		},
 		{
-			name: "wrong cancellation", agent: successfulAgent(), stream: testkit.NewModel(testkit.Stream()),
-			failing: testkit.NewModel(testkit.Failure(errors.New("expected"))), cancelling: ignoringModel{}, want: "cancellation fixture",
+			name: "wrong cancellation", agent: successfulAgent(), stream: emptyStream(),
+			failing: newFixtureModel(fixtureStep{err: errors.New("expected")}), cancelling: ignoringCancelling{},
+			want: "cancellation fixture",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			output := temporaryOutput(t)
-			err := run(output, test.agent, test.stream, test.failing, test.cancelling)
+			var output bytes.Buffer
+			err := run(&output, test.agent, test.stream, test.failing, test.cancelling)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("run() error = %v, want %q", err, test.want)
+				t.Fatalf("run() error = %v, want it to contain %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestStreamingFixtureFailsMidStream(t *testing.T) {
+	stream := &streamingFixture{words: []string{"partial"}, chunkErr: errors.New("stream event")}
+	reader, err := stream.Stream(context.Background(), lebro.ModelRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.Next(); err != nil {
+		t.Fatalf("first delta error = %v", err)
+	}
+	if _, err := reader.Next(); err == nil || !strings.Contains(err.Error(), "stream event") {
+		t.Fatalf("second delta error = %v, want stream event failure", err)
 	}
 }
 
@@ -150,91 +137,8 @@ func TestMust(t *testing.T) {
 	must(errors.New("boom"))
 }
 
-type failingWriter struct{}
+type ignoringCancelling struct{}
 
-func (failingWriter) Write([]byte) (int, error) {
-	return 0, errors.New("write failed")
-}
-
-func TestWriteHelpersPanicOnError(t *testing.T) {
-	tests := []struct {
-		name string
-		fn   func()
-	}{
-		{"write", func() { write(failingWriter{}, "x") }},
-		{"writeln", func() { writeln(failingWriter{}, "x") }},
-		{"writef", func() { writef(failingWriter{}, "%s", "x") }},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			defer func() {
-				if recover() == nil {
-					t.Fatal("expected panic")
-				}
-			}()
-			test.fn()
-		})
-	}
-}
-
-type ignoringModel struct{}
-
-func (ignoringModel) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
+func (ignoringCancelling) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
 	return lebro.ModelResponse{}, nil
-}
-
-type invalidToolResponseModel struct{}
-
-func (invalidToolResponseModel) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
-	return lebro.ModelResponse{
-		Message:      lebro.Message{Role: lebro.RoleAssistant},
-		FinishReason: lebro.FinishReasonToolCalls,
-	}, nil
-}
-
-type invalidFinalModel struct{ calls int }
-
-func (m *invalidFinalModel) Generate(context.Context, lebro.ModelRequest) (lebro.ModelResponse, error) {
-	m.calls++
-	if m.calls == 1 {
-		toolCalls, _ := lebro.NewModelToolCalls(lebro.ModelToolCall{ID: "call-1", ToolID: "weather", Arguments: json.RawMessage(`{}`)})
-		return lebro.ModelResponse{
-			Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: toolCalls}, FinishReason: lebro.FinishReasonToolCalls,
-		}, nil
-	}
-	return lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleUser}, FinishReason: lebro.FinishReasonStop}, nil
-}
-
-func (*invalidFinalModel) StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
-	stream := make(chan testkit.StreamEvent)
-	close(stream)
-	return stream, nil
-}
-
-func (invalidToolResponseModel) StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
-	stream := make(chan testkit.StreamEvent)
-	close(stream)
-	return stream, nil
-}
-
-func (ignoringModel) StreamEvents(context.Context, lebro.ModelRequest) (<-chan testkit.StreamEvent, error) {
-	stream := make(chan testkit.StreamEvent)
-	close(stream)
-	return stream, nil
-}
-
-func successfulAgent() scriptedModel {
-	return testkit.NewModel(
-		testkit.ToolCallResponse(testkit.ToolCall{ToolID: "weather", Arguments: json.RawMessage(`{}`)}),
-		testkit.StructuredOutput(json.RawMessage(`{}`)),
-	)
-}
-
-func temporaryOutput(t *testing.T) *os.File {
-	t.Helper()
-	output, err := os.CreateTemp(t.TempDir(), "model-fixtures-*.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return output
 }

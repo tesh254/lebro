@@ -12,7 +12,6 @@ import (
 	"os"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
 
@@ -21,9 +20,7 @@ func main() {
 }
 
 func run(output io.Writer) error {
-	model := testkit.NewModel(
-		testkit.StructuredOutput(json.RawMessage(`{"temperature_c":24.5,"city":"Nairobi"}`)),
-	)
+	model := newFixtureModel(json.RawMessage(`{"temperature_c":24.5,"city":"Nairobi"}`))
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{
 			ID:           "weather-agent",
@@ -64,6 +61,26 @@ func run(output io.Writer) error {
 	writef(output, "structured: %s\n", result.StructuredOutput().Raw())
 	writef(output, "decoded: %.1fC in %s\n", report.TemperatureC, report.City)
 	return nil
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter that always
+// answers with the given structured payload. A real deployment supplies
+// openai.New or any other lebro.Model instead; the output schema contract is
+// unchanged by the swap.
+type fixtureModel struct {
+	payload json.RawMessage
+}
+
+func newFixtureModel(payload json.RawMessage) *fixtureModel { return &fixtureModel{payload: payload} }
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	return lebro.ModelResponse{
+		Message: lebro.Message{
+			Role:             lebro.RoleAssistant,
+			StructuredOutput: lebro.NewModelStructuredOutput(m.payload),
+		},
+		FinishReason: lebro.FinishReasonStop,
+	}, nil
 }
 
 func writef(output io.Writer, format string, args ...any) {

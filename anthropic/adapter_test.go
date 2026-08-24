@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -58,6 +59,15 @@ func TestStreamInitializesValues(t *testing.T) {
 	}
 	if err := reader.Close(); err != nil {
 		t.Fatal(err)
+	}
+	for {
+		_, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

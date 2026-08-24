@@ -6,6 +6,25 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Eight product-shaped example builds, each a standalone runnable directory
+  with its own README and an adoption guide in `docs/product-builds.md`:
+  `docs-support-agent` (fixed-scope RAG support bot with per-customer durable
+  threads), `document-extraction` (schema-validated extraction behind one HTTP
+  endpoint with typed loud failures), `refund-approval` (suspend/resume refund
+  workflow gated by an approver capability), `morning-digest` (persisted cron
+  with parallel fan-out joined into one brief), `helpdesk-router` (bounded
+  triage network with auditable route records), `multitenant-platform` (policy
+  enforcement at all four authorization points plus streamed tool-call argument
+  redaction), `voice-booking` (voice turns with per-caller thread memory), and
+  `ci-gated-releases` (content-hashed eval dataset where `Compare` names the
+  exact regressed cases). Every example is deterministic, needs no network or
+  API key, and imports no internal package, so a copied build compiles against
+  the public module alone.
+
+- Publishing notes: `docs/releasing.md` describes first-tag indexing on
+  `pkg.go.dev`, including the request-indexing fallback and when to swap the
+  README's relative links for versioned pkg.go.dev URLs.
+
 - Recursive and sliding-window RAG chunkers. `NewRecursiveChunker` preserves
   text while preferring paragraph, line, then word boundaries before a rune
   fallback; `NewSlidingWindowChunker` publishes existing rune-safe fixed-window
@@ -598,6 +617,22 @@ All notable changes to this project are documented in this file.
   `Generate` and emits a single delta per step. The OpenAI-compatible adapter
   implements `StreamingModel` over Server-Sent Events, mapping text deltas,
   usage, finish reasons, and error events into the neutral protocol.
+
+### Changed
+
+- The CI coverage gate is now a ratchet instead of a hard 100% requirement.
+  `scripts/check-coverage.sh` fails when total statement coverage drops below
+  the recorded baseline in `scripts/coverage-baseline`, suggests moving the
+  gate forward when coverage grows, and accepts `--update` to do so; any other
+  flag-shaped argument is rejected rather than treated as a profile filename.
+  `make check` runs the test suite once through the script instead of twice.
+
+- The release workflow anchors the created release at the merged pull
+  request's merge commit rather than the pull_request event's test-merge SHA,
+  paginates tag listing before computing the next version instead of reading
+  only the first hundred tags, and serializes publishes under a `release`
+  concurrency group so two merged PRs cannot race to the same tag. A stray
+  `.gitignore` entry that matched any directory named `streaming` was removed.
 
 ### Fixed
 

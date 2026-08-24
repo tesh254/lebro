@@ -23,9 +23,10 @@ Run the deterministic, network-free model protocol and fixture example:
 go run ./examples/model-fixtures
 ```
 
-This example imports `internal/testkit`, which is deliberately available only
-to this repository's tests and examples. Production packages do not depend on
-the fixture harness.
+Every example is self-contained: scripted models and other stand-ins live
+in-file, so a build can be copied out of this repository and compiled against
+the public module alone. Production packages do not depend on any example
+helper.
 
 Run the schema-backed local tool execution example:
 
@@ -52,6 +53,13 @@ and a configured fallback (no network or API key required):
 
 ```sh
 go run ./examples/supervised-delegation
+```
+
+Run the tenant policy example (a shared agent allows one tenant and rejects
+another before any model call; no network or API key required):
+
+```sh
+go run ./examples/tenant-policy
 ```
 
 Run the bounded agent-network example (routes to a named specialist and reads
@@ -128,6 +136,18 @@ MCP-compatible client; reads from stdin, so pipe requests or connect a client):
 
 ```sh
 go run ./examples/mcp-server
+```
+
+Build that server, then run the command-client example to discover and invoke
+it as an external MCP process:
+
+```sh
+go build -o ./bin/lebro-mcp-server ./examples/mcp-server
+go run ./examples/mcp-client-command \
+  -command ./bin/lebro-mcp-server \
+  -server-name lebro \
+  -tool weather.lookup \
+  -arguments '{"city":"Nairobi"}'
 ```
 
 Run the MCP client example (discovers tools on a remote MCP server and
@@ -214,3 +234,44 @@ network, API key, or speech backend is required):
 ```sh
 go run ./examples/voice
 ```
+
+## Real-world starting points
+
+Complete, product-shaped builds — each a standalone directory with its own
+README and documented in [`docs/product-builds.md`](../docs/product-builds.md):
+
+| Build | Directory |
+| --- | --- |
+| Docs support agent | `docs-support-agent` |
+| Extraction service | `document-extraction` |
+| Refund approver | `refund-approval` |
+| Morning digest | `morning-digest` |
+| Helpdesk front desk | `helpdesk-router` |
+| Multi-tenant API | `multitenant-platform` |
+| Voice booking line | `voice-booking` |
+| CI-gated releases | `ci-gated-releases` |
+
+The single-feature examples behind each build:
+
+| Build | Start with |
+| --- | --- |
+| Docs support agent | `rag-retrieval`, `thread-history`, `channels` |
+| Extraction service | `structured-output`, `http-server` |
+| Refund approver | `workflow-suspend-resume` |
+| Morning digest | `workflow-schedule`, `workflow-fanout-join` |
+| Helpdesk front desk | `agent-network` |
+| Multi-tenant API | `tenant-policy`, `request-resolvers`, `http-client` |
+| Voice booking line | `voice`, `thread-history` |
+| CI-gated releases | `evals-dataset`, `studio` |
+
+Each example is deliberately deterministic unless its directory says otherwise.
+Every directory is an independently runnable Go command in this repository's
+module; keep it that way rather than adding nested modules, so examples run in
+CI with the same dependency and API version users receive. To copy an example
+into another project, create that project's module, `go get` Lebro, then retain
+only the imports used by the command.
+For production, set deadlines, bound agent steps and tool work, authenticate at
+the service boundary, scope identities and tenants through `WithIdentity`, and
+record provider usage for budget enforcement. See `docs/stability.md`,
+`docs/migrations.md`, and `docs/wire-format.md` before deploying durable or
+network-facing work.

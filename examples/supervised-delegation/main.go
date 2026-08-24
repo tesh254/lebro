@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,7 +19,6 @@ import (
 	"time"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 )
 
@@ -34,8 +34,8 @@ func run(output io.Writer) error {
 			Name:         "Researcher",
 			Instructions: "Answer research questions with a single concise finding.",
 		},
-		Model: testkit.NewModel(
-			testkit.Text("The Nairobi office opened in 2019."),
+		Model: newFixtureModel(
+			fixtureStep{content: "The Nairobi office opened in 2019."},
 		),
 	})
 	if err != nil {
@@ -48,8 +48,8 @@ func run(output io.Writer) error {
 			Name:         "Editor",
 			Instructions: "Tighten prose without changing its meaning.",
 		},
-		Model: testkit.NewModel(
-			testkit.Text("Nairobi opened in 2019."),
+		Model: newFixtureModel(
+			fixtureStep{content: "Nairobi opened in 2019."},
 		),
 	})
 	if err != nil {
@@ -124,12 +124,13 @@ func run(output io.Writer) error {
 			Instructions: "Delegate focused work to the most suitable subagent, then report the result.",
 			Tools:        []lebro.ToolID{"delegate"},
 		},
-		Model: testkit.NewModel(
-			testkit.ToolCallResponse(testkit.ToolCall{
+		Model: newFixtureModel(
+			fixtureStep{toolCalls: []lebro.ModelToolCall{{
+				ID:        "call-1",
 				ToolID:    "delegate",
 				Arguments: json.RawMessage(`{"task":"When did the Nairobi office open?"}`),
-			}),
-			testkit.Text("The Nairobi office opened in 2019."),
+			}}},
+			fixtureStep{content: "The Nairobi office opened in 2019."},
 		),
 		Tools:    registry,
 		Listener: supervisorRecorder,
@@ -186,6 +187,45 @@ func finalAssistantContent(result lebro.RunResult) string {
 		}
 	}
 	return ""
+}
+
+// fixtureStep scripts one model call: either a tool-call request or a final
+// text turn.
+type fixtureStep struct {
+	content   string
+	toolCalls []lebro.ModelToolCall
+}
+
+// fixtureModel is a deterministic stand-in for a provider adapter: one
+// scripted step per call, consumed in order. A real deployment supplies
+// openai.New or any other lebro.Model instead.
+type fixtureModel struct {
+	steps []fixtureStep
+	next  int
+}
+
+func newFixtureModel(steps ...fixtureStep) *fixtureModel {
+	return &fixtureModel{steps: steps}
+}
+
+func (m *fixtureModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.next >= len(m.steps) {
+		return lebro.ModelResponse{}, errors.New("fixture model script exhausted")
+	}
+	step := m.steps[m.next]
+	m.next++
+	message := lebro.Message{Role: lebro.RoleAssistant, Content: step.content}
+	finish := lebro.FinishReasonStop
+	if len(step.toolCalls) > 0 {
+		calls, err := lebro.NewModelToolCalls(step.toolCalls...)
+		if err != nil {
+			return lebro.ModelResponse{}, err
+		}
+		message.Content = ""
+		message.ToolCalls = calls
+		finish = lebro.FinishReasonToolCalls
+	}
+	return lebro.ModelResponse{Message: message, FinishReason: finish}, nil
 }
 
 func must(err error) {

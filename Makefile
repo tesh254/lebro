@@ -5,7 +5,7 @@ GOLANGCI_LINT_VERSION ?= v2.12.2
 # non-default location: make studio-ui LEBRO_STUDIO_UI=/path/to/lebro-studio
 LEBRO_STUDIO_UI ?= ../lebro-studio
 
-.PHONY: test vet lint lint-install check studio-ui
+.PHONY: test vet coverage lint lint-install check studio-ui
 
 test:
 	go test ./...
@@ -13,13 +13,18 @@ test:
 vet:
 	go vet ./...
 
+coverage:
+	bash scripts/check-coverage.sh
+
 lint-install:
 	GOBIN=$(CURDIR)/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 lint: lint-install
 	./bin/golangci-lint run ./...
 
-check: test vet lint
+# `check` runs the suite once: the coverage script already executes
+# `go test ./...`, so a separate test target here would double it.
+check: vet coverage lint
 
 # studio-ui builds the lebro-studio UI and copies its client bundle into
 # studio/dist so the studio package embeds a usable UI. Run this before packaging

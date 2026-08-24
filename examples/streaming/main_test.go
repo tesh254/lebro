@@ -5,9 +5,9 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tesh254/lebro"
-	"github.com/tesh254/lebro/internal/testkit"
 )
 
 func TestRunStreamsDeltasAndReturnsResult(t *testing.T) {
@@ -33,15 +33,15 @@ func TestRunStreamsDeltasAndReturnsResult(t *testing.T) {
 
 func TestAsStreamingModelPublicSurface(t *testing.T) {
 	t.Parallel()
-	model := testkit.NewModel(testkit.Stream(testkit.TextChunk("hi")))
+	model := newFixtureModel([]fixtureChunk{{text: "hi"}})
 	if lebro.AsStreamingModel(model) == nil {
-		t.Fatal("AsStreamingModel(testkit.Model) = nil, want StreamingModel")
+		t.Fatal("AsStreamingModel(fixtureModel) = nil, want StreamingModel")
 	}
 }
 
 func TestRunCancelReleasesResources(t *testing.T) {
 	t.Parallel()
-	model := testkit.NewModel(testkit.Stream(testkit.TextChunk("never delivered")))
+	model := newFixtureModel([]fixtureChunk{{text: "never delivered", delay: 5 * time.Second}})
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
 		Definition: lebro.AgentDefinition{ID: "cancel-agent", Model: "fixture-model"},
 		Model:      model,
