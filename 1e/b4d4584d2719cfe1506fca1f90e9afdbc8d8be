@@ -1,0 +1,25 @@
+scripts/check-coverage.sh
+  s_33c7e810bad033::t_2258a6c1d97688 46-48
+examples/multitenant-platform/main_test.go
+  s_33c7e810bad033::t_ded9bbfb2470a5 35-40
+examples/morning-digest/main_test.go
+  s_33c7e810bad033::t_ded9bbfb2470a5 38-43
+examples/document-extraction/main_test.go
+  s_33c7e810bad033::t_ded9bbfb2470a5 5,52-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "1eb4d4584d2719cfe1506fca1f90e9afdbc8d8be",
+  "prompts": {},
+  "sessions": {
+    "s_33c7e810bad033": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ed3-1499-7ef3-b07e-e916f1bef97e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
