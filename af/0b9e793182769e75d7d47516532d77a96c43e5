@@ -1,0 +1,19 @@
+anthropic/adapter_test.go
+  s_33c7e810bad033::t_a3820a48b78e41 7,63-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "af0b9e793182769e75d7d47516532d77a96c43e5",
+  "prompts": {},
+  "sessions": {
+    "s_33c7e810bad033": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a02ed3-1499-7ef3-b07e-e916f1bef97e",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
