@@ -135,13 +135,14 @@ their selected command. Examples marked **external** need the named service.
 | Voice session | [Voice](#voice) | [`voice`](examples/voice): `go run ./examples/voice` |
 | Datasets, scorers, experiments | [Evaluations](#dataset-evaluation-scorers-and-experiment-runs) | [`evals-dataset`](examples/evals-dataset): `go run ./examples/evals-dataset` |
 
-## Product build guides
+## Use cases
 
 Eight complete builds — the kind of system teams actually ship — are documented
 end to end in [`docs/product-builds.md`](docs/product-builds.md), and each is a
 runnable example directory with its own README. Every one runs with no network
 or API key; deterministic stand-ins mark exactly where production providers,
-storage, and authentication plug in.
+storage, and authentication plug in. Expand each case in the guide for usage,
+key code, and real output.
 
 | Build | Ships like | Guide | Runnable example |
 | --- | --- | --- | --- |
