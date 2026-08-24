@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -48,3 +49,37 @@ func TestPostRendersResponse(t *testing.T) {
 		t.Fatalf("post() = %q, %v", got, err)
 	}
 }
+
+func TestPostReturnsReadError(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: errReadCloser{}}, nil
+	})}
+	_, err := post(client, "https://example.test", "{}")
+	if !errors.Is(err, errRead) {
+		t.Fatalf("post() error = %v, want %v", err, errRead)
+	}
+}
+
+func TestRunReturnsWriterError(t *testing.T) {
+	if err := run(failingWriter{}); !errors.Is(err, errWrite) {
+		t.Fatalf("run() error = %v, want %v", err, errWrite)
+	}
+}
+
+var (
+	errRead  = errors.New("read failed")
+	errWrite = errors.New("write failed")
+)
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+type errReadCloser struct{}
+
+func (errReadCloser) Read([]byte) (int, error) { return 0, errRead }
+func (errReadCloser) Close() error             { return nil }
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errWrite }

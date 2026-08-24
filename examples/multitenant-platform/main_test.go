@@ -32,6 +32,12 @@ func TestWritefReturnsWriterError(t *testing.T) {
 	}
 }
 
+func TestRunReturnsWriterError(t *testing.T) {
+	if err := run(failingWriter{}); !errors.Is(err, errWrite) {
+		t.Fatalf("run() error = %v, want %v", err, errWrite)
+	}
+}
+
 var errWrite = errors.New("write failed")
 
 type failingWriter struct{}

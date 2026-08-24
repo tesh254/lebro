@@ -43,7 +43,9 @@ if [[ -z "$baseline" ]]; then
 	exit 1
 fi
 
-go test ./... -coverprofile="$profile"
+# Disable test-result reuse so local preflight measures newly changed code just
+# like GitHub's clean runner.
+go test ./... -count=1 -coverprofile="$profile"
 
 total="$(go tool cover -func="$profile" | awk '/^total:/{print $3}')"
 
