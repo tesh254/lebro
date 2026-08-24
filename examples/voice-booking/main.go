@@ -135,7 +135,7 @@ func (fakeRecognizer) Recognize(ctx context.Context, audio <-chan voice.AudioChu
 			text += string(chunk.Data)
 		}
 		select {
-		case transcripts <- voice.Transcript{Text: text[:len(text)/2], Final: false}:
+		case transcripts <- voice.Transcript{Text: firstHalfRunes(text), Final: false}:
 		case <-ctx.Done():
 			done <- ctx.Err()
 			return
@@ -150,6 +150,11 @@ func (fakeRecognizer) Recognize(ctx context.Context, audio <-chan voice.AudioChu
 	}()
 
 	return voice.NewRecognitionStream(transcripts, done, finished, cancel), nil
+}
+
+func firstHalfRunes(text string) string {
+	runes := []rune(text)
+	return string(runes[:len(runes)/2])
 }
 
 // fakeSynthesizer renders text as one audio chunk of its bytes plus a terminal

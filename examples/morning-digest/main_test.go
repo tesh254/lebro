@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -27,3 +28,15 @@ func TestRunFiresOverdueDigestAfterRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestWritefReturnsWriterError(t *testing.T) {
+	if err := writef(failingWriter{}, "nope"); !errors.Is(err, errWrite) {
+		t.Fatalf("writef() error = %v, want %v", err, errWrite)
+	}
+}
+
+var errWrite = errors.New("write failed")
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errWrite }

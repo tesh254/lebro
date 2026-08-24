@@ -69,6 +69,8 @@ func run(ctx context.Context, output io.Writer, command string, args []string, s
 	if result.State != lebro.ToolExecutionSucceeded {
 		return fmt.Errorf("execute remote %q as %q: %s: %w", toolID, localToolID, result.State, result.Err)
 	}
-	fmt.Fprintf(output, "result: %s\n", result.Output)
+	if _, err := fmt.Fprintf(output, "result: %s\n", result.Output); err != nil {
+		return fmt.Errorf("write result output: %w", err)
+	}
 	return nil
 }

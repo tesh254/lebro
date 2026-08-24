@@ -62,7 +62,9 @@ func run(output io.Writer) error {
 		_ = store.Close()
 		return err
 	}
-	writef(output, "schedule persisted at %s; process exits\n", now.Format(time.RFC3339))
+	if err := writef(output, "schedule persisted at %s; process exits\n", now.Format(time.RFC3339)); err != nil {
+		return err
+	}
 	if err := store.Close(); err != nil {
 		return err
 	}
@@ -95,7 +97,9 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	writef(output, "tick fired %d schedule(s)\n", tick.Fired)
+	if err := writef(output, "tick fired %d schedule(s)\n", tick.Fired); err != nil {
+		return err
+	}
 	if tick.Fired != 1 || len(tick.Executions) == 0 {
 		return fmt.Errorf("expected exactly one fired execution, got %d", tick.Fired)
 	}
@@ -105,7 +109,9 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	writef(output, "digest run %s: %s\n", record.ID, record.Status)
+	if err := writef(output, "digest run %s: %s\n", record.ID, record.Status); err != nil {
+		return err
+	}
 
 	var brief struct {
 		Brief string `json:"brief"`
@@ -113,20 +119,26 @@ func run(output io.Writer) error {
 	if err := json.Unmarshal(record.Output, &brief); err != nil {
 		return err
 	}
-	writef(output, "%s\n", brief.Brief)
+	if err := writef(output, "%s\n", brief.Brief); err != nil {
+		return err
+	}
 
 	schedule, err := reopened.Schedules().GetSchedule(ctx, "morning-digest")
 	if err != nil {
 		return err
 	}
-	writef(output, "next fire: %s\n", schedule.NextFireAt.Format(time.RFC3339))
+	if schedule.NextFireAt == nil {
+		return fmt.Errorf("schedule %q has no next fire time", schedule.ID)
+	}
+	if err := writef(output, "next fire: %s\n", schedule.NextFireAt.Format(time.RFC3339)); err != nil {
+		return err
+	}
 	return nil
 }
 
-func writef(output io.Writer, format string, args ...any) {
-	if _, err := fmt.Fprintf(output, format, args...); err != nil {
-		panic(err)
-	}
+func writef(output io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(output, format, args...)
+	return err
 }
 
 // newDigestWorkflow builds the fan-out-and-join brief. Three independent

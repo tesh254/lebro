@@ -42,7 +42,10 @@ func run(output io.Writer) error {
 	policy := platformPolicy{allowedTenant: "acme"}
 
 	store := lebro.NewMemoryStore()
-	guarded := mustValue(lebro.NewPolicyStore(store, policy))
+	guarded, err := lebro.NewPolicyStore(store, policy)
+	if err != nil {
+		return err
+	}
 
 	model := newFixtureModel(
 		// Consumed by the capable run: request the tool, then close out.
@@ -54,31 +57,21 @@ func run(output io.Writer) error {
 		fixtureStep{content: "Nairobi is 24.5C."},
 	)
 
-	registry := mustValue(lebro.NewToolRegistry(lebrojsonschema.NewCompiler()))
-	must(registry.Register(weatherTool{}))
-
-	agent := mustValue(lebro.NewAgent(lebro.AgentConfig{
-		Definition: lebro.AgentDefinition{
-			ID:           "support",
-			Name:         "Support",
-			Instructions: "Help the caller.",
-			Tools:        []lebro.ToolID{"weather.lookup"},
-		},
-		Model:    model,
-		Tools:    registry,
-		Store:    guarded,
-		Policy:   policy,
-		MaxSteps: 4,
-	}))
+	agent, err := newWeatherAgent("support", "Support", "Help the caller.", model, guarded, policy, 4)
+	if err != nil {
+		return err
+	}
 
 	// 1. A denied tenant is refused at run start; the model fixture is still
 	// unconsumed because nothing reached the provider.
 	denied := lebro.WithIdentity(ctx, lebro.Identity{Subject: "sam", Tenant: "other"})
-	_, err := agent.Run(denied, lebro.RunInput{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	_, err = agent.Run(denied, lebro.RunInput{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
 	if !errors.Is(err, lebro.ErrPolicyDenied) {
 		return fmt.Errorf("expected ErrPolicyDenied for other tenant, got %v", err)
 	}
-	writef(output, "other tenant run: denied before any model call (fixtures left: %d)\n", model.remaining())
+	if err := writef(output, "other tenant run: denied before any model call (fixtures left: %d)\n", model.remaining()); err != nil {
+		return err
+	}
 
 	// 2. An acme caller without tools:call gets past the run gate, but the
 	// model's tool request never executes: a separate fixture model drives this
@@ -89,24 +82,19 @@ func run(output io.Writer) error {
 		ToolID:    "weather.lookup",
 		Arguments: json.RawMessage(`{"city":"Nairobi"}`),
 	}})
-	blockedAgent := mustValue(lebro.NewAgent(lebro.AgentConfig{
-		Definition: lebro.AgentDefinition{
-			ID:           "support",
-			Name:         "Support",
-			Instructions: "Help the caller.",
-			Tools:        []lebro.ToolID{"weather.lookup"},
-		},
-		Model:  blockedModel,
-		Tools:  registry,
-		Policy: policy,
-	}))
+	blockedAgent, err := newWeatherAgent("support", "Support", "Help the caller.", blockedModel, nil, policy, 0)
+	if err != nil {
+		return err
+	}
 	noCaps := lebro.WithIdentity(ctx, lebro.Identity{Subject: "kim", Tenant: "acme"})
 	_, err = blockedAgent.Run(noCaps, lebro.RunInput{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Weather?"}}})
 	var denial *lebro.PolicyDenial
 	if !errors.As(err, &denial) || denial.Action != lebro.ActionToolCall {
 		return fmt.Errorf("expected a typed ActionToolCall denial, got %v", err)
 	}
-	writef(output, "%s without %s: tool call denied (%s on %q)\n", "kim", callTools, denial.Action, denial.Resource.ID)
+	if err := writef(output, "%s without %s: tool call denied (%s on %q)\n", "kim", callTools, denial.Action, denial.Resource.ID); err != nil {
+		return err
+	}
 
 	// 3. The same agent with the capability executes the tool.
 	capable := lebro.WithIdentity(ctx, lebro.Identity{
@@ -118,7 +106,9 @@ func run(output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	writef(output, "%s with %s: %s\n", "ava", callTools, allowed.Messages[len(allowed.Messages)-1].Content)
+	if err := writef(output, "%s with %s: %s\n", "ava", callTools, allowed.Messages[len(allowed.Messages)-1].Content); err != nil {
+		return err
+	}
 
 	// 4. Storage is guarded too: another tenant reading a thread it does not
 	// own hits the policy before the repository.
@@ -127,7 +117,9 @@ func run(output io.Writer) error {
 	if !errors.Is(readErr, lebro.ErrPolicyDenied) {
 		return fmt.Errorf("expected storage read denial, got %v", readErr)
 	}
-	writef(output, "cross-tenant thread read: denied before reaching the store\n")
+	if err := writef(output, "cross-tenant thread read: denied before reaching the store\n"); err != nil {
+		return err
+	}
 
 	// 5. On the wire, streamed tool-call arguments are redacted by default.
 	return streamRedaction(output, policy)
@@ -147,18 +139,10 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 		}},
 		fixtureStep{content: "Done."},
 	)
-	streamRegistry := mustValue(lebro.NewToolRegistry(lebrojsonschema.NewCompiler()))
-	must(streamRegistry.Register(weatherTool{}))
-	streamed := mustValue(lebro.NewAgent(lebro.AgentConfig{
-		Definition: lebro.AgentDefinition{
-			ID:    "streamer",
-			Name:  "Streamer",
-			Tools: []lebro.ToolID{"weather.lookup"},
-		},
-		Model:  streamModel,
-		Tools:  streamRegistry,
-		Policy: policy,
-	}))
+	streamed, err := newWeatherAgent("streamer", "Streamer", "", streamModel, nil, policy, 0)
+	if err != nil {
+		return err
+	}
 
 	server := httpapi.NewServer(httpapi.ServerConfig{
 		Title:      "tenant-stream-example",
@@ -170,7 +154,7 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
-	client := mustValue(httpapi.NewClient(httpapi.ClientConfig{
+	client, err := httpapi.NewClient(httpapi.ClientConfig{
 		BaseURL: httpServer.URL,
 		Header: func(r *http.Request) {
 			// A real deployment derives these from verified credentials; the
@@ -179,7 +163,10 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 			r.Header.Set("X-Subject", "ava")
 			r.Header.Set("X-Capabilities", string(callTools))
 		},
-	}))
+	})
+	if err != nil {
+		return err
+	}
 	acmeCtx := lebro.WithIdentity(ctx, lebro.Identity{Subject: "ava", Tenant: "acme", Capabilities: []lebro.Capability{callTools}})
 
 	stream, err := client.RunStream(acmeCtx, "streamer", httpapi.RunRequest{
@@ -196,7 +183,9 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 			continue
 		}
 		sawToolCall = true
-		writef(output, "streamed tool call %s: arguments visible=%t\n", event.ToolCall.ToolID, len(event.ToolCall.Arguments) != 0)
+		if err := writef(output, "streamed tool call %s: arguments visible=%t\n", event.ToolCall.ToolID, len(event.ToolCall.Arguments) != 0); err != nil {
+			return err
+		}
 	}
 	if _, err := stream.Drain(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
@@ -205,6 +194,29 @@ func streamRedaction(output io.Writer, policy lebro.Policy) error {
 		return fmt.Errorf("stream never surfaced a tool call")
 	}
 	return nil
+}
+
+func newWeatherAgent(id, name, instructions string, model lebro.Model, store lebro.Store, policy lebro.Policy, maxSteps int) (*lebro.Agent, error) {
+	registry, err := lebro.NewToolRegistry(lebrojsonschema.NewCompiler())
+	if err != nil {
+		return nil, err
+	}
+	if err := registry.Register(weatherTool{}); err != nil {
+		return nil, err
+	}
+	return lebro.NewAgent(lebro.AgentConfig{
+		Definition: lebro.AgentDefinition{
+			ID:           lebro.AgentID(id),
+			Name:         name,
+			Instructions: instructions,
+			Tools:        []lebro.ToolID{"weather.lookup"},
+		},
+		Model:    model,
+		Tools:    registry,
+		Store:    store,
+		Policy:   policy,
+		MaxSteps: maxSteps,
+	})
 }
 
 // fixtureStep scripts one model call: either a tool-call request or a final
@@ -373,19 +385,7 @@ func (weatherTool) Execute(_ context.Context, _ json.RawMessage) (json.RawMessag
 	return json.Marshal(map[string]float64{"temperature_c": 24.5})
 }
 
-func writef(output io.Writer, format string, args ...any) {
-	if _, err := fmt.Fprintf(output, format, args...); err != nil {
-		panic(err)
-	}
-}
-
-func must(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
-func mustValue[T any](value T, err error) T {
-	must(err)
-	return value
+func writef(output io.Writer, format string, args ...any) error {
+	_, err := fmt.Fprintf(output, format, args...)
+	return err
 }

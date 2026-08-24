@@ -57,7 +57,7 @@ if lower "${total%\%}" "${baseline%\%}"; then
 	exit 1
 fi
 
-if [[ "$total" != "$baseline" ]]; then
+if ! lower "${baseline%\%}" "${total%\%}" && ! lower "${total%\%}" "${baseline%\%}"; then
 	if [[ "$update" == true ]]; then
 		printf '%s\n' "$total" > "$baseline_file"
 		echo "statement coverage: ${total}; baseline moved to $(cat "$baseline_file")"

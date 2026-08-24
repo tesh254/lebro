@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRunBooksAndRemembersCallerAcrossCalls(t *testing.T) {
@@ -25,5 +26,12 @@ func TestRunBooksAndRemembersCallerAcrossCalls(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output = %q, want it to contain %q", out, want)
 		}
+	}
+}
+
+func TestFirstHalfRunesPreservesUTF8(t *testing.T) {
+	got := firstHalfRunes("naïrobi")
+	if got != "naï" || !utf8.ValidString(got) {
+		t.Fatalf("firstHalfRunes() = %q, valid=%t", got, utf8.ValidString(got))
 	}
 }

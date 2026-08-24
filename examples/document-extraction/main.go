@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/httpapi"
@@ -52,13 +53,32 @@ func run(output io.Writer) error {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
-	fmt.Fprintln(output, "== a clean extraction returns validated invoice JSON ==")
-	fmt.Fprintln(output, post(httpServer.URL+"/agents/invoice-parser/runs", invoiceText))
+	client := &http.Client{Timeout: 5 * time.Second}
+	if _, err := fmt.Fprintln(output, "== a clean extraction returns validated invoice JSON =="); err != nil {
+		return fmt.Errorf("write clean extraction heading: %w", err)
+	}
+	clean, err := post(client, httpServer.URL+"/agents/invoice-parser/runs", invoiceText)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(output, clean); err != nil {
+		return fmt.Errorf("write clean extraction: %w", err)
+	}
 
-	fmt.Fprintln(output, "\n== a malformed extraction fails loudly, not silently ==")
-	fmt.Fprintln(output, post(httpServer.URL+"/agents/invoice-parser/runs", corruptedInvoiceText))
+	if _, err := fmt.Fprintln(output, "\n== a malformed extraction fails loudly, not silently =="); err != nil {
+		return fmt.Errorf("write malformed extraction heading: %w", err)
+	}
+	malformed, err := post(client, httpServer.URL+"/agents/invoice-parser/runs", corruptedInvoiceText)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(output, malformed); err != nil {
+		return fmt.Errorf("write malformed extraction: %w", err)
+	}
 
-	fmt.Fprintln(output, "\n== the endpoint is documented by a generated contract ==")
+	if _, err := fmt.Fprintln(output, "\n== the endpoint is documented by a generated contract =="); err != nil {
+		return fmt.Errorf("write contract heading: %w", err)
+	}
 	document, err := server.OpenAPI()
 	if err != nil {
 		return err
@@ -70,7 +90,9 @@ func run(output io.Writer) error {
 		return err
 	}
 	for path := range contract.Paths {
-		fmt.Fprintln(output, path)
+		if _, err := fmt.Fprintln(output, path); err != nil {
+			return fmt.Errorf("write contract path: %w", err)
+		}
 	}
 	return nil
 }
@@ -154,17 +176,17 @@ func (scriptedModel) Generate(_ context.Context, request lebro.ModelRequest) (le
 func readable(document string) bool { return strings.Contains(document, "INV-") }
 
 // post sends one extraction request and renders status plus body.
-func post(url, body string) string {
-	response, err := http.Post(url, "application/json", bytes.NewReader([]byte(body)))
+func post(client *http.Client, url, body string) (string, error) {
+	response, err := client.Post(url, "application/json", bytes.NewReader([]byte(body)))
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("post extraction request: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("read extraction response: %w", err)
 	}
-	return fmt.Sprintf("%s\n%s", response.Status, payload)
+	return fmt.Sprintf("%s\n%s", response.Status, payload), nil
 }
 
 const invoiceText = `{"messages":[{"content":"INVOICE #INV-2043 — Vendor: Acme Supplies Ltd — Total: 41,980.00 KES"}]}`
