@@ -1,0 +1,32 @@
+anthropic/adapter.go
+  s_429f84dd23fa4b::t_26df4fcfcffbc6 103,108,118-123
+gemini/adapter.go
+  s_429f84dd23fa4b::t_820833b441d628 198-207
+openai/adapter.go
+  s_429f84dd23fa4b::t_e30231e7d512e0 185
+  s_429f84dd23fa4b::t_bea3d518ca350a 576-580
+  s_429f84dd23fa4b::t_962891758adcc0 557
+  s_429f84dd23fa4b::t_0accd1e2b4e162 776
+anthropic/adapter_test.go
+  s_429f84dd23fa4b::t_4b1e188c6a6f75 171-189
+openai/adapter_test.go
+  s_429f84dd23fa4b::t_c48d5a80f5adde 211-248
+gemini/adapter_test.go
+  s_429f84dd23fa4b::t_4b1e188c6a6f75 137-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "db9e4655338ac15eca8b690aac717aee3f31f61b",
+  "prompts": {},
+  "sessions": {
+    "s_429f84dd23fa4b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03962-87e5-77a1-bc5c-76756ff228a1",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
