@@ -1,0 +1,40 @@
+README.md
+  s_142656f970bd7e::t_b38de7bd75c6b4 268
+gemini/adapter_test.go
+  s_142656f970bd7e::t_f2735a7750b1be 123-136
+httpapi/schemas.go
+  s_142656f970bd7e::t_01d43df371c007 72-75
+httpapi/openapi_test.go
+  s_142656f970bd7e::t_b4efb17fd85d2a 502-504
+openai/doc.go
+  ai_agent 30-32
+  s_142656f970bd7e::t_3705ed9f909d5d 23-27
+openai/adapter_test.go
+  s_142656f970bd7e::t_09699f845d0ddd 154,156,172-207
+gemini/adapter.go
+  s_142656f970bd7e::t_ab9c2d0c4a432e 163-166,181-182,200-203
+openai/adapter.go
+  s_142656f970bd7e::t_b3fcbf8d21e06e 109-111
+  s_142656f970bd7e::t_3e980ad046cdf7 66
+  s_142656f970bd7e::t_6623d29a424440 203-204
+  s_142656f970bd7e::t_f136aaadfa9f6a 795-796
+  s_142656f970bd7e::t_69b83d32e6f500 49-53
+  s_142656f970bd7e::t_e4b140dd10980e 59-65
+  s_142656f970bd7e::t_920d32d216572f 104-108,266-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3547d4c1e1e5154d60eec10e6b9c4d1b738de94a",
+  "prompts": {},
+  "sessions": {
+    "s_142656f970bd7e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fc6526c72ffer9TeFD460lfE09",
+        "model": "x-preview-f-free"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
