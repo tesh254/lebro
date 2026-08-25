@@ -168,6 +168,25 @@ func TestReasoningParamsMapBudgetsAndReplayOpaqueBlocks(t *testing.T) {
 	if !strings.Contains(string(encoded), `"signature":"opaque"`) {
 		t.Fatalf("replayed assistant turn lost thinking signature: %s", encoded)
 	}
+
+	params, err = model.params(lebro.ModelRequest{
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningOff},
+		Messages: []lebro.Message{{
+			Role:      lebro.RoleAssistant,
+			Reasoning: lebro.ModelReasoning{Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","thinking":"check","signature":"opaque"}]`))},
+			Content:   "answer",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(params.Messages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params.Thinking.OfDisabled == nil || strings.Contains(string(encoded), `"signature":"opaque"`) {
+		t.Fatalf("disabled thinking params = %s", encoded)
+	}
 }
 
 func TestCancelledContextIsReturnedDirectly(t *testing.T) {

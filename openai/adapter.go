@@ -182,7 +182,7 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 
 	messages := make([]chatMessage, 0, len(request.Messages))
 	for _, message := range request.Messages {
-		mapped, err := mapMessage(message)
+		mapped, err := m.mapMessage(message)
 		if err != nil {
 			return nil, m.invalidRequest(err.Error(), err)
 		}
@@ -286,9 +286,6 @@ func (m *Model) applyReasoning(body map[string]any, request lebro.ModelRequest) 
 func chatReasoning(config lebro.ReasoningConfig) (map[string]any, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
-	}
-	if config.IsZero() {
-		return nil, nil
 	}
 	if config.BudgetTokens > 0 {
 		return map[string]any{"max_tokens": config.BudgetTokens}, nil
@@ -557,7 +554,7 @@ type chatError struct {
 	Param   string `json:"param"`
 }
 
-func mapMessage(message lebro.Message) (chatMessage, error) {
+func (m *Model) mapMessage(message lebro.Message) (chatMessage, error) {
 	role, err := mapRole(message.Role)
 	if err != nil {
 		return chatMessage{}, err
@@ -576,9 +573,11 @@ func mapMessage(message lebro.Message) (chatMessage, error) {
 		content = encoded
 	}
 	out := chatMessage{Role: role, Content: content, Name: message.Name}
-	out.Reasoning = message.Reasoning.Text
-	if details := openAIReasoningDetails(message.Reasoning.Details); len(details) > 0 {
-		out.ReasoningDetails = details
+	if m.includeReasoning {
+		out.Reasoning = message.Reasoning.Text
+		if details := openAIReasoningDetails(message.Reasoning.Details); len(details) > 0 {
+			out.ReasoningDetails = details
+		}
 	}
 	for _, call := range message.ToolCalls.Values() {
 		out.ToolCalls = append(out.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatToolFunction{Name: string(call.ToolID), Arguments: string(call.Arguments)}})
@@ -774,7 +773,7 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 
 	messages := make([]chatMessage, 0, len(request.Messages))
 	for _, message := range request.Messages {
-		mapped, err := mapMessage(message)
+		mapped, err := m.mapMessage(message)
 		if err != nil {
 			return nil, m.invalidRequest(err.Error(), err)
 		}

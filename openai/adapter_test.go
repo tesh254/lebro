@@ -208,6 +208,44 @@ func TestReasoningRequestsIncludeReasoningOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestReasoningReplayRequiresIncludeReasoning(t *testing.T) {
+	message := lebro.Message{
+		Role:      lebro.RoleAssistant,
+		Content:   "answer",
+		Reasoning: lebro.ModelReasoning{Text: "check", Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"reasoning.encrypted","data":"opaque"}]`))},
+	}
+	for _, test := range []struct {
+		name             string
+		includeReasoning bool
+		wantReasoning    bool
+	}{
+		{name: "disabled"},
+		{name: "enabled", includeReasoning: true, wantReasoning: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model, err := New(Config{APIKey: "key", Model: "openai/gpt-5", IncludeReasoning: test.includeReasoning})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := model.buildRequestBody(lebro.ModelRequest{Messages: []lebro.Message{message}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire struct {
+				Messages []map[string]any `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &wire); err != nil {
+				t.Fatal(err)
+			}
+			_, hasReasoning := wire.Messages[0]["reasoning"]
+			_, hasDetails := wire.Messages[0]["reasoning_details"]
+			if hasReasoning != test.wantReasoning || hasDetails != test.wantReasoning {
+				t.Fatalf("reasoning fields = %#v, want present=%t", wire.Messages[0], test.wantReasoning)
+			}
+		})
+	}
+}
+
 func TestOpenAIReasoningReplayIgnoresForeignProviderDetails(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

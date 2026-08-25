@@ -100,10 +100,12 @@ func (m *Model) params(request lebro.ModelRequest) (claude.MessageNewParams, err
 		return claude.MessageNewParams{}, m.invalid(errors.New("lebro: model is required"))
 	}
 	params := claude.MessageNewParams{Model: claude.Model(model), MaxTokens: m.maxTokens}
+	replayThinking := false
 	if thinking, err := m.reasoningParams(request.Reasoning); err != nil {
 		return claude.MessageNewParams{}, m.invalid(err)
 	} else if thinking != nil {
 		params.Thinking = *thinking
+		replayThinking = thinking.OfEnabled != nil
 	}
 	for _, message := range request.Messages {
 		switch message.Role {
@@ -113,11 +115,13 @@ func (m *Model) params(request lebro.ModelRequest) (claude.MessageNewParams, err
 			params.Messages = append(params.Messages, claude.NewUserMessage(claude.NewTextBlock(message.Content)))
 		case lebro.RoleAssistant:
 			blocks := []claude.ContentBlockParamUnion{}
-			thinking, err := anthropicReasoningBlocks(message.Reasoning)
-			if err != nil {
-				return claude.MessageNewParams{}, m.invalid(err)
+			if replayThinking {
+				thinking, err := anthropicReasoningBlocks(message.Reasoning)
+				if err != nil {
+					return claude.MessageNewParams{}, m.invalid(err)
+				}
+				blocks = append(blocks, thinking...)
 			}
-			blocks = append(blocks, thinking...)
 			if message.Content != "" {
 				blocks = append(blocks, claude.NewTextBlock(message.Content))
 			}
