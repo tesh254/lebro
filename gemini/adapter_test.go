@@ -120,6 +120,20 @@ func TestReasoningConfigMapsByGeminiGenerationAndReplaysSignatures(t *testing.T)
 	if config.ThinkingLevel != genai.ThinkingLevelLow || !config.IncludeThoughts {
 		t.Fatalf("Gemini 3 config = %#v", config)
 	}
+	config, err = geminiThinkingConfig("gemini-2.5-flash", lebro.ReasoningConfig{Effort: lebro.ReasoningOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ThinkingBudget == nil || *config.ThinkingBudget != 0 || config.IncludeThoughts || config.ThinkingLevel != "" {
+		t.Fatalf("Gemini 2.5 off config = %#v", config)
+	}
+	config, err = geminiThinkingConfig("gemini-3-pro-preview", lebro.ReasoningConfig{Effort: lebro.ReasoningOff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ThinkingLevel != genai.ThinkingLevelMinimal || config.IncludeThoughts || config.ThinkingBudget != nil {
+		t.Fatalf("Gemini 3 off config = %#v", config)
+	}
 	if _, err := geminiThinkingConfig("gemini-3-pro-preview", lebro.ReasoningConfig{Effort: lebro.ReasoningXHigh}); err == nil {
 		t.Fatal("Gemini 3 accepted unsupported xhigh effort")
 	}

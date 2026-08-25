@@ -69,7 +69,10 @@ var componentSchemas = map[string]json.RawMessage{
 				"not": {
 					"type": "object",
 					"required": ["effort", "budget_tokens"],
-					"properties": {"budget_tokens": {"not": {"const": 0}}}
+					"properties": {
+						"effort": {"minLength": 1},
+						"budget_tokens": {"not": {"const": 0}}
+					}
 				},
 				"additionalProperties": false
 			}

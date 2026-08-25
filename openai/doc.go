@@ -20,11 +20,16 @@
 // max_tokens, seed, or tool_choice without coupling the neutral protocol to a
 // vendor.
 //
-// ReasoningConfig maps to the compatible reasoning object. OpenRouter endpoints
-// also receive include_reasoning for enabled reasoning. Response reasoning text,
+// ReasoningConfig maps to the compatible reasoning object. Setting
+// Config.IncludeReasoning additionally sends include_reasoning so
+// OpenRouter-style endpoints return reasoning text and details; detection is
+// explicit because gateways in front of such endpoints would otherwise lose
+// reasoning output. Response reasoning text,
 // reasoning_details, and reasoning token usage map back onto the neutral
 // protocol. Opaque reasoning details are replayed unchanged on later assistant
-// turns.
+// turns. Endpoints that expect the plain reasoning_effort parameter instead of
+// the reasoning object reject the object; pass reasoning_effort through
+// [github.com/tesh254/lebro.ModelRequest].Extension for those.
 //
 // OpenAI-specific wire types live only in this package so callers depend on
 // the neutral protocol, not a vendor SDK. Configure the adapter once and reuse

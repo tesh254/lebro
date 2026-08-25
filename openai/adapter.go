@@ -46,18 +46,24 @@ type Config struct {
 	UserAgent string
 	// Organization sets the optional OpenAI-Beta / Organization header.
 	Organization string
+	// IncludeReasoning sends include_reasoning alongside the reasoning object
+	// so OpenRouter-style endpoints return reasoning text and details.
+	// Endpoint detection is deliberately explicit: gateways and proxies in
+	// front of such endpoints would otherwise silently lose reasoning output.
+	IncludeReasoning bool
 }
 
 // Model is a [lebro.Model] backed by an OpenAI-compatible chat-completions
 // endpoint. Use [New] to create instances.
 type Model struct {
-	baseURL      string
-	apiKey       string
-	model        string
-	client       *http.Client
-	timeout      time.Duration
-	userAgent    string
-	organization string
+	baseURL          string
+	apiKey           string
+	model            string
+	client           *http.Client
+	timeout          time.Duration
+	userAgent        string
+	organization     string
+	includeReasoning bool
 }
 
 var _ lebro.Model = (*Model)(nil)
@@ -95,13 +101,14 @@ func New(config Config) (*Model, error) {
 	}
 
 	return &Model{
-		baseURL:      strings.TrimRight(baseURL, "/"),
-		apiKey:       config.APIKey,
-		model:        config.Model,
-		client:       client,
-		timeout:      config.Timeout,
-		userAgent:    userAgent,
-		organization: config.Organization,
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		apiKey:           config.APIKey,
+		model:            config.Model,
+		client:           client,
+		timeout:          config.Timeout,
+		userAgent:        userAgent,
+		organization:     config.Organization,
+		includeReasoning: config.IncludeReasoning,
 	}, nil
 }
 
@@ -193,15 +200,8 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 		}
 		body["response_format"] = format
 	}
-	if !request.Reasoning.IsZero() {
-		reasoning, err := chatReasoning(request.Reasoning)
-		if err != nil {
-			return nil, m.invalidRequest(err.Error(), err)
-		}
-		body["reasoning"] = reasoning
-		if strings.Contains(strings.ToLower(m.baseURL), "openrouter.ai") && request.Reasoning.Effort != lebro.ReasoningOff {
-			body["include_reasoning"] = true
-		}
+	if err := m.applyReasoning(body, request); err != nil {
+		return nil, m.invalidRequest(err.Error(), err)
 	}
 	if len(request.Extension) > 0 {
 		var extension map[string]any
@@ -261,6 +261,23 @@ func chatResponseFormat(schema *lebro.ModelOutputSchema) (map[string]any, error)
 		jsonSchema["description"] = schema.Description
 	}
 	return map[string]any{"type": "json_schema", "json_schema": jsonSchema}, nil
+}
+
+// applyReasoning maps neutral reasoning intent onto the wire body shared by
+// generate and stream requests.
+func (m *Model) applyReasoning(body map[string]any, request lebro.ModelRequest) error {
+	if request.Reasoning.IsZero() {
+		return nil
+	}
+	reasoning, err := chatReasoning(request.Reasoning)
+	if err != nil {
+		return err
+	}
+	body["reasoning"] = reasoning
+	if m.includeReasoning && request.Reasoning.Effort != lebro.ReasoningOff {
+		body["include_reasoning"] = true
+	}
+	return nil
 }
 
 // chatReasoning maps neutral reasoning intent to the OpenAI-compatible
@@ -775,15 +792,8 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 		}
 		body["response_format"] = format
 	}
-	if !request.Reasoning.IsZero() {
-		reasoning, err := chatReasoning(request.Reasoning)
-		if err != nil {
-			return nil, m.invalidRequest(err.Error(), err)
-		}
-		body["reasoning"] = reasoning
-		if strings.Contains(strings.ToLower(m.baseURL), "openrouter.ai") && request.Reasoning.Effort != lebro.ReasoningOff {
-			body["include_reasoning"] = true
-		}
+	if err := m.applyReasoning(body, request); err != nil {
+		return nil, m.invalidRequest(err.Error(), err)
 	}
 	if len(request.Extension) > 0 {
 		var extension map[string]any

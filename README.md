@@ -265,7 +265,7 @@ trusted-client redactor explicitly if a client needs it.
 
 | Adapter | Request mapping | Returned state |
 | --- | --- | --- |
-| `openai` | `reasoning.effort` or `reasoning.max_tokens`; OpenRouter requests also set `include_reasoning` | reasoning text, `reasoning_details`, `reasoning_tokens` |
+| `openai` | `reasoning.effort` or `reasoning.max_tokens`; set `Config.IncludeReasoning` for OpenRouter-style endpoints to also send `include_reasoning` | reasoning text, `reasoning_details`, `reasoning_tokens` |
 | `anthropic` | Extended-thinking token budget: low/minimal 1024, medium half `MaxTokens`, high three quarters, xhigh/max `MaxTokens-1` | thinking text, signed/redacted blocks, `thinking_tokens` |
 | `gemini` | Gemini 2.5 uses a budget (1024/4096/8192); newer Gemini uses thinking levels | thought text/signatures, `thoughts_token_count` |
 

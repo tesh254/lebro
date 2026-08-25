@@ -160,17 +160,16 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 }
 
 // geminiThinkingConfig maps effort to the Gemini generations each model
-// family supports. Gemini 2.5 uses token budgets; Gemini 3 uses thinking
-// levels. Unsupported neutral tiers fail instead of becoming a lower tier.
+// family supports. Gemini 2.5 uses token budgets and can disable thinking
+// with a zero budget; Gemini 3 uses thinking levels and cannot disable
+// thinking, so off requests the lowest level instead. Unsupported neutral
+// tiers fail instead of becoming a lower tier.
 func geminiThinkingConfig(model string, reasoning lebro.ReasoningConfig) (*genai.ThinkingConfig, error) {
 	if err := reasoning.Validate(); err != nil {
 		return nil, err
 	}
 	if reasoning.IsZero() {
 		return nil, nil
-	}
-	if reasoning.Effort == lebro.ReasoningOff {
-		return &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)}, nil
 	}
 	if reasoning.BudgetTokens > int64(^uint32(0)>>1) {
 		return nil, errors.New("lebro: Gemini reasoning budget exceeds int32")
@@ -179,6 +178,8 @@ func geminiThinkingConfig(model string, reasoning lebro.ReasoningConfig) (*genai
 		budget := reasoning.BudgetTokens
 		if budget == 0 {
 			switch reasoning.Effort {
+			case lebro.ReasoningOff:
+				return &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)}, nil
 			case lebro.ReasoningMinimal, lebro.ReasoningLow:
 				budget = 1024
 			case lebro.ReasoningMedium:
@@ -196,6 +197,10 @@ func geminiThinkingConfig(model string, reasoning lebro.ReasoningConfig) (*genai
 	}
 	var level genai.ThinkingLevel
 	switch reasoning.Effort {
+	case lebro.ReasoningOff:
+		// Newer families cannot disable thinking; the lowest level is the
+		// closest representable setting and thoughts stay unsurfaced.
+		return &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevelMinimal}, nil
 	case lebro.ReasoningMinimal:
 		level = genai.ThinkingLevelMinimal
 	case lebro.ReasoningLow:

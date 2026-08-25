@@ -499,6 +499,9 @@ func TestOpenAPIRunRequestSchemaMatchesHandler(t *testing.T) {
 		`{"reasoning":{"effort":""}}`,
 		`{"reasoning":{"effort":"medium"}}`,
 		`{"reasoning":{"budget_tokens":2048}}`,
+		// An empty effort is "unset" for ReasoningConfig.Validate, so it may
+		// combine with a budget even though a non-empty effort may not.
+		`{"reasoning":{"effort":"","budget_tokens":2048}}`,
 	} {
 		if err := compiled.Validate([]byte(instance)); err != nil {
 			t.Errorf("schema rejects %s, which the handler accepts: %v", instance, err)

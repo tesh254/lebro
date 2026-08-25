@@ -151,9 +151,9 @@ func TestGenerateMapsReasoningAndProtectsReasoningWireFields(t *testing.T) {
 	}
 }
 
-func TestOpenRouterReasoningRequestsIncludeReasoning(t *testing.T) {
+func TestReasoningRequestsIncludeReasoningOnlyWhenConfigured(t *testing.T) {
 	t.Parallel()
-	model, err := New(Config{APIKey: "key", Model: "openai/gpt-5", BaseURL: "https://openrouter.ai/api/v1"})
+	model, err := New(Config{APIKey: "key", Model: "openai/gpt-5", BaseURL: "https://openrouter.ai/api/v1", IncludeReasoning: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,42 @@ func TestOpenRouterReasoningRequestsIncludeReasoning(t *testing.T) {
 		t.Fatal(err)
 	}
 	if wire["include_reasoning"] != true {
-		t.Fatalf("OpenRouter request = %#v", wire)
+		t.Fatalf("configured request = %#v", wire)
+	}
+
+	streamBody, err := model.buildStreamingRequestBody(lebro.ModelRequest{
+		Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}},
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire = nil
+	if err := json.Unmarshal(streamBody, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["include_reasoning"] != true {
+		t.Fatalf("configured stream request = %#v", wire)
+	}
+
+	// Endpoint detection is explicit: an OpenRouter URL alone must not opt in.
+	defaultModel, err := New(Config{APIKey: "key", Model: "openai/gpt-5", BaseURL: "https://openrouter.ai/api/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = defaultModel.buildRequestBody(lebro.ModelRequest{
+		Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}},
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire = nil
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := wire["include_reasoning"]; exists {
+		t.Fatalf("unconfigured request must not send include_reasoning: %#v", wire)
 	}
 }
 
