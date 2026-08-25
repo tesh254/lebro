@@ -1,0 +1,158 @@
+httpapi/ai_sdk_stream_test.go
+  s_429f84dd23fa4b::t_6b653c22b7d697 96
+  s_429f84dd23fa4b::t_ff5d141e64ab5b 94,108-110
+  s_429f84dd23fa4b::t_2d0d27a7679976 86-93,95,97-107,111-115
+  s_429f84dd23fa4b::t_95e8fcd7d1d080 21
+openai/stream_test.go
+  s_429f84dd23fa4b::t_ef6b8cd1896051 91-146
+openai/contract_test.go
+  s_429f84dd23fa4b::t_6ce057962408f6 59,104-106,148-158,189-191,219-221,293
+  s_429f84dd23fa4b::t_c35eb036a23a42 110-115,122
+README.md
+  s_429f84dd23fa4b::t_8523bb2a561813 258-260
+  s_429f84dd23fa4b::t_ea68b1d3976e1f 229-257,261,266-279,292-293,1386-1387
+  s_429f84dd23fa4b::t_42df550533bb9e 262-265
+anthropic/adapter.go
+  s_429f84dd23fa4b::t_29fc919e34c5f6 103-107,116-120,158-234,251,258-261,264,278
+  s_429f84dd23fa4b::t_d3494a8f7f4e55 8,235-242
+  s_429f84dd23fa4b::t_e85e7f28ad3626 374-376,387-392,403-413,429-446,449
+gemini/adapter.go
+  s_429f84dd23fa4b::t_c6efc01351f3c4 8,404,414-420
+  s_429f84dd23fa4b::t_d7ce156bde4788 228-232
+  s_429f84dd23fa4b::t_2ed114e7fe7e18 92-96,111-115,162-196,198-227,233-247,255,258-261,274,294,305-310
+  s_429f84dd23fa4b::t_86820f4d36711e 197
+obsv/tracer.go
+  s_429f84dd23fa4b::t_edd9a21b40c655 502,620-621
+internal/testkit/contract.go
+  s_429f84dd23fa4b::t_cb5c11af2659fb 84-91,94-96
+  s_429f84dd23fa4b::t_bfb766a923adca 92-93
+httpapi/server_test.go
+  s_429f84dd23fa4b::t_2c8ccefee156f9 59-84
+examples/README.md
+  s_429f84dd23fa4b::t_edb7313cdd5f52 44-49
+internal/runtime/network.go
+  s_429f84dd23fa4b::t_00877ec0fbbe30 264
+obsv/trace.go
+  s_429f84dd23fa4b::t_edd9a21b40c655 87-89
+openai/adapter_test.go
+  s_429f84dd23fa4b::t_d7ce156bde4788 176-194
+  s_429f84dd23fa4b::t_3a0b5f06b01602 112-175
+anthropic/adapter_test.go
+  s_429f84dd23fa4b::t_6079c318680832 10,115-149,151,153-170
+  s_429f84dd23fa4b::t_651d8e854b1004 150,152
+httpapi/stream.go
+  s_429f84dd23fa4b::t_42df550533bb9e 105,121,150
+  s_429f84dd23fa4b::t_27976b778fb1dd 112,152,165,199
+CHANGELOG.md
+  s_429f84dd23fa4b::t_edb7313cdd5f52 9-19
+obsv/metric.go
+  s_429f84dd23fa4b::t_2a17ef8939f7af 33,88,119
+obsv/metric_test.go
+  s_429f84dd23fa4b::t_2a17ef8939f7af 32,37,65-68,80,166
+openai/adapter.go
+  s_429f84dd23fa4b::t_669e3195a86f97 971-972
+  s_429f84dd23fa4b::t_544afdd8d9a2f5 202-204,784-786
+  s_429f84dd23fa4b::t_9eb91d41ca98b0 266-293,778-783,973,1121-1125
+  s_429f84dd23fa4b::t_d7ce156bde4788 563-564,580-599
+  s_429f84dd23fa4b::t_7aeb454f451a7b 298-303,344
+  s_429f84dd23fa4b::t_ef6b8cd1896051 958-961
+  s_429f84dd23fa4b::t_cf0e41b45accd0 196-201,205,304,327,345-348,480-486,503-507,524-529,562,565
+model.go
+  s_429f84dd23fa4b::t_f9f0c7f75ed32c 25-28
+httpapi/ai_sdk_stream.go
+  s_429f84dd23fa4b::t_27976b778fb1dd 122-124,137-144
+  s_429f84dd23fa4b::t_502082559fe160 232-236,240-244
+docs/wire-format.md
+  s_429f84dd23fa4b::t_42df550533bb9e 28-33
+  s_429f84dd23fa4b::t_edb7313cdd5f52 25-27,34
+internal/runtime/model_test.go
+  s_429f84dd23fa4b::t_ce91547a6509cc 37-38,58-71
+  s_429f84dd23fa4b::t_c29c2a0d778dcd 39-41
+httpapi/stream_test.go
+  s_429f84dd23fa4b::t_6f0efb91758ab5 494
+  s_429f84dd23fa4b::t_95e8fcd7d1d080 475,483
+  s_429f84dd23fa4b::t_00877ec0fbbe30 145-152,154-178
+  s_429f84dd23fa4b::t_6b653c22b7d697 153
+httpapi/doc.go
+  s_429f84dd23fa4b::t_42df550533bb9e 30-31
+httpapi/schemas.go
+  s_429f84dd23fa4b::t_42df550533bb9e 82,87,225,252
+  s_429f84dd23fa4b::t_efd27cee6f0091 66
+  s_429f84dd23fa4b::t_44e5cdbeeb0c8e 63-65,67-69,71-74
+  s_429f84dd23fa4b::t_5e9acfa901d4b4 70
+  s_429f84dd23fa4b::t_2f3255988106f6 103
+  s_429f84dd23fa4b::t_00877ec0fbbe30 61-62,100,257
+examples/reasoning/README.md
+  s_429f84dd23fa4b::t_13286d7e89133e 1-16
+httpapi/redact.go
+  s_429f84dd23fa4b::t_42df550533bb9e 16-17,21-24,30,44-45
+internal/runtime/model.go
+  s_429f84dd23fa4b::t_f9f0c7f75ed32c 21,25-109,260-263,344,362,373-375,379,443-445,492
+httpapi/handlers.go
+  s_429f84dd23fa4b::t_27976b778fb1dd 180-183,201
+  s_429f84dd23fa4b::t_4a4e7acb168e81 198-200
+  s_429f84dd23fa4b::t_42df550533bb9e 60,158
+httpapi/contracts.go
+  s_429f84dd23fa4b::t_42df550533bb9e 215,226,235-242
+  s_429f84dd23fa4b::t_27976b778fb1dd 27-28,35-38,58,136,172,206-207
+  s_429f84dd23fa4b::t_2f3255988106f6 29
+internal/runtime/agent.go
+  s_429f84dd23fa4b::t_6576c9ff1e9903 1058,1069,1104,1139-1143,1168,1187-1214
+  s_429f84dd23fa4b::t_2f3255988106f6 1245-1247
+  s_429f84dd23fa4b::t_58b64c2df7bfb8 477,809,841,867
+  s_429f84dd23fa4b::t_7aeb454f451a7b 1046
+internal/runtime/run_record.go
+  s_429f84dd23fa4b::t_edd9a21b40c655 146,354
+  s_429f84dd23fa4b::t_2d0d27a7679976 23-26
+api_types.go
+  s_429f84dd23fa4b::t_7aeb454f451a7b 91-94
+  s_429f84dd23fa4b::t_f9f0c7f75ed32c 287-293
+internal/runtime/types.go
+  s_429f84dd23fa4b::t_f9f0c7f75ed32c 47,76-81
+  s_429f84dd23fa4b::t_58b64c2df7bfb8 104-106
+openai/doc.go
+  s_429f84dd23fa4b::t_edb7313cdd5f52 6,17,23-27
+gemini/doc.go
+  s_429f84dd23fa4b::t_edb7313cdd5f52 3,6-8
+obsv/filter_test.go
+  s_429f84dd23fa4b::t_9d510336d5935e 138-140,142
+  s_429f84dd23fa4b::t_2d0d27a7679976 141,156
+anthropic/doc.go
+  s_429f84dd23fa4b::t_edb7313cdd5f52 3,7-10
+internal/testkit/contract_storage.go
+  s_429f84dd23fa4b::t_685c21573fe5d6 63,76-77
+httpapi/server.go
+  s_429f84dd23fa4b::t_42df550533bb9e 32
+httpapi/openapi_test.go
+  s_429f84dd23fa4b::t_00877ec0fbbe30 498,500-501,513-514
+  s_429f84dd23fa4b::t_efd27cee6f0091 499
+  s_429f84dd23fa4b::t_44e5cdbeeb0c8e 516-518
+internal/runtime/agent_stream_test.go
+  s_429f84dd23fa4b::t_2f3255988106f6 237-256
+  s_429f84dd23fa4b::t_00877ec0fbbe30 188-236
+docs/migrations.md
+  s_429f84dd23fa4b::t_edb7313cdd5f52 34-43
+gemini/adapter_test.go
+  s_429f84dd23fa4b::t_651d8e854b1004 132,134
+  s_429f84dd23fa4b::t_d7ce156bde4788 142-145
+  s_429f84dd23fa4b::t_642643974da27d 85-93,95-131,133,135-141
+  s_429f84dd23fa4b::t_c62bddf28687f7 94
+examples/reasoning/main.go
+  s_429f84dd23fa4b::t_13286d7e89133e 1-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "9ad0244feca6031bc1034b8f67df40f94c0a98d2",
+  "prompts": {},
+  "sessions": {
+    "s_429f84dd23fa4b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03962-87e5-77a1-bc5c-76756ff228a1",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
