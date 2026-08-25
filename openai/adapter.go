@@ -193,6 +193,16 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 		}
 		body["response_format"] = format
 	}
+	if !request.Reasoning.IsZero() {
+		reasoning, err := chatReasoning(request.Reasoning)
+		if err != nil {
+			return nil, m.invalidRequest(err.Error(), err)
+		}
+		body["reasoning"] = reasoning
+		if strings.Contains(strings.ToLower(m.baseURL), "openrouter.ai") && request.Reasoning.Effort != lebro.ReasoningOff {
+			body["include_reasoning"] = true
+		}
+	}
 	if len(request.Extension) > 0 {
 		var extension map[string]any
 		if err := json.Unmarshal(request.Extension, &extension); err != nil {
@@ -253,15 +263,45 @@ func chatResponseFormat(schema *lebro.ModelOutputSchema) (map[string]any, error)
 	return map[string]any{"type": "json_schema", "json_schema": jsonSchema}, nil
 }
 
+// chatReasoning maps neutral reasoning intent to the OpenAI-compatible
+// reasoning object used by OpenRouter and modern compatible endpoints. The
+// endpoint remains responsible for model-specific capability checks.
+func chatReasoning(config lebro.ReasoningConfig) (map[string]any, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	if config.IsZero() {
+		return nil, nil
+	}
+	if config.BudgetTokens > 0 {
+		return map[string]any{"max_tokens": config.BudgetTokens}, nil
+	}
+	effort := string(config.Effort)
+	if config.Effort == lebro.ReasoningOff {
+		effort = "none"
+	}
+	return map[string]any{"effort": effort}, nil
+}
+
+func chatMessageReasoning(text string, details json.RawMessage) lebro.ModelReasoning {
+	reasoning := lebro.ModelReasoning{Text: text}
+	if len(details) > 0 && string(details) != "null" {
+		reasoning.Details = lebro.NewModelReasoningDetails(details)
+	}
+	return reasoning
+}
+
 // reservedWireKeys are request-body keys derived from the neutral protocol.
 // Extension fields may add anything else, but these stay owned by the mapping
 // so validated intent cannot drift from the wire representation.
 var reservedWireKeys = map[string]struct{}{
-	"model":           {},
-	"messages":        {},
-	"stream":          {},
-	"tools":           {},
-	"response_format": {},
+	"model":             {},
+	"messages":          {},
+	"stream":            {},
+	"tools":             {},
+	"response_format":   {},
+	"reasoning":         {},
+	"include_reasoning": {},
 }
 
 func reservedWireKey(key string) bool {
@@ -284,6 +324,7 @@ func (m *Model) mapResponse(request lebro.ModelRequest, parsed chatResponse) (le
 	content, contentErr := extractTextContent(choice.Message.Content)
 
 	message := lebro.Message{Role: lebro.RoleAssistant, Content: content}
+	message.Reasoning = chatMessageReasoning(choice.Message.Reasoning, choice.Message.ReasoningDetails)
 	calls, err := mapToolCalls(choice.Message.ToolCalls)
 	if err != nil {
 		return lebro.ModelResponse{}, m.malformedResponse(err.Error(), nil)
@@ -300,8 +341,11 @@ func (m *Model) mapResponse(request lebro.ModelRequest, parsed chatResponse) (le
 	}
 
 	response := lebro.ModelResponse{
-		Message:      message,
-		Usage:        lebro.ModelUsage{InputTokens: parsed.Usage.PromptTokens, OutputTokens: parsed.Usage.CompletionTokens, TotalTokens: parsed.Usage.TotalTokens},
+		Message: message,
+		Usage: lebro.ModelUsage{
+			InputTokens: parsed.Usage.PromptTokens, OutputTokens: parsed.Usage.CompletionTokens,
+			ReasoningTokens: parsed.Usage.CompletionTokensDetails.ReasoningTokens, TotalTokens: parsed.Usage.TotalTokens,
+		},
 		FinishReason: mapFinishReason(choice.FinishReason),
 	}
 	if parsed.ID != "" || parsed.Model != "" {
@@ -433,11 +477,13 @@ func (m *Model) timeoutError(message string, err error) error {
 }
 
 type chatMessage struct {
-	Role       string          `json:"role"`
-	Content    json.RawMessage `json:"content"`
-	Name       string          `json:"name,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	ToolCalls  []chatToolCall  `json:"tool_calls,omitempty"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	Name             string          `json:"name,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	ToolCalls        []chatToolCall  `json:"tool_calls,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
 }
 
 type chatResponse struct {
@@ -454,9 +500,11 @@ type chatChoice struct {
 }
 
 type chatChoiceMessage struct {
-	Role      string          `json:"role"`
-	Content   json.RawMessage `json:"content"`
-	ToolCalls []chatToolCall  `json:"tool_calls,omitempty"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	ToolCalls        []chatToolCall  `json:"tool_calls,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
+	ReasoningDetails json.RawMessage `json:"reasoning_details,omitempty"`
 }
 
 // chatToolCall is the shared function-call shape used by assistant request
@@ -473,9 +521,12 @@ type chatToolFunction struct {
 }
 
 type chatUsageBody struct {
-	PromptTokens     int64 `json:"prompt_tokens"`
-	CompletionTokens int64 `json:"completion_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
+	PromptTokens            int64 `json:"prompt_tokens"`
+	CompletionTokens        int64 `json:"completion_tokens"`
+	TotalTokens             int64 `json:"total_tokens"`
+	CompletionTokensDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type chatErrorBody struct {
@@ -508,6 +559,10 @@ func mapMessage(message lebro.Message) (chatMessage, error) {
 		content = encoded
 	}
 	out := chatMessage{Role: role, Content: content, Name: message.Name}
+	out.Reasoning = message.Reasoning.Text
+	if details := openAIReasoningDetails(message.Reasoning.Details); len(details) > 0 {
+		out.ReasoningDetails = details
+	}
 	for _, call := range message.ToolCalls.Values() {
 		out.ToolCalls = append(out.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatToolFunction{Name: string(call.ToolID), Arguments: string(call.Arguments)}})
 	}
@@ -520,6 +575,28 @@ func mapMessage(message lebro.Message) (chatMessage, error) {
 		return chatMessage{}, errors.New("lebro: only tool messages may carry a tool call id")
 	}
 	return out, nil
+}
+
+// openAIReasoningDetails replays only the OpenRouter-compatible opaque format.
+// A shared transcript may contain a prior Anthropic or Gemini turn; forwarding
+// its provider state to a chat-completions endpoint can invalidate the next
+// request. Compatible details retain their original bytes unchanged.
+func openAIReasoningDetails(details lebro.ModelReasoningDetails) json.RawMessage {
+	if details == "" {
+		return nil
+	}
+	var values []struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(details.Raw(), &values); err != nil || len(values) == 0 {
+		return nil
+	}
+	for _, value := range values {
+		if !strings.HasPrefix(value.Type, "reasoning.") {
+			return nil
+		}
+	}
+	return details.Raw()
 }
 
 func mapRole(role lebro.Role) (string, error) {
@@ -698,6 +775,16 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 		}
 		body["response_format"] = format
 	}
+	if !request.Reasoning.IsZero() {
+		reasoning, err := chatReasoning(request.Reasoning)
+		if err != nil {
+			return nil, m.invalidRequest(err.Error(), err)
+		}
+		body["reasoning"] = reasoning
+		if strings.Contains(strings.ToLower(m.baseURL), "openrouter.ai") && request.Reasoning.Effort != lebro.ReasoningOff {
+			body["include_reasoning"] = true
+		}
+	}
 	if len(request.Extension) > 0 {
 		var extension map[string]any
 		if err := json.Unmarshal(request.Extension, &extension); err != nil {
@@ -868,9 +955,10 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 	}
 	if event.Usage != (chatUsageBody{}) {
 		r.usage = lebro.ModelUsage{
-			InputTokens:  event.Usage.PromptTokens,
-			OutputTokens: event.Usage.CompletionTokens,
-			TotalTokens:  event.Usage.TotalTokens,
+			InputTokens:     event.Usage.PromptTokens,
+			OutputTokens:    event.Usage.CompletionTokens,
+			ReasoningTokens: event.Usage.CompletionTokensDetails.ReasoningTokens,
+			TotalTokens:     event.Usage.TotalTokens,
 		}
 	}
 	if len(event.Choices) == 0 {
@@ -880,6 +968,9 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 		return lebro.StreamDelta{}, false, nil
 	}
 	choice := event.Choices[0]
+	if reasoning := chatMessageReasoning(choice.Delta.ReasoningText, choice.Delta.ReasoningDetails); !reasoning.IsZero() {
+		r.pending = append(r.pending, lebro.StreamDelta{Reasoning: reasoning})
+	}
 	if choice.Delta.Content != "" {
 		r.textBuf.WriteString(choice.Delta.Content)
 		r.pending = append(r.pending, lebro.StreamDelta{Text: choice.Delta.Content})
@@ -1027,9 +1118,11 @@ type chatStreamChoice struct {
 }
 
 type chatStreamDelta struct {
-	Role      string                   `json:"role,omitempty"`
-	Content   string                   `json:"content,omitempty"`
-	ToolCalls []chatStreamToolFragment `json:"tool_calls,omitempty"`
+	Role             string                   `json:"role,omitempty"`
+	Content          string                   `json:"content,omitempty"`
+	ReasoningText    string                   `json:"reasoning,omitempty"`
+	ReasoningDetails json.RawMessage          `json:"reasoning_details,omitempty"`
+	ToolCalls        []chatStreamToolFragment `json:"tool_calls,omitempty"`
 }
 
 // chatStreamToolFragment is one incremental piece of a streamed tool call.

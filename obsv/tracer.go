@@ -499,6 +499,7 @@ func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 	// summing its model spans.
 	run.root.Usage.InputTokens += event.Usage.InputTokens
 	run.root.Usage.OutputTokens += event.Usage.OutputTokens
+	run.root.Usage.ReasoningTokens += event.Usage.ReasoningTokens
 	run.root.Usage.TotalTokens += event.Usage.TotalTokens
 	t.end(span, event, statusForError(event.Error))
 }
@@ -615,6 +616,9 @@ func (t *Tracer) recordDelta(run *runTrace, event lebro.RunEvent) {
 	attributes := make(map[string]string, 3)
 	if event.DeltaText != "" {
 		attributes[AttrSensitiveDeltaText] = event.DeltaText
+	}
+	if event.DeltaReasoning.Text != "" {
+		attributes[AttrSensitiveDeltaReasoning] = event.DeltaReasoning.Text
 	}
 	if event.DeltaStructuredOutput != "" {
 		attributes[AttrSensitiveStructured] = string(event.DeltaStructuredOutput)

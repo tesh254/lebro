@@ -22,4 +22,8 @@ func NewModelStructuredOutput(value json.RawMessage) ModelStructuredOutput {
 	return runtime.NewModelStructuredOutput(value)
 }
 
+func NewModelReasoningDetails(value json.RawMessage) ModelReasoningDetails {
+	return runtime.NewModelReasoningDetails(value)
+}
+
 func AsStreamingModel(model Model) StreamingModel { return runtime.AsStreamingModel(model) }

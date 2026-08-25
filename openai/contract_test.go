@@ -56,7 +56,7 @@ func TestOpenAIAdapterPassesProviderContract(t *testing.T) {
 
 func supportsContractCase(contractCase testkit.ProviderCase) bool {
 	switch contractCase.Name {
-	case "text", "tool call", "structured output", "failure", "cancellation":
+	case "text", "tool call", "structured output", "reasoning", "failure", "cancellation":
 		return true
 	default:
 		return false
@@ -101,20 +101,25 @@ func serveContractCase(t *testing.T, w http.ResponseWriter, contractCase testkit
 			// Standard strict-mode shape: the JSON payload travels inside a
 			// string content field.
 			message.Content = json.RawMessage(`"{\"ok\":true}"`)
+		case "reasoning":
+			message.Content = json.RawMessage(`"answer"`)
+			message.Reasoning = contractCase.Response.Message.Reasoning.Text
 		default:
 			message.Content = json.RawMessage(`"` + contractCase.Response.Message.Content + `"`)
 		}
+		usage := chatUsageBody{
+			PromptTokens:     contractCase.Response.Usage.InputTokens,
+			CompletionTokens: contractCase.Response.Usage.OutputTokens,
+			TotalTokens:      contractCase.Response.Usage.TotalTokens,
+		}
+		usage.CompletionTokensDetails.ReasoningTokens = contractCase.Response.Usage.ReasoningTokens
 		writeJSON(t, w, http.StatusOK, chatResponse{
 			ID: "chatcmpl-contract", Model: contractCase.Request.Model,
 			Choices: []chatChoice{{
 				Message:      message,
 				FinishReason: string(contractCase.Response.FinishReason),
 			}},
-			Usage: chatUsageBody{
-				PromptTokens:     contractCase.Response.Usage.InputTokens,
-				CompletionTokens: contractCase.Response.Usage.OutputTokens,
-				TotalTokens:      contractCase.Response.Usage.TotalTokens,
-			},
+			Usage: usage,
 		})
 	case testkit.ContractFailure:
 		w.Header().Set("Content-Type", "application/json")
@@ -140,6 +145,17 @@ func decodeObservedRequest(t *testing.T, body []byte) lebro.ModelRequest {
 		messages = append(messages, lebro.Message{Role: mapWireRole(message.Role), Content: message.Content})
 	}
 	request := lebro.ModelRequest{Model: parsed.Model, Messages: messages}
+	if parsed.Reasoning != nil {
+		if effort, ok := parsed.Reasoning["effort"].(string); ok {
+			if effort == "none" {
+				effort = "off"
+			}
+			request.Reasoning.Effort = lebro.ReasoningEffort(effort)
+		}
+		if budget, ok := parsed.Reasoning["max_tokens"].(float64); ok {
+			request.Reasoning.BudgetTokens = int64(budget)
+		}
+	}
 	for _, tool := range parsed.Tools {
 		request.Tools = append(request.Tools, lebro.ToolDefinition{
 			ID: lebro.ToolID(tool.Function.Name), Description: tool.Function.Description,
@@ -170,6 +186,9 @@ func assertContractResponse(t *testing.T, got, want lebro.ModelResponse) {
 	} else if got.Message.Content != want.Message.Content {
 		t.Fatalf("content = %q, want %q", got.Message.Content, want.Message.Content)
 	}
+	if got.Message.Reasoning.Text != want.Message.Reasoning.Text {
+		t.Fatalf("reasoning = %q, want %q", got.Message.Reasoning.Text, want.Message.Reasoning.Text)
+	}
 	gotCalls := got.Message.ToolCalls.Values()
 	wantCalls := want.Message.ToolCalls.Values()
 	if len(gotCalls) != len(wantCalls) {
@@ -196,6 +215,9 @@ func assertContractObservedRequest(t *testing.T, body []byte, want lebro.ModelRe
 	observed := decodeObservedRequest(t, body)
 	if observed.Model != want.Model || len(observed.Messages) != len(want.Messages) {
 		t.Fatalf("observed request = %#v, want %#v", observed, want)
+	}
+	if observed.Reasoning != want.Reasoning {
+		t.Fatalf("observed reasoning = %#v, want %#v", observed.Reasoning, want.Reasoning)
 	}
 	for i, message := range observed.Messages {
 		if message.Role != want.Messages[i].Role || message.Content != want.Messages[i].Content {
@@ -268,6 +290,7 @@ type chatWireRequest struct {
 	Messages       []chatWireMessage `json:"messages"`
 	Tools          []chatWireTool    `json:"tools,omitempty"`
 	ResponseFormat map[string]any    `json:"response_format,omitempty"`
+	Reasoning      map[string]any    `json:"reasoning,omitempty"`
 }
 
 type chatWireMessage struct {

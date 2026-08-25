@@ -18,7 +18,93 @@ type ModelRequest struct {
 	Model        string
 	Tools        []ToolDefinition
 	OutputSchema *ModelOutputSchema
+	Reasoning    ReasoningConfig
 	Extension    json.RawMessage
+}
+
+// ReasoningEffort controls how much internal reasoning a reasoning-capable
+// model should use. Providers support different subsets; adapters reject a
+// value they cannot represent instead of silently lowering it.
+type ReasoningEffort string
+
+const (
+	ReasoningOff     ReasoningEffort = "off"
+	ReasoningMinimal ReasoningEffort = "minimal"
+	ReasoningLow     ReasoningEffort = "low"
+	ReasoningMedium  ReasoningEffort = "medium"
+	ReasoningHigh    ReasoningEffort = "high"
+	ReasoningXHigh   ReasoningEffort = "xhigh"
+	ReasoningMax     ReasoningEffort = "max"
+)
+
+// ReasoningConfig is provider-neutral reasoning intent. Effort and
+// BudgetTokens are mutually exclusive: effort selects a provider-supported
+// tier, while BudgetTokens requests an exact maximum when a provider supports
+// token-budget reasoning.
+type ReasoningConfig struct {
+	Effort       ReasoningEffort `json:"effort,omitempty"`
+	BudgetTokens int64           `json:"budget_tokens,omitempty"`
+}
+
+// IsZero reports whether no reasoning preference was requested.
+func (r ReasoningConfig) IsZero() bool { return r.Effort == "" && r.BudgetTokens == 0 }
+
+// Validate checks that the neutral configuration is well formed. Adapters
+// perform provider-specific capability validation.
+func (r ReasoningConfig) Validate() error {
+	if r.BudgetTokens < 0 {
+		return errors.New("lebro: reasoning budget tokens must not be negative")
+	}
+	if r.Effort != "" && r.BudgetTokens != 0 {
+		return errors.New("lebro: reasoning effort and budget tokens are mutually exclusive")
+	}
+	switch r.Effort {
+	case "", ReasoningOff, ReasoningMinimal, ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh, ReasoningMax:
+		return nil
+	default:
+		return fmt.Errorf("lebro: unsupported reasoning effort %q", r.Effort)
+	}
+}
+
+// ModelReasoningDetails stores opaque, provider-issued reasoning metadata
+// needed to faithfully replay a prior assistant turn. For example, this holds
+// OpenRouter reasoning_details or Anthropic thinking signatures. It is a
+// string so Message stays comparable for existing SDK consumers.
+type ModelReasoningDetails string
+
+// NewModelReasoningDetails copies a valid JSON value for durable storage.
+func NewModelReasoningDetails(value json.RawMessage) ModelReasoningDetails {
+	var compact bytes.Buffer
+	if json.Compact(&compact, value) == nil {
+		return ModelReasoningDetails(compact.String())
+	}
+	return ModelReasoningDetails(string(value))
+}
+
+// Raw returns a caller-owned copy of provider metadata.
+func (d ModelReasoningDetails) Raw() json.RawMessage {
+	if d == "" {
+		return nil
+	}
+	return append(json.RawMessage(nil), d...)
+}
+
+// ModelReasoning is first-class assistant reasoning. Text is presentation
+// content; Details retains opaque provider state required for safe replay.
+type ModelReasoning struct {
+	Text    string                `json:"text,omitempty"`
+	Details ModelReasoningDetails `json:"details,omitempty"`
+}
+
+// IsZero reports whether the value contains no reasoning data.
+func (r ModelReasoning) IsZero() bool { return r.Text == "" && r.Details == "" }
+
+// Validate checks the durable reasoning representation.
+func (r ModelReasoning) Validate() error {
+	if r.Details != "" && !json.Valid(r.Details.Raw()) {
+		return errors.New("lebro: model reasoning details must be valid JSON")
+	}
+	return nil
 }
 
 // ModelOutputSchema requests a final JSON value that conforms to Schema. Name
@@ -171,9 +257,10 @@ func (o *ModelStructuredOutput) UnmarshalJSON(data []byte) error {
 
 // ModelUsage records provider-reported token usage when available.
 type ModelUsage struct {
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
+	InputTokens     int64
+	OutputTokens    int64
+	ReasoningTokens int64
+	TotalTokens     int64
 }
 
 // FinishReason describes why a model stopped producing a response.
@@ -254,6 +341,7 @@ func AsStreamingModel(model Model) StreamingModel {
 // a non-nil Err is the last delta produced.
 type StreamDelta struct {
 	Text             string
+	Reasoning        ModelReasoning
 	ToolCall         *ModelToolCall
 	StructuredOutput ModelStructuredOutput
 	FinishReason     FinishReason
@@ -271,7 +359,7 @@ func (d StreamDelta) IsTerminal() bool {
 // called by the agent runtime as deltas arrive so a malformed stream fails
 // fast instead of corrupting the transcript.
 func (d StreamDelta) Validate() error {
-	if d.Text == "" && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && d.Err == nil {
+	if d.Text == "" && d.Reasoning.IsZero() && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && d.Err == nil {
 		return errors.New("lebro: stream delta is empty")
 	}
 	if d.ToolCall != nil {
@@ -282,10 +370,13 @@ func (d StreamDelta) Validate() error {
 	if d.StructuredOutput != "" && !json.Valid(d.StructuredOutput.Raw()) {
 		return errors.New("lebro: stream delta structured output must be valid JSON")
 	}
+	if err := d.Reasoning.Validate(); err != nil {
+		return err
+	}
 	if d.FinishReason != "" && !validFinishReason(d.FinishReason) {
 		return fmt.Errorf("lebro: invalid stream delta finish reason %q", d.FinishReason)
 	}
-	if d.Usage.InputTokens < 0 || d.Usage.OutputTokens < 0 || d.Usage.TotalTokens < 0 {
+	if d.Usage.InputTokens < 0 || d.Usage.OutputTokens < 0 || d.Usage.ReasoningTokens < 0 || d.Usage.TotalTokens < 0 {
 		return errors.New("lebro: stream delta usage must not contain negative token counts")
 	}
 	return nil
@@ -349,6 +440,9 @@ var _ StreamReader = (*StreamReaderFunc)(nil)
 
 // Validate checks the provider-neutral invariants adapters can rely on.
 func (r ModelRequest) Validate() error {
+	if err := r.Reasoning.Validate(); err != nil {
+		return err
+	}
 	for i, message := range r.Messages {
 		if err := message.Validate(); err != nil {
 			return fmt.Errorf("lebro: model request message %d: %w", i, err)
@@ -395,7 +489,7 @@ func (r ModelResponse) Validate() error {
 	if !validFinishReason(r.FinishReason) {
 		return fmt.Errorf("lebro: invalid model finish reason %q", r.FinishReason)
 	}
-	if r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 || r.Usage.TotalTokens < 0 {
+	if r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 || r.Usage.ReasoningTokens < 0 || r.Usage.TotalTokens < 0 {
 		return errors.New("lebro: model usage must not contain negative token counts")
 	}
 

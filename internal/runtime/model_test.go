@@ -34,6 +34,11 @@ func TestModelRequestValidate(t *testing.T) {
 		{name: "empty requested output", edit: func(request *ModelRequest) { request.OutputSchema.Schema = nil }, want: "must not be empty"},
 		{name: "invalid requested output", edit: func(request *ModelRequest) { request.OutputSchema.Schema = json.RawMessage(`{`) }, want: "must be valid JSON"},
 		{name: "extension", edit: func(request *ModelRequest) { request.Extension = json.RawMessage(`{`) }, want: "request extension"},
+		{name: "reasoning effort", edit: func(request *ModelRequest) { request.Reasoning.Effort = "unsupported" }, want: "reasoning effort"},
+		{name: "reasoning budget", edit: func(request *ModelRequest) { request.Reasoning.BudgetTokens = -1 }, want: "reasoning budget"},
+		{name: "reasoning conflict", edit: func(request *ModelRequest) {
+			request.Reasoning = ReasoningConfig{Effort: ReasoningHigh, BudgetTokens: 10}
+		}, want: "mutually exclusive"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -47,6 +52,23 @@ func TestModelRequestValidate(t *testing.T) {
 
 	if err := (ModelRequest{}).Validate(); err != nil {
 		t.Fatalf("empty request error = %v", err)
+	}
+}
+
+func TestModelReasoningValidation(t *testing.T) {
+	t.Parallel()
+	valid := Message{Role: RoleAssistant, Reasoning: ModelReasoning{Text: "work", Details: NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque"}]`))}}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid reasoning message: %v", err)
+	}
+	if err := (Message{Role: RoleUser, Reasoning: valid.Reasoning}).Validate(); err == nil || !strings.Contains(err.Error(), "assistant") {
+		t.Fatalf("user reasoning error = %v", err)
+	}
+	if err := (StreamDelta{Reasoning: valid.Reasoning}).Validate(); err != nil {
+		t.Fatalf("reasoning delta: %v", err)
+	}
+	if err := (StreamDelta{Reasoning: ModelReasoning{Details: ModelReasoningDetails("{")}}).Validate(); err == nil || !strings.Contains(err.Error(), "reasoning details") {
+		t.Fatalf("invalid details error = %v", err)
 	}
 }
 

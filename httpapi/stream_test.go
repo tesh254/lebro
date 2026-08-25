@@ -142,6 +142,40 @@ func TestStreamEmitsOrderedDeltasThenOneTerminalEvent(t *testing.T) {
 	}
 }
 
+func TestStreamExposesReasoningTextWithoutOpaqueDetails(t *testing.T) {
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{Reasoning: lebro.ModelReasoning{
+			Text:    "check constraints ",
+			Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque-signature"}]`)),
+		}},
+		{Text: "answer", FinishReason: lebro.FinishReasonStop, Usage: lebro.ModelUsage{ReasoningTokens: 4, TotalTokens: 6}},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body)
+	}
+	if strings.Contains(recorder.Body.String(), "opaque-signature") {
+		t.Fatalf("stream leaked replay-only reasoning details: %s", recorder.Body.String())
+	}
+	events := readSSE(t, recorder.Body)
+	if len(events) != 3 {
+		t.Fatalf("events = %#v, want two deltas and terminal", events)
+	}
+	if got := events[0].data.Reasoning; got != "check constraints " {
+		t.Fatalf("reasoning delta = %q", got)
+	}
+	terminal := events[len(events)-1].data
+	if terminal.Reasoning != "check constraints " {
+		t.Fatalf("terminal reasoning = %q", terminal.Reasoning)
+	}
+	if terminal.Usage == nil || terminal.Usage.ReasoningTokens != 4 {
+		t.Fatalf("terminal usage = %#v", terminal.Usage)
+	}
+}
+
 // A failing run must still terminate the stream with a typed error rather than
 // dropping the connection, so a client can distinguish failure from a network
 // fault.
@@ -438,7 +472,7 @@ func (m endlessStreamModel) Stream(context.Context, lebro.ModelRequest) (lebro.S
 // Tool-call arguments are model-composed from the whole transcript, so the
 // default policy must remove them. The fixture's arguments differ from its
 // text, so a pass-through bug cannot score the same as correct redaction.
-func TestDefaultRedactorRemovesToolCallArguments(t *testing.T) {
+func TestDefaultRedactorRemovesToolCallArgumentsAndReasoning(t *testing.T) {
 	const secret = "SSN 123-45-6789 from the retrieved document"
 	call := lebro.ModelToolCall{
 		ID:        "call-1",
@@ -446,7 +480,7 @@ func TestDefaultRedactorRemovesToolCallArguments(t *testing.T) {
 		Arguments: json.RawMessage(`{"query":"` + secret + `"}`),
 	}
 	model := streamingModel{deltas: []lebro.StreamDelta{
-		{Text: "visible assistant text"},
+		{Text: "visible assistant text", Reasoning: lebro.ModelReasoning{Text: secret}},
 		{ToolCall: &call},
 		{Text: "", FinishReason: lebro.FinishReasonStop},
 	}}
@@ -457,7 +491,7 @@ func TestDefaultRedactorRemovesToolCallArguments(t *testing.T) {
 	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
 	body := recorder.Body.String()
 	if strings.Contains(body, secret) {
-		t.Fatalf("default redactor leaked tool-call arguments: %s", body)
+		t.Fatalf("default redactor leaked tool-call arguments or reasoning: %s", body)
 	}
 
 	events := readSSE(t, strings.NewReader(body))

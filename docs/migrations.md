@@ -31,6 +31,16 @@ read newer records; rollback means restore a tested backup or redeploy code
 compatible with the migrated schema. Application-owned JSON in metadata, inputs,
 and outputs needs its own version field and decoder migration strategy.
 
+## Reasoning transcript records
+
+Reasoning support adds optional fields inside the existing serialized `Message`
+value: displayable reasoning text and opaque provider replay details. Memory,
+SQLite, and Postgres stores therefore need no SQL migration for this release.
+Existing messages decode with zero reasoning fields; new messages keep the full
+provider replay payload in the existing `messages.message` JSON column. Run
+`Migrate` as part of the normal deployment procedure, but no new schema version
+is introduced solely for reasoning.
+
 ## Durable workflows and schedules
 
 Persisted workflow records retain caller-supplied definition/version references;

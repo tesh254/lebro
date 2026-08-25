@@ -82,6 +82,67 @@ func TestResponseMapsTextToolsAndStructuredOutput(t *testing.T) {
 			t.Fatalf("structured = %s", response.Message.StructuredOutput)
 		}
 	})
+	t.Run("reasoning", func(t *testing.T) {
+		response, err := model.response(lebro.ModelRequest{}, &genai.GenerateContentResponse{
+			Candidates: []*genai.Candidate{{
+				FinishReason: genai.FinishReasonStop,
+				Content: genai.NewContentFromParts([]*genai.Part{
+					{Text: "check constraints", Thought: true, ThoughtSignature: []byte("opaque")},
+					genai.NewPartFromText("answer"),
+				}, genai.RoleModel),
+			}},
+			UsageMetadata: &genai.GenerateContentResponseUsageMetadata{PromptTokenCount: 3, CandidatesTokenCount: 8, ThoughtsTokenCount: 5, TotalTokenCount: 11},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Message.Content != "answer" || response.Message.Reasoning.Text != "check constraints" {
+			t.Fatalf("message = %#v", response.Message)
+		}
+		if response.Usage.ReasoningTokens != 5 {
+			t.Fatalf("usage = %#v", response.Usage)
+		}
+	})
+}
+
+func TestReasoningConfigMapsByGeminiGenerationAndReplaysSignatures(t *testing.T) {
+	config, err := geminiThinkingConfig("gemini-2.5-flash", lebro.ReasoningConfig{Effort: lebro.ReasoningHigh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ThinkingBudget == nil || *config.ThinkingBudget != 8192 || !config.IncludeThoughts {
+		t.Fatalf("Gemini 2.5 config = %#v", config)
+	}
+	config, err = geminiThinkingConfig("gemini-3-pro-preview", lebro.ReasoningConfig{Effort: lebro.ReasoningLow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.ThinkingLevel != genai.ThinkingLevelLow || !config.IncludeThoughts {
+		t.Fatalf("Gemini 3 config = %#v", config)
+	}
+	if _, err := geminiThinkingConfig("gemini-3-pro-preview", lebro.ReasoningConfig{Effort: lebro.ReasoningXHigh}); err == nil {
+		t.Fatal("Gemini 3 accepted unsupported xhigh effort")
+	}
+
+	model, err := New(Config{APIKey: "key", Model: "gemini-2.5-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, contents, _, err := model.params(lebro.ModelRequest{Messages: []lebro.Message{{
+		Role:      lebro.RoleAssistant,
+		Reasoning: lebro.ModelReasoning{Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"text":"check","thought_signature":"b3BhcXVl"}]`))},
+		Content:   "answer",
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contents) != 1 || len(contents[0].Parts) != 2 || !contents[0].Parts[0].Thought || string(contents[0].Parts[0].ThoughtSignature) != "opaque" {
+		t.Fatalf("replayed assistant parts = %#v", contents)
+	}
+	foreign, err := geminiReasoningParts(lebro.ModelReasoning{Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque"}]`))})
+	if err != nil || len(foreign) != 0 {
+		t.Fatalf("foreign reasoning replay = %#v, %v", foreign, err)
+	}
 }
 
 func TestCancelledContextIsReturnedDirectly(t *testing.T) {

@@ -495,6 +495,10 @@ func TestOpenAPIRunRequestSchemaMatchesHandler(t *testing.T) {
 		`{"messages":[{"content":"hi"}]}`,
 		`{"messages":[{"content":"hi"}],"metadata":null}`,
 		`{"messages":[{"content":"hi"}],"metadata":{"k":"v"}}`,
+		`{"reasoning":null}`,
+		`{"reasoning":{"effort":""}}`,
+		`{"reasoning":{"effort":"medium"}}`,
+		`{"reasoning":{"budget_tokens":2048}}`,
 	} {
 		if err := compiled.Validate([]byte(instance)); err != nil {
 			t.Errorf("schema rejects %s, which the handler accepts: %v", instance, err)
@@ -505,6 +509,12 @@ func TestOpenAPIRunRequestSchemaMatchesHandler(t *testing.T) {
 	// DisallowUnknownFields in the handler.
 	if compiled.Validate([]byte(`{"messages":[{"role":"system","content":"x"}]}`)) == nil {
 		t.Error("schema accepts a client-supplied role, which the handler rejects")
+	}
+	if compiled.Validate([]byte(`{"reasoning":{"effort":"unknown"}}`)) == nil {
+		t.Error("schema accepts an unsupported reasoning effort")
+	}
+	if compiled.Validate([]byte(`{"reasoning":{"effort":"low","budget_tokens":1024}}`)) == nil {
+		t.Error("schema accepts a non-zero reasoning budget with effort")
 	}
 }
 

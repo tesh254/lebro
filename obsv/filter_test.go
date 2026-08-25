@@ -135,10 +135,11 @@ func TestDefaultFilterKeepsStructureAndDropsPayload(t *testing.T) {
 		Status:   obsv.SpanStatusOK,
 		Usage:    lebro.ModelUsage{InputTokens: 7, OutputTokens: 2, TotalTokens: 9},
 		Attributes: map[string]string{
-			obsv.AttrToolID:              "lookup",
-			obsv.AttrFinishReason:        "stop",
-			obsv.AttrSensitiveDeltaText:  secretPayload,
-			obsv.AttrSensitiveStructured: `{"ssn":"` + secretPayload + `"}`,
+			obsv.AttrToolID:                  "lookup",
+			obsv.AttrFinishReason:            "stop",
+			obsv.AttrSensitiveDeltaText:      secretPayload,
+			obsv.AttrSensitiveDeltaReasoning: secretPayload,
+			obsv.AttrSensitiveStructured:     `{"ssn":"` + secretPayload + `"}`,
 		},
 		Events: []obsv.SpanEvent{{
 			Name:      "model_delta",
@@ -152,7 +153,7 @@ func TestDefaultFilterKeepsStructureAndDropsPayload(t *testing.T) {
 
 	filtered := obsv.DefaultFilter(span.Clone())
 
-	for _, key := range []string{obsv.AttrSensitiveDeltaText, obsv.AttrSensitiveStructured} {
+	for _, key := range []string{obsv.AttrSensitiveDeltaText, obsv.AttrSensitiveDeltaReasoning, obsv.AttrSensitiveStructured} {
 		if value, ok := filtered.Attributes[key]; ok {
 			t.Errorf("DefaultFilter kept sensitive attribute %q = %q", key, value)
 		}

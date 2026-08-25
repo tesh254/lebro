@@ -6,6 +6,17 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- First-class reasoning and thinking support across model calls, agent runs,
+  streams, durable transcripts, observability, and HTTP. `ReasoningConfig`
+  provides `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or an
+  exact token budget; unsupported provider mappings fail loudly. Assistant
+  reasoning text streams in order and is preserved with the final message;
+  opaque provider replay details are stored unchanged and never exposed by
+  HTTP/AI SDK transport. OpenAI-compatible/OpenRouter, Anthropic extended
+  thinking, and Gemini thinking adapters map their current native controls and
+  reasoning usage counters. Existing Memory, SQLite, and Postgres message JSON
+  records are forward-compatible, so no SQL migration is required.
+
 - Tool-call and JSON-schema structured-output support in the OpenAI-compatible
   chat-completions adapter (`openai`). `ModelRequest.Tools` maps to function
   tools, assistant tool-call turns and tool results map to `tool_calls` and

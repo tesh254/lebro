@@ -29,12 +29,12 @@ func TestMetricsReportUsageAndLatencyPerSpan(t *testing.T) {
 				ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"query":"a"}`),
 			})},
 			FinishReason: lebro.FinishReasonToolCalls,
-			Usage:        lebro.ModelUsage{InputTokens: 13, OutputTokens: 5, TotalTokens: 18},
+			Usage:        lebro.ModelUsage{InputTokens: 13, OutputTokens: 5, ReasoningTokens: 2, TotalTokens: 18},
 		}),
 		testkit.Response(lebro.ModelResponse{
 			Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "done"},
 			FinishReason: lebro.FinishReasonStop,
-			Usage:        lebro.ModelUsage{InputTokens: 29, OutputTokens: 7, TotalTokens: 36},
+			Usage:        lebro.ModelUsage{InputTokens: 29, OutputTokens: 7, ReasoningTokens: 3, TotalTokens: 36},
 		}),
 	)
 	agent, err := lebro.NewAgent(lebro.AgentConfig{
@@ -62,9 +62,10 @@ func TestMetricsReportUsageAndLatencyPerSpan(t *testing.T) {
 	// double-counted model span, or a run span that also emitted token
 	// counters, would overshoot.
 	wantTokens := map[string]int64{
-		obsv.MetricInputTokens:  13 + 29,
-		obsv.MetricOutputTokens: 5 + 7,
-		obsv.MetricTotalTokens:  18 + 36,
+		obsv.MetricInputTokens:     13 + 29,
+		obsv.MetricOutputTokens:    5 + 7,
+		obsv.MetricReasoningTokens: 2 + 3,
+		obsv.MetricTotalTokens:     18 + 36,
 	}
 	for name, want := range wantTokens {
 		if got := sumMetric(exported, name); got != want {
@@ -76,7 +77,7 @@ func TestMetricsReportUsageAndLatencyPerSpan(t *testing.T) {
 	// totals.
 	for _, metric := range exported {
 		switch metric.Name {
-		case obsv.MetricInputTokens, obsv.MetricOutputTokens, obsv.MetricTotalTokens:
+		case obsv.MetricInputTokens, obsv.MetricOutputTokens, obsv.MetricReasoningTokens, obsv.MetricTotalTokens:
 			if got := metric.Labels[obsv.LabelKind]; got != string(obsv.SpanKindModel) {
 				t.Errorf("%s attributed to a %s span, want %s only", metric.Name, got, obsv.SpanKindModel)
 			}
@@ -162,7 +163,7 @@ func TestMetricsOmitZeroTokenCounters(t *testing.T) {
 
 	for _, metric := range metrics.Metrics() {
 		switch metric.Name {
-		case obsv.MetricInputTokens, obsv.MetricOutputTokens, obsv.MetricTotalTokens:
+		case obsv.MetricInputTokens, obsv.MetricOutputTokens, obsv.MetricReasoningTokens, obsv.MetricTotalTokens:
 			t.Errorf("exported %s = %d for a provider that reported no usage", metric.Name, metric.Value)
 		}
 	}

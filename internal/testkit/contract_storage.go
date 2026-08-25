@@ -60,7 +60,7 @@ func storageContractRepository(t *testing.T, newStore StoreFactory) {
 
 	messages := []runtime.MessageRecord{
 		{ID: "message-1", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleUser, Content: "one"}, CreatedAt: now},
-		{ID: "message-2", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleAssistant, Content: "two"}, CreatedAt: now},
+		{ID: "message-2", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleAssistant, Content: "two", Reasoning: runtime.ModelReasoning{Text: "considered options", Details: runtime.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque"}]`))}}, CreatedAt: now},
 		{ID: "message-3", ThreadID: "thread-1", Message: runtime.Message{Role: runtime.RoleTool, Content: "three", ToolCallID: "call-1"}, CreatedAt: now},
 	}
 	if err := store.Messages().AppendMessages(ctx, messages); err != nil {
@@ -72,6 +72,9 @@ func storageContractRepository(t *testing.T, newStore StoreFactory) {
 	}
 	if len(first.Records) != 2 || first.NextCursor == "" {
 		t.Fatalf("first page = %#v, want two records and a cursor", first)
+	}
+	if got := first.Records[1].Message.Reasoning; got.Text != "considered options" || string(got.Details.Raw()) != `[{"type":"thinking","signature":"opaque"}]` {
+		t.Fatalf("stored reasoning = %#v", got)
 	}
 	first.Records[0].Message.Content = "mutated"
 	again, err := store.Messages().ListMessages(ctx, "thread-1", runtime.PageRequest{Limit: 1})

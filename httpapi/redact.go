@@ -13,19 +13,21 @@ import "github.com/tesh254/lebro"
 // Returning the zero StreamDelta suppresses the delta entirely; it is not sent.
 type Redactor func(lebro.StreamDelta) lebro.StreamDelta
 
-// DefaultRedactor removes model-supplied tool-call arguments while passing
-// assistant text and structured output through.
+// DefaultRedactor removes model-supplied tool-call arguments and reasoning
+// while passing assistant text and structured output through.
 //
 // Tool-call arguments are the field most likely to carry data a client should
 // not see: they are composed by the model from the whole transcript, which can
-// include instructions, retrieved documents, and prior tool results. Text and
-// structured output are what the caller asked for, so removing them would make
-// streaming useless.
+// include instructions, retrieved documents, and prior tool results. Reasoning
+// can contain raw provider chain-of-thought and is therefore private by
+// default. Text and structured output are what the caller asked for, so
+// removing them would make streaming useless.
 //
 // This is the default precisely because it is not the empty policy. A nil
 // Redactor selects it, so a zero-valued ServerConfig streams less rather than
 // more. Pass PassthroughRedactor to opt out deliberately.
 func DefaultRedactor(delta lebro.StreamDelta) lebro.StreamDelta {
+	delta.Reasoning = lebro.ModelReasoning{}
 	if delta.ToolCall == nil {
 		return delta
 	}
@@ -39,6 +41,6 @@ func DefaultRedactor(delta lebro.StreamDelta) lebro.StreamDelta {
 }
 
 // PassthroughRedactor sends every delta unchanged, including tool-call
-// arguments. Use it only when the client is as trusted as the process serving
-// it.
+// arguments and reasoning. Use it only when the client is as trusted as the
+// process serving it.
 func PassthroughRedactor(delta lebro.StreamDelta) lebro.StreamDelta { return delta }

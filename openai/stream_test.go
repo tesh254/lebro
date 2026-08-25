@@ -88,6 +88,62 @@ func TestModelStreamDeliversTextDeltas(t *testing.T) {
 	}
 }
 
+func TestModelStreamDeliversOrderedReasoningAndUsage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		write := func(event string) {
+			_, _ = io.WriteString(w, "data: "+event+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		write(`{"id":"chatcmpl-reasoning","choices":[{"index":0,"delta":{"reasoning":"check constraints","reasoning_details":[{"type":"reasoning.encrypted","data":"opaque"}]}}]}`)
+		write(`{"id":"chatcmpl-reasoning","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":8,"completion_tokens_details":{"reasoning_tokens":5},"total_tokens":11}}`)
+		write(`[DONE]`)
+	}))
+	t.Cleanup(server.Close)
+
+	model := newAdapter(t, server, Config{APIKey: "test-key", Model: "gpt-4o"})
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	var gotReasoning, gotText string
+	var details lebro.ModelReasoningDetails
+	var usage lebro.ModelUsage
+	for {
+		delta, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotReasoning += delta.Reasoning.Text
+		gotText += delta.Text
+		if delta.Reasoning.Details != "" {
+			details = delta.Reasoning.Details
+		}
+		if delta.Usage != (lebro.ModelUsage{}) {
+			usage = delta.Usage
+		}
+	}
+	if gotReasoning != "check constraints" || gotText != "answer" {
+		t.Fatalf("stream = reasoning %q, text %q", gotReasoning, gotText)
+	}
+	if got := string(details.Raw()); got != `[{"type":"reasoning.encrypted","data":"opaque"}]` {
+		t.Fatalf("reasoning details = %s", got)
+	}
+	if usage != (lebro.ModelUsage{InputTokens: 3, OutputTokens: 8, ReasoningTokens: 5, TotalTokens: 11}) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
 // streamToolCallFixture events model the canonical fragmented streamed tool
 // call: fragment one carries id and name; fragments two and three append
 // argument JSON across separate SSE events, as OpenAI-compatible providers do.

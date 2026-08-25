@@ -102,13 +102,14 @@ func (s *Server) handleAgentStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, runErr := run.Wait()
-	writeTerminalEvent(w, flusher, result, runErr, total)
+	writeTerminalEvent(w, flusher, result, runErr, total, s.config.Redactor)
 }
 
 // accumulateUsage adds one call's reported usage to the run total.
 func accumulateUsage(total *lebro.ModelUsage, usage lebro.ModelUsage) {
 	total.InputTokens += usage.InputTokens
 	total.OutputTokens += usage.OutputTokens
+	total.ReasoningTokens += usage.ReasoningTokens
 	total.TotalTokens += usage.TotalTokens
 }
 
@@ -117,7 +118,7 @@ func accumulateUsage(total *lebro.ModelUsage, usage lebro.ModelUsage) {
 // classification it would have received from the non-streaming route. Usage is
 // the run total accumulated from every model call, so a client that treats this
 // event as the one guaranteed end-of-run marker finds it there.
-func writeTerminalEvent(w http.ResponseWriter, flusher http.Flusher, result lebro.RunResult, runErr error, total lebro.ModelUsage) {
+func writeTerminalEvent(w http.ResponseWriter, flusher http.Flusher, result lebro.RunResult, runErr error, total lebro.ModelUsage, redactor Redactor) {
 	event := StreamEvent{
 		RunID:  string(result.ID),
 		Status: string(result.Status),
@@ -146,8 +147,9 @@ func writeTerminalEvent(w http.ResponseWriter, flusher http.Flusher, result lebr
 	}
 
 	if runErr == nil {
-		response := runResponseFromResult(result)
+		response := runResponseFromResult(result, redactor)
 		event.Text = response.Content
+		event.Reasoning = response.Reasoning
 		event.StructuredOutput = response.StructuredOutput
 	}
 
@@ -160,6 +162,7 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 	event := StreamEvent{
 		Type:         eventDelta,
 		Text:         delta.Text,
+		Reasoning:    delta.Reasoning.Text,
 		FinishReason: string(delta.FinishReason),
 	}
 	if delta.StructuredOutput != "" {
@@ -193,6 +196,7 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 // zero delta produces no content and is skipped.
 func hasStreamableContent(delta lebro.StreamDelta) bool {
 	return delta.Text != "" ||
+		delta.Reasoning.Text != "" ||
 		delta.ToolCall != nil ||
 		delta.StructuredOutput != "" ||
 		delta.FinishReason != "" ||

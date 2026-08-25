@@ -24,16 +24,18 @@ type MessageInput struct {
 // the thread_id query parameter rather than a body field, so the durable
 // conversation a run binds to is part of the addressed resource.
 type RunRequest struct {
-	Messages []MessageInput    `json:"messages"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Messages  []MessageInput        `json:"messages"`
+	Metadata  map[string]string     `json:"metadata,omitempty"`
+	Reasoning lebro.ReasoningConfig `json:"reasoning,omitempty,omitzero"`
 }
 
 // Usage reports provider token accounting for a run. Values are zero when the
 // provider does not report usage.
 type Usage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	ReasoningTokens int64 `json:"reasoning_tokens"`
+	TotalTokens     int64 `json:"total_tokens"`
 }
 
 // RunResponse is a completed agent run. Content is the terminal assistant
@@ -53,6 +55,7 @@ type RunResponse struct {
 	RunID            string          `json:"run_id"`
 	Status           string          `json:"status"`
 	Content          string          `json:"content"`
+	Reasoning        string          `json:"reasoning,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
 }
 
@@ -130,6 +133,7 @@ type MessageResponse struct {
 	ID        string `json:"id"`
 	Role      string `json:"role"`
 	Content   string `json:"content"`
+	Reasoning string `json:"reasoning,omitempty"`
 	CreatedAt string `json:"created_at"`
 }
 
@@ -165,6 +169,7 @@ type StreamEvent struct {
 	Type             string          `json:"type"`
 	RunID            string          `json:"run_id,omitempty"`
 	Text             string          `json:"text,omitempty"`
+	Reasoning        string          `json:"reasoning,omitempty"`
 	ToolCall         *ToolCallEvent  `json:"tool_call,omitempty"`
 	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
 	FinishReason     string          `json:"finish_reason,omitempty"`
@@ -198,9 +203,8 @@ type ErrorResponse struct {
 // usageFromModel converts runtime token accounting to the wire shape.
 func usageFromModel(usage lebro.ModelUsage) Usage {
 	return Usage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.TotalTokens,
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		ReasoningTokens: usage.ReasoningTokens, TotalTokens: usage.TotalTokens,
 	}
 }
 
@@ -208,7 +212,7 @@ func usageFromModel(usage lebro.ModelUsage) Usage {
 // reports the terminal assistant message, which is the last assistant turn in
 // the transcript; a run whose transcript has no assistant message yields empty
 // content rather than leaking a tool or system turn.
-func runResponseFromResult(result lebro.RunResult) RunResponse {
+func runResponseFromResult(result lebro.RunResult, redactor Redactor) RunResponse {
 	response := RunResponse{
 		RunID:  string(result.ID),
 		Status: string(result.Status),
@@ -219,12 +223,23 @@ func runResponseFromResult(result lebro.RunResult) RunResponse {
 			continue
 		}
 		response.Content = message.Content
+		response.Reasoning = redactedReasoningText(redactor, message.Reasoning.Text)
 		if message.StructuredOutput != "" {
 			response.StructuredOutput = message.StructuredOutput.Raw()
 		}
 		break
 	}
 	return response
+}
+
+// redactedReasoningText applies the configured stream policy to displayable
+// reasoning before it enters any HTTP response. Opaque provider replay details
+// never enter the HTTP value at all.
+func redactedReasoningText(redactor Redactor, reasoning string) string {
+	if reasoning == "" || redactor == nil {
+		return ""
+	}
+	return redactor(lebro.StreamDelta{Reasoning: lebro.ModelReasoning{Text: reasoning}}).Reasoning.Text
 }
 
 // workflowRunResponseFromResult projects a workflow run onto the wire contract.

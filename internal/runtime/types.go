@@ -44,6 +44,7 @@ type Message struct {
 	ToolCallID       string                `json:"tool_call_id,omitempty"`
 	ToolCalls        ModelToolCalls        `json:"tool_calls,omitempty,omitzero"`
 	StructuredOutput ModelStructuredOutput `json:"structured_output,omitempty"`
+	Reasoning        ModelReasoning        `json:"reasoning,omitempty,omitzero"`
 }
 
 // Validate checks invariants that every provider adapter must preserve.
@@ -72,6 +73,14 @@ func (m Message) Validate() error {
 			return ErrMessageStructuredOutputInvalidJSON
 		}
 	}
+	if !m.Reasoning.IsZero() {
+		if m.Role != RoleAssistant {
+			return errors.New("lebro: only assistant messages can contain reasoning")
+		}
+		if err := m.Reasoning.Validate(); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -92,6 +101,9 @@ type RunInput struct {
 	ThreadID     ThreadID
 	Metadata     map[string]string
 	OutputSchema *ModelOutputSchema
+	// Reasoning configures reasoning for every model call in this run. Provider
+	// adapters reject settings their selected model cannot represent.
+	Reasoning ReasoningConfig
 	// Memory overrides the agent's Memory configuration for this run. A nil
 	// value retains the agent default; an explicit configuration is scoped to
 	// this run only.

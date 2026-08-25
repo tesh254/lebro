@@ -22,6 +22,16 @@ table as the server.
 conversation and requires the server to have a store. Percent-encode agent and
 workflow IDs as path segments. Closing a stream cancels its run.
 
+Agent-run requests may include an optional `reasoning` object with either
+`effort` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) or a
+non-zero `budget_tokens`. The response, thread-message list, and native stream
+events contain displayable `reasoning` text only when the configured redactor
+permits it. Usage adds `reasoning_tokens`. Opaque provider replay metadata is
+deliberately excluded from all HTTP and AI SDK streams, even when the server
+persists it in its thread transcript. The default redactor suppresses reasoning
+to avoid exposing raw provider chain-of-thought; use a deliberate trusted-client
+policy to expose it.
+
 The contract version is OpenAPI's `x-lebro-contract-version`. Use the typed
 client's `CheckCompatibility` before an independently deployed client sends
 production traffic; different major versions must not interoperate.
