@@ -68,11 +68,10 @@ type ModelScorerConfig struct {
 	// about whether the question is needed to judge the answer.
 	IncludeInput bool
 	// Schema requests a JSON output schema from the model. Nil (the default)
-	// requests none, so grading works against any lebro.Model — including the
-	// openai package's text-generation adapter, which rejects every request
-	// carrying an output schema — by asking for JSON in the prompt and decoding
-	// it from the message content. Set it to ModelScorerSchema, or a stricter
-	// schema, only for a provider known to support structured output.
+	// requests none, so grading works against any lebro.Model by asking for
+	// JSON in the prompt and decoding it from the message content. Set it to
+	// ModelScorerSchema, or a stricter schema, only for a provider known to
+	// support structured output.
 	Schema json.RawMessage
 }
 
@@ -127,11 +126,9 @@ func NewModelScorer(config ModelScorerConfig) (*ModelScorer, error) {
 	if threshold == 0 {
 		threshold = 0.5
 	}
-	// No schema by default: some adapters — the openai package's text-generation
-	// Model among them — reject any request carrying an output schema, and the
-	// default prompt already asks for plain JSON that decodeVerdict can read from
-	// the message content. A caller sets Schema explicitly for a provider known
-	// to support structured output.
+	// No schema by default: the default prompt already asks for plain JSON that
+	// decodeVerdict can read from the message content. A caller sets Schema
+	// explicitly for a provider known to support structured output.
 	schema := config.Schema
 	return &ModelScorer{
 		name:      name,

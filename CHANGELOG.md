@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Tool-call and JSON-schema structured-output support in the OpenAI-compatible
+  chat-completions adapter (`openai`). `ModelRequest.Tools` maps to function
+  tools, assistant tool-call turns and tool results map to `tool_calls` and
+  `tool_call_id` continuations, `ModelRequest.OutputSchema` maps to
+  `response_format: json_schema`, and streaming surfaces complete tool calls
+  before the terminal delta. The adapter previously rejected every request
+  carrying tools or an output schema. Request-body keys derived from the
+  neutral protocol (`model`, `messages`, `stream`, `tools`, `response_format`)
+  are now reserved and cannot be overridden through `ModelRequest.Extension`.
+
 - Eight product-shaped example builds, each a standalone runnable directory
   with its own README and an adoption guide in `docs/product-builds.md`:
   `docs-support-agent` (fixed-scope RAG support bot with per-customer durable

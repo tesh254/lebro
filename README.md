@@ -229,12 +229,17 @@ with `errors.Is` against sentinels such as `lebro.ErrModelRateLimited`.
 ## Model-provider adapters
 
 The optional `github.com/tesh254/lebro/openai` package implements `lebro.Model`
-against any OpenAI-compatible chat-completions endpoint. It is text-only: tool
-definitions and structured output are rejected here and handled by richer
-adapters built on the same protocol. OpenAI-specific wire types stay inside the
-package, and opaque `ModelRequest.Extension` fields are merged into the request
-body so callers can pass vendor knobs (`temperature`, `max_tokens`, `seed`,
-...) without coupling the neutral protocol to a vendor.
+against any OpenAI-compatible chat-completions endpoint. It supports assistant
+text, function tool calls, streamed text and tool calls, and JSON-schema
+structured output through `response_format`; the returned structured value is
+validated locally against the requested schema, while provider-side schema
+restrictions stay enforced by the endpoint. OpenAI-specific wire types stay
+inside the package, and opaque `ModelRequest.Extension` fields are merged into
+the request body so callers can pass vendor knobs (`temperature`, `max_tokens`,
+`seed`, `tool_choice`, ...) without coupling the neutral protocol to a vendor.
+The request-body keys the adapter derives from the neutral protocol (`model`,
+`messages`, `stream`, `tools`, `response_format`) cannot be overridden through
+an extension.
 
 ```go
 import (
@@ -294,11 +299,13 @@ if err != nil {
 ```
 
 OpenRouter normalizes an OpenAI-compatible Chat Completions API, so it belongs
-behind `openai.New`, not `anthropic.New`. The OpenAI adapter currently supports
-text generation and streaming only; it intentionally rejects tool definitions
-and structured output even when an upstream provider supports them. Use the
-native `anthropic` adapter for Anthropic Messages API tools and structured
-output. `anthropic.New` also accepts `BaseURL` for an Anthropic-compatible
+behind `openai.New`, not `anthropic.New`. The OpenAI adapter supports text
+generation, function tool calls, streaming, and JSON-schema structured output;
+the returned structured value is validated locally, while provider-side
+restrictions (model support for `json_schema` output, strict-mode field
+requirements) stay enforced by the endpoint and surface as normalized model
+errors. Use the native `anthropic` adapter for Anthropic Messages API
+conventions. `anthropic.New` also accepts `BaseURL` for an Anthropic-compatible
 proxy or gateway, not OpenRouter's OpenAI-compatible endpoint.
 
 Anthropic JSON output requires a model with structured-output support. Gemini
