@@ -56,6 +56,32 @@ func TestAgentRunReturnsTerminalAssistantMessage(t *testing.T) {
 	}
 }
 
+func TestAgentRunRedactsReasoningUnlessTrustedPolicyAllowsIt(t *testing.T) {
+	const reasoning = "provider chain of thought"
+	for _, test := range []struct {
+		name     string
+		config   httpapi.ServerConfig
+		expected string
+	}{
+		{name: "default", expected: ""},
+		{name: "passthrough", config: httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor}, expected: reasoning},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := &scriptedModel{responses: []lebro.ModelResponse{{
+				Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "answer", Reasoning: lebro.ModelReasoning{Text: reasoning}},
+				FinishReason: lebro.FinishReasonStop,
+			}}}
+			server := httpapi.NewServer(test.config)
+			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs", httpapi.RunRequest{})
+			response := decodeBody[httpapi.RunResponse](t, recorder)
+			if response.Reasoning != test.expected {
+				t.Fatalf("reasoning = %q, want %q", response.Reasoning, test.expected)
+			}
+		})
+	}
+}
+
 // The role is fixed server-side; a client cannot supply one. This asserts the
 // model actually receives a user turn, not merely that the request decodes.
 func TestAgentRunForcesUserRole(t *testing.T) {

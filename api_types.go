@@ -88,6 +88,10 @@ type (
 	ModelToolCall               = runtime.ModelToolCall
 	ModelToolCalls              = runtime.ModelToolCalls
 	ModelStructuredOutput       = runtime.ModelStructuredOutput
+	ReasoningEffort             = runtime.ReasoningEffort
+	ReasoningConfig             = runtime.ReasoningConfig
+	ModelReasoningDetails       = runtime.ModelReasoningDetails
+	ModelReasoning              = runtime.ModelReasoning
 	ModelUsage                  = runtime.ModelUsage
 	FinishReason                = runtime.FinishReason
 	ModelResponse               = runtime.ModelResponse
@@ -279,6 +283,14 @@ const (
 	RoleUser      = runtime.RoleUser
 	RoleAssistant = runtime.RoleAssistant
 	RoleTool      = runtime.RoleTool
+
+	ReasoningOff     = runtime.ReasoningOff
+	ReasoningMinimal = runtime.ReasoningMinimal
+	ReasoningLow     = runtime.ReasoningLow
+	ReasoningMedium  = runtime.ReasoningMedium
+	ReasoningHigh    = runtime.ReasoningHigh
+	ReasoningXHigh   = runtime.ReasoningXHigh
+	ReasoningMax     = runtime.ReasoningMax
 
 	RunStatusPending   = runtime.RunStatusPending
 	RunStatusRunning   = runtime.RunStatusRunning

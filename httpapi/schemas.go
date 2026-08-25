@@ -58,6 +58,23 @@ var componentSchemas = map[string]json.RawMessage{
 				"type": ["object", "null"],
 				"description": "Caller metadata carried through to tool execution and run events. Null is accepted and equivalent to no metadata.",
 				"additionalProperties": {"type": "string"}
+			},
+			"reasoning": {
+				"type": ["object", "null"],
+				"description": "Optional provider-neutral reasoning preference for every model call in this run. Effort and a non-zero token budget are mutually exclusive.",
+				"properties": {
+					"effort": {"type": "string", "enum": ["", "off", "minimal", "low", "medium", "high", "xhigh", "max"]},
+					"budget_tokens": {"type": "integer", "minimum": 0}
+				},
+				"not": {
+					"type": "object",
+					"required": ["effort", "budget_tokens"],
+					"properties": {
+						"effort": {"minLength": 1},
+						"budget_tokens": {"not": {"const": 0}}
+					}
+				},
+				"additionalProperties": false
 			}
 		},
 		"additionalProperties": false
@@ -65,11 +82,12 @@ var componentSchemas = map[string]json.RawMessage{
 
 	schemaNameRunResponse: json.RawMessage(`{
 		"type": "object",
-		"description": "A completed agent run. Token usage is not reported here; configure a RunListener on the agent to observe per-call usage, or read it from the terminal delta on the streaming route.",
+		"description": "A completed agent run. Token usage is not reported here; configure a RunListener on the agent to observe per-call usage, or read it from the terminal delta on the streaming route. Reasoning contains displayable text only when the configured redactor permits it; provider replay metadata is never exposed over HTTP.",
 		"properties": {
 			"run_id": {"type": "string", "description": "Stable identifier for this run."},
 			"status": {"type": "string", "description": "Terminal run status.", "enum": ["pending", "running", "succeeded", "failed", "cancelled", "suspended"]},
 			"content": {"type": "string", "description": "Text of the terminal assistant message. Empty when the run produced no assistant text."},
+			"reasoning": {"type": "string", "description": "Displayable reasoning text of the terminal assistant message, present only when the configured redactor permits it."},
 			"structured_output": {"description": "Structured payload of the terminal assistant message, present when the agent declares an output schema."}
 		},
 		"required": ["run_id", "status", "content"],
@@ -82,9 +100,10 @@ var componentSchemas = map[string]json.RawMessage{
 		"properties": {
 			"input_tokens": {"type": "integer"},
 			"output_tokens": {"type": "integer"},
+			"reasoning_tokens": {"type": "integer"},
 			"total_tokens": {"type": "integer"}
 		},
-		"required": ["input_tokens", "output_tokens", "total_tokens"],
+		"required": ["input_tokens", "output_tokens", "reasoning_tokens", "total_tokens"],
 		"additionalProperties": false
 	}`),
 
@@ -206,6 +225,7 @@ var componentSchemas = map[string]json.RawMessage{
 						"id": {"type": "string"},
 						"role": {"type": "string", "enum": ["system", "user", "assistant", "tool"]},
 						"content": {"type": "string"},
+						"reasoning": {"type": "string", "description": "Displayable reasoning text when the configured redactor permits it. Opaque provider replay metadata is never exposed."},
 						"created_at": {"type": "string", "format": "date-time"}
 					},
 					"required": ["id", "role", "content", "created_at"],
@@ -232,11 +252,12 @@ var componentSchemas = map[string]json.RawMessage{
 
 	schemaNameStreamEvent: json.RawMessage(`{
 		"type": "object",
-		"description": "One Server-Sent Event payload. Delta events carry text, a tool call, or structured output; the single terminal event carries the run status, the run's total token usage, and, on failure, a public error. There is no delta-level error field: an aborting provider stream is reported once through the terminal event.",
+		"description": "One Server-Sent Event payload. Delta events carry text, reasoning text when the configured redactor permits it, a tool call, or structured output; the single terminal event carries the run status, the run's total token usage, and, on failure, a public error. Opaque provider replay metadata is never exposed. There is no delta-level error field: an aborting provider stream is reported once through the terminal event.",
 		"properties": {
 			"type": {"type": "string", "description": "Event name, matching the SSE event field.", "enum": ["model_delta", "run_succeeded", "run_failed", "run_cancelled"]},
 			"run_id": {"type": "string", "description": "Present on the terminal event."},
 			"text": {"type": "string"},
+			"reasoning": {"type": "string", "description": "Displayable reasoning text."},
 			"tool_call": {
 				"type": "object",
 				"description": "A model-requested tool invocation. Arguments are present only when the configured redactor passes them through; the default redactor removes them.",

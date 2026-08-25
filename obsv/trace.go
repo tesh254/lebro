@@ -84,6 +84,9 @@ const (
 	AttrSensitiveDeltaText = SensitiveAttr + "model.delta_text"
 	// AttrSensitiveStructured carries streamed structured output.
 	AttrSensitiveStructured = SensitiveAttr + "model.structured_output"
+	// AttrSensitiveDeltaReasoning carries streamed model reasoning, which is
+	// filtered by default because it can contain provider internal hints.
+	AttrSensitiveDeltaReasoning = SensitiveAttr + "model.delta_reasoning"
 )
 
 // SpanEvent is a point-in-time occurrence within a span. Streaming deltas and

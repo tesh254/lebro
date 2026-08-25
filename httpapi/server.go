@@ -29,7 +29,7 @@ type ServerConfig struct {
 	Middleware []func(http.Handler) http.Handler
 	// Redactor rewrites each stream delta before it is serialized. A nil
 	// Redactor selects DefaultRedactor, which removes model-supplied tool-call
-	// arguments. Pass PassthroughRedactor to stream deltas unchanged.
+	// arguments and reasoning. Pass PassthroughRedactor only for trusted clients.
 	Redactor Redactor
 	// Store backs the thread routes and lets a run bind to a durable thread
 	// through the thread_id query parameter. When nil, thread routes report

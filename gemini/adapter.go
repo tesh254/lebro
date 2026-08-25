@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -88,6 +89,11 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 		return "", nil, nil, m.invalid(errors.New("lebro: model is required"))
 	}
 	config := &genai.GenerateContentConfig{}
+	if thinking, err := geminiThinkingConfig(model, request.Reasoning); err != nil {
+		return "", nil, nil, m.invalid(err)
+	} else {
+		config.ThinkingConfig = thinking
+	}
 	contents := make([]*genai.Content, 0, len(request.Messages))
 	callNames := map[string]string{}
 	for _, message := range request.Messages {
@@ -102,6 +108,11 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 			contents = append(contents, genai.NewContentFromText(message.Content, genai.RoleUser))
 		case lebro.RoleAssistant:
 			parts := []*genai.Part{}
+			reasoning, err := geminiReasoningParts(message.Reasoning)
+			if err != nil {
+				return "", nil, nil, m.invalid(err)
+			}
+			parts = append(parts, reasoning...)
 			if message.Content != "" {
 				parts = append(parts, genai.NewPartFromText(message.Content))
 			}
@@ -148,6 +159,103 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 	return model, contents, config, nil
 }
 
+// geminiThinkingConfig maps effort to the Gemini generations each model
+// family supports. Gemini 2.5 uses token budgets and can disable thinking
+// with a zero budget; Gemini 3 uses thinking levels and cannot disable
+// thinking, so off requests the lowest level instead. Unsupported neutral
+// tiers fail instead of becoming a lower tier.
+func geminiThinkingConfig(model string, reasoning lebro.ReasoningConfig) (*genai.ThinkingConfig, error) {
+	if err := reasoning.Validate(); err != nil {
+		return nil, err
+	}
+	if reasoning.IsZero() {
+		return nil, nil
+	}
+	if reasoning.BudgetTokens > int64(^uint32(0)>>1) {
+		return nil, errors.New("lebro: Gemini reasoning budget exceeds int32")
+	}
+	if strings.Contains(strings.ToLower(model), "gemini-2.5") {
+		budget := reasoning.BudgetTokens
+		if budget == 0 {
+			switch reasoning.Effort {
+			case lebro.ReasoningOff:
+				return &genai.ThinkingConfig{ThinkingBudget: genai.Ptr[int32](0)}, nil
+			case lebro.ReasoningMinimal, lebro.ReasoningLow:
+				budget = 1024
+			case lebro.ReasoningMedium:
+				budget = 4096
+			case lebro.ReasoningHigh:
+				budget = 8192
+			default:
+				return nil, fmt.Errorf("lebro: Gemini 2.5 does not support reasoning effort %q", reasoning.Effort)
+			}
+		}
+		return &genai.ThinkingConfig{IncludeThoughts: true, ThinkingBudget: genai.Ptr(int32(budget))}, nil
+	}
+	if reasoning.BudgetTokens != 0 {
+		return nil, errors.New("lebro: Gemini thinking budgets are only supported by Gemini 2.5 models")
+	}
+	if reasoning.Effort == lebro.ReasoningOff {
+		if strings.Contains(strings.ToLower(model), "gemini-3") {
+			// Gemini 3 cannot disable thinking; the lowest level is the
+			// closest representable setting and thoughts stay unsurfaced.
+			return &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevelMinimal}, nil
+		}
+		// Older non-thinking model families reject ThinkingConfig. Omitting it
+		// is the only representable off setting.
+		return nil, nil
+	}
+	var level genai.ThinkingLevel
+	switch reasoning.Effort {
+	case lebro.ReasoningMinimal:
+		level = genai.ThinkingLevelMinimal
+	case lebro.ReasoningLow:
+		level = genai.ThinkingLevelLow
+	case lebro.ReasoningMedium:
+		level = genai.ThinkingLevelMedium
+	case lebro.ReasoningHigh:
+		level = genai.ThinkingLevelHigh
+	default:
+		return nil, fmt.Errorf("lebro: Gemini does not support reasoning effort %q", reasoning.Effort)
+	}
+	return &genai.ThinkingConfig{IncludeThoughts: true, ThinkingLevel: level}, nil
+}
+
+type geminiReasoningDetail struct {
+	Text             string `json:"text"`
+	ThoughtSignature []byte `json:"thought_signature,omitempty"`
+}
+
+func geminiReasoningParts(reasoning lebro.ModelReasoning) ([]*genai.Part, error) {
+	if reasoning.IsZero() || reasoning.Details == "" {
+		return nil, nil
+	}
+	var details []geminiReasoningDetail
+	if err := json.Unmarshal(reasoning.Details.Raw(), &details); err != nil {
+		return nil, fmt.Errorf("lebro: decode Gemini reasoning details: %w", err)
+	}
+	parts := make([]*genai.Part, 0, len(details))
+	for _, detail := range details {
+		if detail.Text == "" && len(detail.ThoughtSignature) == 0 {
+			// The transcript belongs to another adapter. Opaque state is never
+			// meaningful across providers, so omit it rather than corrupting a
+			// Gemini continuation with foreign metadata.
+			continue
+		}
+		parts = append(parts, &genai.Part{Text: detail.Text, Thought: true, ThoughtSignature: append([]byte(nil), detail.ThoughtSignature...)})
+	}
+	return parts, nil
+}
+
+func newGeminiReasoning(text string, details []geminiReasoningDetail) lebro.ModelReasoning {
+	reasoning := lebro.ModelReasoning{Text: text}
+	if len(details) > 0 {
+		encoded, _ := json.Marshal(details)
+		reasoning.Details = lebro.NewModelReasoningDetails(encoded)
+	}
+	return reasoning
+}
+
 func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateContentResponse) (lebro.ModelResponse, error) {
 	if result == nil || len(result.Candidates) == 0 {
 		return lebro.ModelResponse{}, m.malformed(errors.New("lebro: Gemini response has no candidates"))
@@ -155,8 +263,13 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 	candidate := result.Candidates[0]
 	message := lebro.Message{Role: lebro.RoleAssistant}
 	calls := []lebro.ModelToolCall{}
+	details := []geminiReasoningDetail{}
 	if candidate.Content != nil {
 		for _, part := range candidate.Content.Parts {
+			if part.Thought {
+				details = append(details, geminiReasoningDetail{Text: part.Text, ThoughtSignature: append([]byte(nil), part.ThoughtSignature...)})
+				continue
+			}
 			if part.Text != "" {
 				message.Content += part.Text
 			}
@@ -169,6 +282,7 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 			}
 		}
 	}
+	message.Reasoning = newGeminiReasoning(geminiReasoningText(details), details)
 	if len(calls) > 0 {
 		encoded, err := lebro.NewModelToolCalls(calls...)
 		if err != nil {
@@ -188,7 +302,7 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 	}
 	response := lebro.ModelResponse{Message: message, FinishReason: finish}
 	if result.UsageMetadata != nil {
-		response.Usage = lebro.ModelUsage{InputTokens: int64(result.UsageMetadata.PromptTokenCount), OutputTokens: int64(result.UsageMetadata.CandidatesTokenCount), TotalTokens: int64(result.UsageMetadata.TotalTokenCount)}
+		response.Usage = lebro.ModelUsage{InputTokens: int64(result.UsageMetadata.PromptTokenCount), OutputTokens: int64(result.UsageMetadata.CandidatesTokenCount), ReasoningTokens: int64(result.UsageMetadata.ThoughtsTokenCount), TotalTokens: int64(result.UsageMetadata.TotalTokenCount)}
 	}
 	if result.ResponseID != "" {
 		response.Extension, _ = json.Marshal(map[string]string{"gemini_response_id": result.ResponseID, "gemini_model": result.ModelVersion})
@@ -197,6 +311,14 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 		return lebro.ModelResponse{}, m.malformed(err)
 	}
 	return response, nil
+}
+
+func geminiReasoningText(details []geminiReasoningDetail) string {
+	var text strings.Builder
+	for _, detail := range details {
+		text.WriteString(detail.Text)
+	}
+	return text.String()
 }
 
 func mapFinish(reason genai.FinishReason) lebro.FinishReason {
@@ -290,7 +412,7 @@ func (r *geminiStream) run(ctx context.Context, request lebro.ModelRequest, sequ
 			return true
 		}
 		if result.UsageMetadata != nil {
-			usage = lebro.ModelUsage{InputTokens: int64(result.UsageMetadata.PromptTokenCount), OutputTokens: int64(result.UsageMetadata.CandidatesTokenCount), TotalTokens: int64(result.UsageMetadata.TotalTokenCount)}
+			usage = lebro.ModelUsage{InputTokens: int64(result.UsageMetadata.PromptTokenCount), OutputTokens: int64(result.UsageMetadata.CandidatesTokenCount), ReasoningTokens: int64(result.UsageMetadata.ThoughtsTokenCount), TotalTokens: int64(result.UsageMetadata.TotalTokenCount)}
 		}
 		for _, candidate := range result.Candidates {
 			if candidate.FinishReason != "" {
@@ -300,6 +422,13 @@ func (r *geminiStream) run(ctx context.Context, request lebro.ModelRequest, sequ
 				continue
 			}
 			for _, part := range candidate.Content.Parts {
+				if part.Thought {
+					detail := geminiReasoningDetail{Text: part.Text, ThoughtSignature: append([]byte(nil), part.ThoughtSignature...)}
+					if !r.send(lebro.StreamDelta{Reasoning: newGeminiReasoning(part.Text, []geminiReasoningDetail{detail})}) {
+						return false
+					}
+					continue
+				}
 				if part.Text != "" {
 					text.WriteString(part.Text)
 					if !r.send(lebro.StreamDelta{Text: part.Text}) {

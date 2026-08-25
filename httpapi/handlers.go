@@ -57,7 +57,7 @@ func (s *Server) handleAgentRun(w http.ResponseWriter, r *http.Request) {
 		writeRunError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runResponseFromResult(result))
+	writeJSON(w, http.StatusOK, runResponseFromResult(result, s.config.Redactor))
 }
 
 func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +155,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 			ID:        record.ID,
 			Role:      string(record.Message.Role),
 			Content:   record.Message.Content,
+			Reasoning: redactedReasoningText(s.config.Redactor, record.Message.Reasoning.Text),
 			CreatedAt: record.CreatedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
@@ -176,6 +177,10 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 // thread from the query string. It writes the error response and reports false
 // when the request cannot be served.
 func (s *Server) runInput(w http.ResponseWriter, r *http.Request, request RunRequest) (lebro.RunInput, bool) {
+	if err := request.Reasoning.Validate(); err != nil {
+		writeError(w, r, ErrorCodeInvalidRequest)
+		return lebro.RunInput{}, false
+	}
 	threadID, ok := s.threadIDFromQuery(w, r)
 	if !ok {
 		return lebro.RunInput{}, false
@@ -190,9 +195,10 @@ func (s *Server) runInput(w http.ResponseWriter, r *http.Request, request RunReq
 	}
 
 	return lebro.RunInput{
-		Messages: messages,
-		ThreadID: threadID,
-		Metadata: request.Metadata,
+		Messages:  messages,
+		ThreadID:  threadID,
+		Metadata:  request.Metadata,
+		Reasoning: request.Reasoning,
 	}, true
 }
 

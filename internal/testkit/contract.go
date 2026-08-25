@@ -81,6 +81,20 @@ func ProviderContractCases() []ProviderCase {
 			},
 		},
 		{
+			Name: "reasoning",
+			Mode: ContractResponse,
+			Request: lebro.ModelRequest{
+				Model:     "contract-model",
+				Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve carefully"}},
+				Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningMedium},
+			},
+			Response: lebro.ModelResponse{
+				Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "answer", Reasoning: lebro.ModelReasoning{Text: "work through constraints"}},
+				Usage:        lebro.ModelUsage{InputTokens: 3, OutputTokens: 8, ReasoningTokens: 5, TotalTokens: 11},
+				FinishReason: lebro.FinishReasonStop,
+			},
+		},
+		{
 			Name:      "failure",
 			Mode:      ContractFailure,
 			Request:   lebro.ModelRequest{Model: "contract-model", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "fail"}}},

@@ -474,6 +474,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			Messages:     cloneMessages(transcript),
 			Tools:        cloneToolDefinitions(toolDefinitions),
 			OutputSchema: cloneModelOutputSchema(outputSchema),
+			Reasoning:    input.Reasoning,
 		}
 		if decision, err := a.process(runCtx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelRequest, ThreadID: input.ThreadID, Metadata: metadata, Memory: input.Memory, Request: request}); err != nil {
 			if processorCancelled(err) {
@@ -805,6 +806,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		memory:          input.Memory.Clone(),
 		memoryRecalled:  input.memoryRecalled,
 		modelName:       runConfig.modelName,
+		reasoning:       input.Reasoning,
 	})
 
 	return run, nil
@@ -836,6 +838,7 @@ type streamRunParams struct {
 	memory          *MemoryProcessorConfig
 	memoryRecalled  bool
 	modelName       string
+	reasoning       ReasoningConfig
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -861,6 +864,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			Messages:     cloneMessages(transcript),
 			Tools:        cloneToolDefinitions(p.toolDefinitions),
 			OutputSchema: cloneModelOutputSchema(p.outputSchema),
+			Reasoning:    p.reasoning,
 		}
 		if decision, err := a.process(p.ctx, p.emitter, p.runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseModelRequest, ThreadID: p.threadID, Metadata: p.metadata, Memory: p.memory, Request: request}); err != nil {
 			if processorCancelled(err) {
@@ -1039,6 +1043,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		terminal := StreamDelta{
 			Text:         response.Message.Content,
+			Reasoning:    response.Message.Reasoning,
 			FinishReason: response.FinishReason,
 			Usage:        response.Usage,
 		}
@@ -1050,7 +1055,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			return ModelResponse{}, attempts, processorErr
 		}
 		terminal = *decision.Delta
-		if terminal.Text == "" && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
+		if terminal.Text == "" && terminal.Reasoning.IsZero() && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
 			terminal.FinishReason = FinishReasonUnspecified
 		}
 		if err := terminal.Validate(); err != nil {
@@ -1061,6 +1066,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			return ModelResponse{}, attempts, context.Canceled
 		}
 		response.Message.Content = terminal.Text
+		response.Message.Reasoning = terminal.Reasoning
 		response.Message.StructuredOutput = terminal.StructuredOutput
 		response.FinishReason = terminal.FinishReason
 		response.Usage = terminal.Usage
@@ -1095,6 +1101,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	defer func() { _ = reader.Close() }()
 
 	var contentBuilder strings.Builder
+	var reasoning ModelReasoning
 	var toolCalls []ModelToolCall
 	var structuredOutput ModelStructuredOutput
 	var finishReason FinishReason
@@ -1129,6 +1136,11 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		if delta.Text != "" {
 			contentBuilder.WriteString(delta.Text)
 		}
+		var reasoningErr error
+		reasoning, reasoningErr = appendReasoning(reasoning, delta.Reasoning)
+		if reasoningErr != nil {
+			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr}
+		}
 		if delta.ToolCall != nil {
 			toolCalls = append(toolCalls, cloneToolCallValue(*delta.ToolCall))
 		}
@@ -1153,6 +1165,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	message := Message{
 		Role:             RoleAssistant,
 		Content:          contentBuilder.String(),
+		Reasoning:        reasoning,
 		StructuredOutput: structuredOutput,
 	}
 	if len(toolCalls) > 0 {
@@ -1169,6 +1182,36 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		FinishReason: finishReason,
 	}
 	return response, attempts, nil
+}
+
+// appendReasoning preserves streamed text order and retains every opaque
+// provider detail as one JSON array for durable replay. A provider may send an
+// object or array on each delta; both normalize to an array only internally.
+func appendReasoning(current, next ModelReasoning) (ModelReasoning, error) {
+	result := ModelReasoning{Text: current.Text + next.Text}
+	if current.Details == "" {
+		result.Details = next.Details
+		return result, nil
+	}
+	if next.Details == "" {
+		result.Details = current.Details
+		return result, nil
+	}
+	values := make([]json.RawMessage, 0)
+	for _, raw := range []ModelReasoningDetails{current.Details, next.Details} {
+		var array []json.RawMessage
+		if err := json.Unmarshal(raw.Raw(), &array); err == nil {
+			values = append(values, array...)
+			continue
+		}
+		values = append(values, raw.Raw())
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return ModelReasoning{}, fmt.Errorf("lebro: combine reasoning details: %w", err)
+	}
+	result.Details = NewModelReasoningDetails(encoded)
+	return result, nil
 }
 
 func (a *Agent) cancelledWithAttemptsResult(runID RunID, messages []Message, metadata map[string]string, step int, err error, attempts []ModelAttempt) RunResult {
@@ -1199,6 +1242,9 @@ func sendDelta(ctx context.Context, ch chan<- StreamDelta, delta StreamDelta) bo
 }
 
 func (a *Agent) buildInitialTranscript(input RunInput, instructions string) ([]Message, error) {
+	if err := input.Reasoning.Validate(); err != nil {
+		return nil, &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: fmt.Errorf("lebro: run input reasoning: %w", err)}
+	}
 	messages := make([]Message, 0, len(input.Messages)+1)
 	if instructions != "" {
 		system := Message{Role: RoleSystem, Content: instructions}

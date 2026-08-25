@@ -226,6 +226,57 @@ same canonical transcript can be persisted and replayed on the next turn.
 Provider failures can be inspected with `errors.As` as `*lebro.ModelError` or
 with `errors.Is` against sentinels such as `lebro.ErrModelRateLimited`.
 
+### Reasoning and thinking
+
+`ReasoningConfig` is a neutral per-request control. It deliberately has a
+small, extensible tier set: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+and `max`. `xhigh` and `max` leave room for providers whose public range is
+wider than the common four tiers. `BudgetTokens` is for providers that offer an
+exact thinking-token ceiling; it cannot be combined with an effort. An adapter
+rejects a tier it cannot represent instead of silently lowering the request.
+
+```go
+result, err := agent.Run(ctx, lebro.RunInput{
+	ThreadID: "architecture-review-42",
+	Messages: []lebro.Message{{
+		Role:    lebro.RoleUser,
+		Content: "Review this migration plan and give a short recommendation.",
+	}},
+	Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningHigh},
+})
+if err != nil { return err }
+
+reply := result.Messages[len(result.Messages)-1]
+fmt.Println(reply.Content)
+fmt.Println(reply.Reasoning.Text) // displayable provider reasoning, if returned
+```
+
+Reasoning text is attached to the assistant `Message` and `StreamDelta` in
+arrival order. `Message.Reasoning.Details` is different: it is opaque,
+provider-issued replay state such as Anthropic thinking signatures, Gemini
+thought signatures, or OpenRouter `reasoning_details`. Lebro persists it with
+the transcript and returns it to the matching adapter unchanged. A different
+provider ignores foreign replay state; applications should not parse, edit,
+log, or render it.
+
+In-process callers receive displayable reasoning. HTTP and AI SDK transport
+hide it by default to avoid exposing raw provider chain-of-thought; configure a
+trusted-client redactor explicitly if a client needs it.
+
+| Adapter | Request mapping | Returned state |
+| --- | --- | --- |
+| `openai` | `reasoning.effort` or `reasoning.max_tokens`; set `Config.IncludeReasoning` for OpenRouter-style endpoints to also send `include_reasoning` | reasoning text, `reasoning_details`, `reasoning_tokens` |
+| `anthropic` | Extended-thinking token budget: low/minimal 1024, medium half `MaxTokens`, high three quarters, xhigh/max `MaxTokens-1` | thinking text, signed/redacted blocks, `thinking_tokens` |
+| `gemini` | Gemini 2.5 uses a budget (1024/4096/8192); newer Gemini uses thinking levels | thought text/signatures, `thoughts_token_count` |
+
+The `examples/reasoning` program is an OpenRouter-backed architecture-review
+run with a durable thread and streamed reasoning. It requires an API key and
+model name, unlike the deterministic examples:
+
+```sh
+OPENROUTER_API_KEY=... OPENROUTER_MODEL=... go run ./examples/reasoning
+```
+
 ## Model-provider adapters
 
 The optional `github.com/tesh254/lebro/openai` package implements `lebro.Model`
@@ -238,8 +289,8 @@ inside the package, and opaque `ModelRequest.Extension` fields are merged into
 the request body so callers can pass vendor knobs (`temperature`, `max_tokens`,
 `seed`, `tool_choice`, ...) without coupling the neutral protocol to a vendor.
 The request-body keys the adapter derives from the neutral protocol (`model`,
-`messages`, `stream`, `tools`, `response_format`) cannot be overridden through
-an extension.
+`messages`, `stream`, `tools`, `response_format`, `reasoning`, and
+`include_reasoning`) cannot be overridden through an extension.
 
 ```go
 import (
@@ -1332,8 +1383,8 @@ result, err := run.Wait()
 ```
 
 The OpenAI-compatible adapter implements `StreamingModel` over Server-Sent
-Events, mapping text deltas, usage, finish reasons, and error events into the
-neutral protocol.
+Events, mapping ordered text and reasoning deltas, usage (including reasoning
+tokens), finish reasons, and error events into the neutral protocol.
 
 Run the streaming example (no network or API key required):
 

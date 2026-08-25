@@ -119,6 +119,9 @@ func (w *aiSDKStreamWriter) delta(delta lebro.StreamDelta) bool {
 	if delta.Text != "" && !w.text(delta.Text) {
 		return false
 	}
+	if delta.Reasoning.Text != "" && !w.reasoning(delta.Reasoning.Text) {
+		return false
+	}
 	if delta.ToolCall != nil && !w.toolCall(*delta.ToolCall) {
 		return false
 	}
@@ -129,6 +132,16 @@ func (w *aiSDKStreamWriter) delta(delta lebro.StreamDelta) bool {
 		w.finishReason = delta.FinishReason
 	}
 	return true
+}
+
+// reasoning sends displayable reasoning text without opaque provider details.
+// The data part is valid in both supported AI SDK protocols and avoids leaking
+// replay-only signatures into browser clients.
+func (w *aiSDKStreamWriter) reasoning(text string) bool {
+	if w.version == aiSDKStreamV4 {
+		return w.writeV4JSON("2", []any{map[string]string{"reasoning": text}})
+	}
+	return w.writeV5(map[string]any{"type": "data-lebro-reasoning", "data": text})
 }
 
 func (w *aiSDKStreamWriter) text(text string) bool {
@@ -216,11 +229,19 @@ func (w *aiSDKStreamWriter) aiSDKFinishReason() string {
 }
 
 func aiSDKV4Usage(usage lebro.ModelUsage) map[string]int64 {
-	return map[string]int64{"promptTokens": usage.InputTokens, "completionTokens": usage.OutputTokens}
+	result := map[string]int64{"promptTokens": usage.InputTokens, "completionTokens": usage.OutputTokens}
+	if usage.ReasoningTokens != 0 {
+		result["reasoningTokens"] = usage.ReasoningTokens
+	}
+	return result
 }
 
 func aiSDKV5Usage(usage lebro.ModelUsage) map[string]int64 {
-	return map[string]int64{"inputTokens": usage.InputTokens, "outputTokens": usage.OutputTokens, "totalTokens": usage.TotalTokens}
+	result := map[string]int64{"inputTokens": usage.InputTokens, "outputTokens": usage.OutputTokens, "totalTokens": usage.TotalTokens}
+	if usage.ReasoningTokens != 0 {
+		result["reasoningTokens"] = usage.ReasoningTokens
+	}
+	return result
 }
 
 func (w *aiSDKStreamWriter) writeV4(kind, value string) bool {

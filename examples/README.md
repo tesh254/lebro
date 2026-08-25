@@ -41,6 +41,12 @@ required; it targets a recorded HTTP endpoint):
 go run ./examples/model-openai
 ```
 
+Run the production-shaped OpenRouter reasoning example (requires credentials):
+
+```sh
+OPENROUTER_API_KEY=... OPENROUTER_MODEL=... go run ./examples/reasoning
+```
+
 Run the bounded tool-using agent-loop example against deterministic fixtures and
 a local schema-backed tool (no network or API key required):
 

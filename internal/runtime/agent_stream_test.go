@@ -185,6 +185,75 @@ func TestAgentRunStreamTextOnlyEmitsOrderedDeltas(t *testing.T) {
 	}
 }
 
+func TestAgentRunStreamPreservesReasoningDeltasAndTranscript(t *testing.T) {
+	t.Parallel()
+
+	details := NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque"}]`))
+	model := newStreamScriptedModel([]StreamDelta{
+		{Reasoning: ModelReasoning{Text: "first "}},
+		{Text: "answer"},
+		{Reasoning: ModelReasoning{Text: "second", Details: details}, Usage: ModelUsage{ReasoningTokens: 7, TotalTokens: 9}},
+		{FinishReason: FinishReasonStop},
+	})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "reasoning", Model: "fixture-model"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{
+		Messages:  []Message{{Role: RoleUser, Content: "solve"}},
+		Reasoning: ReasoningConfig{Effort: ReasoningMedium},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoning strings.Builder
+	for delta := range run.Deltas {
+		reasoning.WriteString(delta.Reasoning.Text)
+	}
+	result, err := run.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := reasoning.String(), "first second"; got != want {
+		t.Fatalf("reasoning deltas = %q, want %q", got, want)
+	}
+	message := result.Messages[len(result.Messages)-1]
+	if message.Content != "answer" || message.Reasoning.Text != "first second" {
+		t.Fatalf("assistant message = %#v", message)
+	}
+	if got := string(message.Reasoning.Details.Raw()); got != string(details.Raw()) {
+		t.Fatalf("reasoning details = %s, want %s", got, details)
+	}
+	calls := model.Calls()
+	if len(calls) != 1 || calls[0].Reasoning != (ReasoningConfig{Effort: ReasoningMedium}) {
+		t.Fatalf("model calls = %#v", calls)
+	}
+}
+
+func TestAgentRunStreamRejectsInvalidReasoningConfigBeforeModelCall(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel(textDeltas("unused"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "reasoning", Model: "fixture-model"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = agent.RunStream(context.Background(), RunInput{Reasoning: ReasoningConfig{Effort: "unsupported"}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported reasoning effort") {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	if calls := model.Calls(); len(calls) != 0 {
+		t.Fatalf("model calls = %#v, want none", calls)
+	}
+}
+
 func TestAgentRunStreamUsesResolvedModelAndInstructions(t *testing.T) {
 	t.Parallel()
 

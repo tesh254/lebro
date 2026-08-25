@@ -30,6 +30,7 @@ const (
 	MetricToolDuration         = "lebro.tool.duration"
 	MetricInputTokens          = "lebro.model.input_tokens"
 	MetricOutputTokens         = "lebro.model.output_tokens"
+	MetricReasoningTokens      = "lebro.model.reasoning_tokens"
 	MetricTotalTokens          = "lebro.model.total_tokens"
 	MetricRunOutcome           = "lebro.run.outcome"
 	MetricStepOutcome          = "lebro.step.outcome"
@@ -84,7 +85,7 @@ func metricsForSpan(span Span) []Metric {
 		timestamp = span.Start
 	}
 	labels := labelsForSpan(span)
-	metrics := make([]Metric, 0, 5)
+	metrics := make([]Metric, 0, 6)
 
 	if name, ok := durationMetricName(span.Kind); ok {
 		metrics = append(metrics, Metric{
@@ -115,6 +116,7 @@ func metricsForSpan(span Span) []Metric {
 		}{
 			{MetricInputTokens, span.Usage.InputTokens},
 			{MetricOutputTokens, span.Usage.OutputTokens},
+			{MetricReasoningTokens, span.Usage.ReasoningTokens},
 			{MetricTotalTokens, span.Usage.TotalTokens},
 		} {
 			if usage.value == 0 {

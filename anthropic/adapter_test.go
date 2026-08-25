@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,81 @@ func TestResponseMapsTextToolsAndStructuredOutput(t *testing.T) {
 			t.Fatalf("structured output = %s", got)
 		}
 	})
+	t.Run("reasoning", func(t *testing.T) {
+		response, err := model.response(lebro.ModelRequest{}, &claude.Message{
+			Content: []claude.ContentBlockUnion{
+				{Type: "thinking", Thinking: "check constraints", Signature: "opaque-signature"},
+				{Type: "text", Text: "answer"},
+			},
+			StopReason: "end_turn",
+			Usage: claude.Usage{
+				InputTokens: 3, OutputTokens: 8,
+				OutputTokensDetails: claude.OutputTokensDetails{ThinkingTokens: 5},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Message.Content != "answer" || response.Message.Reasoning.Text != "check constraints" {
+			t.Fatalf("message = %#v", response.Message)
+		}
+		if got := string(response.Message.Reasoning.Details.Raw()); got != `[{"type":"thinking","thinking":"check constraints","signature":"opaque-signature"}]` {
+			t.Fatalf("reasoning details = %s", got)
+		}
+		if response.Usage.ReasoningTokens != 5 {
+			t.Fatalf("usage = %#v", response.Usage)
+		}
+	})
+}
+
+func TestReasoningParamsMapBudgetsAndReplayOpaqueBlocks(t *testing.T) {
+	model, err := New(Config{APIKey: "key", Model: "fixture-model", MaxTokens: 8000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := model.params(lebro.ModelRequest{
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningMedium},
+		Messages: []lebro.Message{{
+			Role:      lebro.RoleAssistant,
+			Reasoning: lebro.ModelReasoning{Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","thinking":"check","signature":"opaque"}]`))},
+			Content:   "answer",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params.Thinking.OfEnabled == nil || params.Thinking.OfEnabled.BudgetTokens != 4000 {
+		t.Fatalf("thinking params = %#v", params.Thinking)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("messages = %#v", params.Messages)
+	}
+	encoded, err := json.Marshal(params.Messages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"signature":"opaque"`) {
+		t.Fatalf("replayed assistant turn lost thinking signature: %s", encoded)
+	}
+
+	params, err = model.params(lebro.ModelRequest{
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningOff},
+		Messages: []lebro.Message{{
+			Role:      lebro.RoleAssistant,
+			Reasoning: lebro.ModelReasoning{Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","thinking":"check","signature":"opaque"}]`))},
+			Content:   "answer",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(params.Messages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if params.Thinking.OfDisabled == nil || strings.Contains(string(encoded), `"signature":"opaque"`) {
+		t.Fatalf("disabled thinking params = %s", encoded)
+	}
 }
 
 func TestCancelledContextIsReturnedDirectly(t *testing.T) {

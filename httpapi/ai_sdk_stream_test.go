@@ -18,7 +18,7 @@ func TestAISDKStreamProtocolSelectionContract(t *testing.T) {
 	for _, contractCase := range testkit.AISDKStreamContractCases() {
 		t.Run(contractCase.Version, func(t *testing.T) {
 			model := streamingModel{deltas: []lebro.StreamDelta{{Text: "ok", FinishReason: lebro.FinishReasonStop}}}
-			server := httpapi.NewServer(httpapi.ServerConfig{})
+			server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
 			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
 			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+contractCase.Version, httpapi.RunRequest{})
 			contentType, _, err := mime.ParseMediaType(recorder.Header().Get("Content-Type"))
@@ -80,6 +80,36 @@ func TestAISDKV5StreamFixture(t *testing.T) {
 	}, "\n\n") + "\n\n"
 	if got := recorder.Body.String(); got != want {
 		t.Fatalf("v5 fixture mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+func TestAISDKStreamsReasoningWithoutOpaqueDetails(t *testing.T) {
+	for _, version := range []string{"v4", "v5"} {
+		t.Run(version, func(t *testing.T) {
+			model := streamingModel{deltas: []lebro.StreamDelta{
+				{Reasoning: lebro.ModelReasoning{
+					Text:    "check constraints",
+					Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque"}]`)),
+				}},
+				{Text: "answer", FinishReason: lebro.FinishReasonStop, Usage: lebro.ModelUsage{ReasoningTokens: 4, TotalTokens: 6}},
+			}}
+			server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
+			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+version, httpapi.RunRequest{})
+			body := recorder.Body.String()
+			if strings.Contains(body, "opaque") {
+				t.Fatalf("AI SDK stream leaked replay details: %s", body)
+			}
+			if version == "v4" && !strings.Contains(body, `2:[{"reasoning":"check constraints"}]`) {
+				t.Fatalf("v4 reasoning frame missing: %s", body)
+			}
+			if version == "v5" && !strings.Contains(body, `"type":"data-lebro-reasoning"`) {
+				t.Fatalf("v5 reasoning frame missing: %s", body)
+			}
+			if !strings.Contains(body, `"reasoningTokens":4`) {
+				t.Fatalf("reasoning usage missing: %s", body)
+			}
+		})
 	}
 }
 

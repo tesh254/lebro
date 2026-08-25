@@ -27,6 +27,8 @@
 // Streamed deltas pass through a Redactor before they are serialized. A nil
 // Redactor selects DefaultRedactor rather than disabling redaction, so a
 // zero-valued configuration streams less rather than more.
+// Displayable reasoning text appears only when the configured Redactor permits
+// it; opaque provider replay metadata never crosses the HTTP boundary.
 //
 // Authentication and authorization are deliberately absent. Wrap the handler
 // with ServerConfig.Middleware to enforce them; the package stays neutral about

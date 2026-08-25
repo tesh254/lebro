@@ -261,7 +261,7 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 		routes = append(routes, route)
 		last = child
-		current = RunInput{Messages: []Message{{Role: RoleUser, Content: networkHandoffPrompt(task, child)}}, ThreadID: input.ThreadID, Metadata: input.Metadata, Memory: input.Memory}
+		current = RunInput{Messages: []Message{{Role: RoleUser, Content: networkHandoffPrompt(task, child)}}, ThreadID: input.ThreadID, Metadata: input.Metadata, Reasoning: input.Reasoning, Memory: input.Memory}
 	}
 	return n.fail(runCtx, emitter, runID, input, routes, n.maxHops, NetworkErrorHopLimit, fmt.Errorf("lebro: network reached max hops %d", n.maxHops))
 }

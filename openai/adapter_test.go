@@ -109,6 +109,162 @@ func TestGenerateMapsTextCompletion(t *testing.T) {
 	}
 }
 
+func TestGenerateMapsReasoningAndProtectsReasoningWireFields(t *testing.T) {
+	t.Parallel()
+	var observed observeRequest
+	server := newRecordedServer(t, &observed, func(w http.ResponseWriter, r *http.Request) {
+		usage := chatUsageBody{PromptTokens: 3, CompletionTokens: 8, TotalTokens: 11}
+		usage.CompletionTokensDetails.ReasoningTokens = 5
+		writeJSON(t, w, http.StatusOK, chatResponse{
+			Choices: []chatChoice{{Message: chatChoiceMessage{
+				Role:             "assistant",
+				Content:          json.RawMessage(`"answer"`),
+				Reasoning:        "checked constraints",
+				ReasoningDetails: json.RawMessage(`[{"type":"reasoning.encrypted","data":"opaque"}]`),
+			}, FinishReason: "stop"}},
+			Usage: usage,
+		})
+	})
+	model := newAdapter(t, server, Config{APIKey: "secret", Model: "gpt-4o"})
+
+	response, err := model.Generate(context.Background(), lebro.ModelRequest{
+		Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}},
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningMedium},
+		Extension: json.RawMessage(`{"reasoning":{"effort":"low"},"include_reasoning":false}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message.Reasoning.Text != "checked constraints" || string(response.Message.Reasoning.Details.Raw()) != `[{"type":"reasoning.encrypted","data":"opaque"}]` {
+		t.Fatalf("reasoning = %#v", response.Message.Reasoning)
+	}
+	if response.Usage.ReasoningTokens != 5 {
+		t.Fatalf("usage = %#v", response.Usage)
+	}
+	body := observed.body(t)
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "medium" {
+		t.Fatalf("wire reasoning = %#v", reasoning)
+	}
+	if _, exists := body["include_reasoning"]; exists {
+		t.Fatalf("extension overrode reserved include_reasoning: %#v", body)
+	}
+}
+
+func TestReasoningRequestsIncludeReasoningOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
+	model, err := New(Config{APIKey: "key", Model: "openai/gpt-5", BaseURL: "https://openrouter.ai/api/v1", IncludeReasoning: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := model.buildRequestBody(lebro.ModelRequest{
+		Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}},
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["include_reasoning"] != true {
+		t.Fatalf("configured request = %#v", wire)
+	}
+
+	streamBody, err := model.buildStreamingRequestBody(lebro.ModelRequest{
+		Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}},
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire = nil
+	if err := json.Unmarshal(streamBody, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["include_reasoning"] != true {
+		t.Fatalf("configured stream request = %#v", wire)
+	}
+
+	// Endpoint detection is explicit: an OpenRouter URL alone must not opt in.
+	defaultModel, err := New(Config{APIKey: "key", Model: "openai/gpt-5", BaseURL: "https://openrouter.ai/api/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err = defaultModel.buildRequestBody(lebro.ModelRequest{
+		Messages:  []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}},
+		Reasoning: lebro.ReasoningConfig{Effort: lebro.ReasoningHigh},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire = nil
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := wire["include_reasoning"]; exists {
+		t.Fatalf("unconfigured request must not send include_reasoning: %#v", wire)
+	}
+}
+
+func TestReasoningReplayRequiresIncludeReasoning(t *testing.T) {
+	message := lebro.Message{
+		Role:      lebro.RoleAssistant,
+		Content:   "answer",
+		Reasoning: lebro.ModelReasoning{Text: "check", Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"reasoning.encrypted","data":"opaque"}]`))},
+	}
+	for _, test := range []struct {
+		name             string
+		includeReasoning bool
+		wantReasoning    bool
+	}{
+		{name: "disabled"},
+		{name: "enabled", includeReasoning: true, wantReasoning: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model, err := New(Config{APIKey: "key", Model: "openai/gpt-5", IncludeReasoning: test.includeReasoning})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := model.buildRequestBody(lebro.ModelRequest{Messages: []lebro.Message{message}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire struct {
+				Messages []map[string]any `json:"messages"`
+			}
+			if err := json.Unmarshal(body, &wire); err != nil {
+				t.Fatal(err)
+			}
+			_, hasReasoning := wire.Messages[0]["reasoning"]
+			_, hasDetails := wire.Messages[0]["reasoning_details"]
+			if hasReasoning != test.wantReasoning || hasDetails != test.wantReasoning {
+				t.Fatalf("reasoning fields = %#v, want present=%t", wire.Messages[0], test.wantReasoning)
+			}
+		})
+	}
+}
+
+func TestOpenAIReasoningReplayIgnoresForeignProviderDetails(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		details lebro.ModelReasoningDetails
+		want    string
+	}{
+		{name: "OpenRouter", details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"reasoning.encrypted","data":"opaque"}]`)), want: `[{"type":"reasoning.encrypted","data":"opaque"}]`},
+		{name: "Anthropic", details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque"}]`))},
+		{name: "Gemini", details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"text":"thought","thought_signature":"b3BhcXVl"}]`))},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := string(openAIReasoningDetails(test.details)); got != test.want {
+				t.Fatalf("replay details = %s, want %s", got, test.want)
+			}
+		})
+	}
+}
+
 func TestGenerateUsesDefaultModelAndOrganizationHeader(t *testing.T) {
 	t.Parallel()
 	var observed observeRequest
