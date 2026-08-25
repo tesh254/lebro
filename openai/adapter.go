@@ -113,9 +113,6 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	if err := request.Validate(); err != nil {
 		return lebro.ModelResponse{}, m.invalidRequest(err.Error(), err)
 	}
-	if len(request.Tools) > 0 || request.OutputSchema != nil {
-		return lebro.ModelResponse{}, m.invalidRequest("lebro: text-generation adapter does not support tools or structured output", nil)
-	}
 
 	body, err := m.buildRequestBody(request)
 	if err != nil {
@@ -157,7 +154,7 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 		return lebro.ModelResponse{}, m.malformedResponse(fmt.Sprintf("lebro: decode response: %v", err), err)
 	}
 
-	response, err := m.mapResponse(parsed)
+	response, err := m.mapResponse(request, parsed)
 	if err != nil {
 		return lebro.ModelResponse{}, m.malformedResponse(err.Error(), err)
 	}
@@ -186,15 +183,25 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 	}
 
 	body := map[string]any{"model": model, "messages": messages}
+	if len(request.Tools) > 0 {
+		body["tools"] = chatTools(request.Tools)
+	}
+	if request.OutputSchema != nil {
+		format, err := chatResponseFormat(request.OutputSchema)
+		if err != nil {
+			return nil, m.invalidRequest(err.Error(), err)
+		}
+		body["response_format"] = format
+	}
 	if len(request.Extension) > 0 {
 		var extension map[string]any
 		if err := json.Unmarshal(request.Extension, &extension); err != nil {
 			return nil, m.invalidRequest(fmt.Sprintf("lebro: request extension must be a JSON object: %v", err), err)
 		}
 		for key, value := range extension {
-			// model and messages are owned by the neutral protocol; keep
-			// callers from clobbering the wire representation.
-			if key == "model" || key == "messages" {
+			// Keys the adapter derives from the neutral protocol are owned by
+			// the mapping; keep callers from clobbering the wire representation.
+			if reservedWireKey(key) {
 				continue
 			}
 			body[key] = value
@@ -208,6 +215,60 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 	return encoded, nil
 }
 
+// chatTools maps neutral tool definitions to chat-completions function tools.
+// A definition without an input schema becomes a schemaless object parameter,
+// matching what the provider accepts.
+func chatTools(tools []lebro.ToolDefinition) []map[string]any {
+	mapped := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		parameters := json.RawMessage(tool.InputSchema)
+		if len(parameters) == 0 {
+			parameters = json.RawMessage(`{"type":"object"}`)
+		}
+		function := map[string]any{"name": string(tool.ID), "parameters": parameters}
+		if tool.Description != "" {
+			function["description"] = tool.Description
+		}
+		mapped = append(mapped, map[string]any{"type": "function", "function": function})
+	}
+	return mapped
+}
+
+// chatResponseFormat maps a neutral output schema onto the JSON-schema
+// response format. Strict mode and schema restrictions remain enforced by the
+// endpoint; lebro keeps validating the returned value locally.
+func chatResponseFormat(schema *lebro.ModelOutputSchema) (map[string]any, error) {
+	name := schema.Name
+	if name == "" {
+		name = "response"
+	}
+	jsonSchema := map[string]any{
+		"name":   name,
+		"schema": json.RawMessage(schema.Schema),
+		"strict": schema.Strict,
+	}
+	if schema.Description != "" {
+		jsonSchema["description"] = schema.Description
+	}
+	return map[string]any{"type": "json_schema", "json_schema": jsonSchema}, nil
+}
+
+// reservedWireKeys are request-body keys derived from the neutral protocol.
+// Extension fields may add anything else, but these stay owned by the mapping
+// so validated intent cannot drift from the wire representation.
+var reservedWireKeys = map[string]struct{}{
+	"model":           {},
+	"messages":        {},
+	"stream":          {},
+	"tools":           {},
+	"response_format": {},
+}
+
+func reservedWireKey(key string) bool {
+	_, reserved := reservedWireKeys[key]
+	return reserved
+}
+
 func (m *Model) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if m.timeout <= 0 {
 		return ctx, func() {}
@@ -215,18 +276,31 @@ func (m *Model) requestContext(ctx context.Context) (context.Context, context.Ca
 	return context.WithTimeout(ctx, m.timeout)
 }
 
-func (m *Model) mapResponse(parsed chatResponse) (lebro.ModelResponse, error) {
+func (m *Model) mapResponse(request lebro.ModelRequest, parsed chatResponse) (lebro.ModelResponse, error) {
 	if len(parsed.Choices) == 0 {
 		return lebro.ModelResponse{}, errors.New("lebro: response has no choices")
 	}
 	choice := parsed.Choices[0]
-	content, err := extractTextContent(choice.Message.Content)
+	content, contentErr := extractTextContent(choice.Message.Content)
+
+	message := lebro.Message{Role: lebro.RoleAssistant, Content: content}
+	calls, err := mapToolCalls(choice.Message.ToolCalls)
 	if err != nil {
+		return lebro.ModelResponse{}, m.malformedResponse(err.Error(), nil)
+	}
+	if len(calls) > 0 {
+		encoded, err := lebro.NewModelToolCalls(calls...)
+		if err != nil {
+			return lebro.ModelResponse{}, m.malformedResponse(err.Error(), err)
+		}
+		message.ToolCalls = encoded
+	}
+	if err := m.attachStructuredOutput(request, choice, &message, content, contentErr); err != nil {
 		return lebro.ModelResponse{}, err
 	}
 
 	response := lebro.ModelResponse{
-		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: content},
+		Message:      message,
 		Usage:        lebro.ModelUsage{InputTokens: parsed.Usage.PromptTokens, OutputTokens: parsed.Usage.CompletionTokens, TotalTokens: parsed.Usage.TotalTokens},
 		FinishReason: mapFinishReason(choice.FinishReason),
 	}
@@ -234,7 +308,61 @@ func (m *Model) mapResponse(parsed chatResponse) (lebro.ModelResponse, error) {
 		extension, _ := json.Marshal(map[string]string{"openai_id": parsed.ID, "openai_model": parsed.Model})
 		response.Extension = extension
 	}
+	if err := response.Validate(); err != nil {
+		return lebro.ModelResponse{}, m.malformedResponse(err.Error(), nil)
+	}
 	return response, nil
+}
+
+// attachStructuredOutput records the structured payload on a terminal message
+// when the run requested an output schema and the model answered without tool
+// calls. The standard chat-completions shape carries JSON inside a string
+// content field; some OpenAI-compatible endpoints instead return a bare JSON
+// value, which is accepted here because lebro validates the value locally
+// regardless of how it arrived. Any other shape is a malformed response.
+func (m *Model) attachStructuredOutput(request lebro.ModelRequest, choice chatChoice, message *lebro.Message, text string, textErr error) error {
+	if request.OutputSchema == nil || len(message.ToolCalls.Values()) > 0 {
+		if textErr != nil {
+			return m.malformedResponse(textErr.Error(), textErr)
+		}
+		return nil
+	}
+	if textErr == nil && json.Valid([]byte(text)) {
+		message.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(text))
+		return nil
+	}
+	if textErr != nil && len(choice.Message.Content) > 0 && json.Valid(choice.Message.Content) {
+		message.StructuredOutput = lebro.NewModelStructuredOutput(choice.Message.Content)
+		return nil
+	}
+	return m.malformedResponse("lebro: structured output is not valid JSON", nil)
+}
+
+// mapToolCalls converts wire tool calls into neutral values. Arguments default
+// to an empty object when the provider sends none; anything else must be valid
+// JSON because the canonical ModelToolCalls encoding requires it.
+func mapToolCalls(raw []chatToolCall) ([]lebro.ModelToolCall, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	calls := make([]lebro.ModelToolCall, 0, len(raw))
+	for _, toolCall := range raw {
+		if toolCall.ID == "" {
+			return nil, errors.New("lebro: tool call is missing an id")
+		}
+		if toolCall.Function.Name == "" {
+			return nil, fmt.Errorf("lebro: tool call %q is missing a function name", toolCall.ID)
+		}
+		arguments := strings.TrimSpace(toolCall.Function.Arguments)
+		if arguments == "" {
+			arguments = "{}"
+		}
+		if !json.Valid([]byte(arguments)) {
+			return nil, fmt.Errorf("lebro: tool call %q arguments are not valid JSON", toolCall.ID)
+		}
+		calls = append(calls, lebro.ModelToolCall{ID: toolCall.ID, ToolID: lebro.ToolID(toolCall.Function.Name), Arguments: json.RawMessage(arguments)})
+	}
+	return calls, nil
 }
 
 func (m *Model) classifyTransportError(ctx context.Context, err error) error {
@@ -305,10 +433,11 @@ func (m *Model) timeoutError(message string, err error) error {
 }
 
 type chatMessage struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
-	Name       string `json:"name,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	Name       string          `json:"name,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall  `json:"tool_calls,omitempty"`
 }
 
 type chatResponse struct {
@@ -325,8 +454,22 @@ type chatChoice struct {
 }
 
 type chatChoiceMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role      string          `json:"role"`
+	Content   json.RawMessage `json:"content"`
+	ToolCalls []chatToolCall  `json:"tool_calls,omitempty"`
+}
+
+// chatToolCall is the shared function-call shape used by assistant request
+// messages (id, type, function) and by response messages.
+type chatToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type,omitempty"`
+	Function chatToolFunction `json:"function"`
+}
+
+type chatToolFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type chatUsageBody struct {
@@ -351,10 +494,23 @@ func mapMessage(message lebro.Message) (chatMessage, error) {
 	if err != nil {
 		return chatMessage{}, err
 	}
-	if !message.ToolCalls.IsZero() || message.StructuredOutput != "" {
-		return chatMessage{}, errors.New("lebro: assistant tool calls and structured output are not supported by the text-generation adapter")
+	if message.StructuredOutput != "" {
+		return chatMessage{}, errors.New("lebro: assistant structured output is not representable in a chat-completions request")
 	}
-	out := chatMessage{Role: role, Content: message.Content, Name: message.Name}
+	// Assistant turns that only request tool calls carry a null content on the
+	// wire; every other non-empty text becomes a JSON string.
+	content := json.RawMessage(`null`)
+	if message.Content != "" {
+		encoded, err := json.Marshal(message.Content)
+		if err != nil {
+			return chatMessage{}, fmt.Errorf("lebro: encode message content: %w", err)
+		}
+		content = encoded
+	}
+	out := chatMessage{Role: role, Content: content, Name: message.Name}
+	for _, call := range message.ToolCalls.Values() {
+		out.ToolCalls = append(out.ToolCalls, chatToolCall{ID: call.ID, Type: "function", Function: chatToolFunction{Name: string(call.ToolID), Arguments: string(call.Arguments)}})
+	}
 	if message.Role == lebro.RoleTool {
 		if message.ToolCallID == "" {
 			return chatMessage{}, errors.New("lebro: tool message requires a tool call id")
@@ -389,10 +545,11 @@ func mapFinishReason(reason string) lebro.FinishReason {
 		return lebro.FinishReasonLength
 	case "content_filter":
 		return lebro.FinishReasonContent
+	case "tool_calls", "function_call":
+		return lebro.FinishReasonToolCalls
 	default:
-		// tool_calls / function_call and unknown reasons are not surfaced as
-		// tool calls by this text adapter; treat them as unspecified so the
-		// neutral response stays valid without inventing tool calls.
+		// Unknown reasons are surfaced as unspecified so the neutral response
+		// stays valid without inventing semantics the provider did not send.
 		return lebro.FinishReasonUnspecified
 	}
 }
@@ -473,9 +630,6 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 	if err := request.Validate(); err != nil {
 		return nil, m.invalidRequest(err.Error(), err)
 	}
-	if len(request.Tools) > 0 || request.OutputSchema != nil {
-		return nil, m.invalidRequest("lebro: text-generation adapter does not support tools or structured output", nil)
-	}
 
 	body, err := m.buildStreamingRequestBody(request)
 	if err != nil {
@@ -511,7 +665,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		return nil, classified
 	}
 
-	reader := newSSEStreamReader(resp, cancel, m)
+	reader := newSSEStreamReader(resp, cancel, m, request.OutputSchema)
 	return reader, nil
 }
 
@@ -534,13 +688,23 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 	}
 
 	body := map[string]any{"model": model, "messages": messages, "stream": true}
+	if len(request.Tools) > 0 {
+		body["tools"] = chatTools(request.Tools)
+	}
+	if request.OutputSchema != nil {
+		format, err := chatResponseFormat(request.OutputSchema)
+		if err != nil {
+			return nil, m.invalidRequest(err.Error(), err)
+		}
+		body["response_format"] = format
+	}
 	if len(request.Extension) > 0 {
 		var extension map[string]any
 		if err := json.Unmarshal(request.Extension, &extension); err != nil {
 			return nil, m.invalidRequest(fmt.Sprintf("lebro: request extension must be a JSON object: %v", err), err)
 		}
 		for key, value := range extension {
-			if key == "model" || key == "messages" || key == "stream" {
+			if reservedWireKey(key) {
 				continue
 			}
 			body[key] = value
@@ -556,31 +720,52 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 
 // sseStreamReader parses the Server-Sent Events response from the OpenAI
 // chat-completions streaming endpoint into ordered lebro.StreamDelta values.
+// Text is delivered as it arrives. Streaming tool calls arrive as fragments
+// spread across events, so they accumulate until the terminal finish reason
+// and are then emitted as complete ToolCall deltas ahead of it, mirroring how
+// the runtime consumes complete calls.
 type sseStreamReader struct {
-	model     *Model
-	resp      *http.Response
-	body      io.ReadCloser
-	scanner   *bufio.Scanner
-	cancel    context.CancelFunc
-	closed    chan struct{}
-	once      sync.Once
-	mu        sync.Mutex
-	terminal  bool
-	id        string
-	modelName string
+	model        *Model
+	resp         *http.Response
+	body         io.ReadCloser
+	scanner      *bufio.Scanner
+	cancel       context.CancelFunc
+	closed       chan struct{}
+	once         sync.Once
+	mu           sync.Mutex
+	terminal     bool
+	id           string
+	modelName    string
+	outputSchema *lebro.ModelOutputSchema
+
+	textBuf      strings.Builder
+	usage        lebro.ModelUsage
+	pendingTools map[int]*streamToolBuilder
+	toolOrder    []int
+	pending      []lebro.StreamDelta
 }
 
-func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *Model) *sseStreamReader {
+// streamToolBuilder accumulates one streamed tool call from its wire
+// fragments: the first fragment carries id and function name, later fragments
+// append argument JSON by index.
+type streamToolBuilder struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
+func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *Model, outputSchema *lebro.ModelOutputSchema) *sseStreamReader {
 	body := resp.Body
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	return &sseStreamReader{
-		model:   model,
-		resp:    resp,
-		body:    body,
-		scanner: scanner,
-		cancel:  cancel,
-		closed:  make(chan struct{}),
+		model:        model,
+		resp:         resp,
+		body:         body,
+		scanner:      scanner,
+		cancel:       cancel,
+		closed:       make(chan struct{}),
+		outputSchema: outputSchema,
 	}
 }
 
@@ -598,6 +783,12 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 			r.markTerminal()
 			return lebro.StreamDelta{}, context.Canceled
 		default:
+		}
+		if delta, ok := r.popPending(); ok {
+			if delta.IsTerminal() {
+				r.markTerminal()
+			}
+			return delta, nil
 		}
 		if !r.scanner.Scan() {
 			err := r.scanner.Err()
@@ -633,29 +824,139 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 			r.markTerminal()
 			return lebro.StreamDelta{}, r.model.malformedResponse(fmt.Sprintf("lebro: decode stream event: %v", err), err)
 		}
-		if event.Error != nil {
-			r.markTerminal()
-			return lebro.StreamDelta{}, r.classifyStreamError(event.Error)
-		}
-		if event.ID != "" {
-			r.id = event.ID
-		}
-		if event.Model != "" {
-			r.modelName = event.Model
-		}
-		delta, terminal, err := r.mapStreamEvent(event)
+		delta, emit, err := r.handleEvent(event)
 		if err != nil {
 			r.markTerminal()
 			return lebro.StreamDelta{}, err
 		}
-		if terminal {
-			r.markTerminal()
-		}
-		if delta == (lebro.StreamDelta{}) && !terminal {
+		if !emit {
 			continue
+		}
+		if delta.IsTerminal() {
+			r.markTerminal()
 		}
 		return delta, nil
 	}
+}
+
+// popPending hands out queued deltas in order. The queue holds complete tool
+// calls followed by their shared terminal delta after a "tool_calls" finish
+// reason, so consumers see whole calls before the stream ends.
+func (r *sseStreamReader) popPending() (lebro.StreamDelta, bool) {
+	if len(r.pending) == 0 {
+		return lebro.StreamDelta{}, false
+	}
+	delta := r.pending[0]
+	r.pending = r.pending[1:]
+	return delta, true
+}
+
+// handleEvent folds one wire event into the neutral stream. A false emit means
+// the event produced no consumer-visible delta yet (fragment accumulation, or
+// its deltas were queued); a true emit returns the next delta to deliver.
+// Events that combine content with a finish reason — common on final chunks —
+// queue the text ahead of the terminal delta so ordering is preserved.
+func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta, bool, error) {
+	if event.Error != nil {
+		return lebro.StreamDelta{}, false, r.classifyStreamError(event.Error)
+	}
+	if event.ID != "" {
+		r.id = event.ID
+	}
+	if event.Model != "" {
+		r.modelName = event.Model
+	}
+	if event.Usage != (chatUsageBody{}) {
+		r.usage = lebro.ModelUsage{
+			InputTokens:  event.Usage.PromptTokens,
+			OutputTokens: event.Usage.CompletionTokens,
+			TotalTokens:  event.Usage.TotalTokens,
+		}
+	}
+	if len(event.Choices) == 0 {
+		if event.Usage != (chatUsageBody{}) {
+			return lebro.StreamDelta{Usage: r.usage}, true, nil
+		}
+		return lebro.StreamDelta{}, false, nil
+	}
+	choice := event.Choices[0]
+	if choice.Delta.Content != "" {
+		r.textBuf.WriteString(choice.Delta.Content)
+		r.pending = append(r.pending, lebro.StreamDelta{Text: choice.Delta.Content})
+	}
+	r.accumulateToolFragments(choice.Delta.ToolCalls)
+	if choice.FinishReason == "" {
+		if len(r.pending) == 0 {
+			return lebro.StreamDelta{}, false, nil
+		}
+		delta := r.pending[0]
+		r.pending = r.pending[1:]
+		return delta, true, nil
+	}
+	finish := mapFinishReason(choice.FinishReason)
+	if finish == lebro.FinishReasonToolCalls {
+		calls, err := r.completeToolCalls()
+		if err != nil {
+			return lebro.StreamDelta{}, false, r.model.malformedResponse(err.Error(), nil)
+		}
+		for i := range calls {
+			call := calls[i]
+			r.pending = append(r.pending, lebro.StreamDelta{ToolCall: &call})
+		}
+	}
+	terminal := lebro.StreamDelta{FinishReason: finish, Usage: r.usage}
+	if finish != lebro.FinishReasonToolCalls && r.outputSchema != nil {
+		if text := r.textBuf.String(); text != "" && json.Valid([]byte(text)) {
+			terminal.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(text))
+		}
+	}
+	r.pending = append(r.pending, terminal)
+	return lebro.StreamDelta{}, false, nil
+}
+
+func (r *sseStreamReader) accumulateToolFragments(fragments []chatStreamToolFragment) {
+	for _, fragment := range fragments {
+		builder := r.pendingTools[fragment.Index]
+		if builder == nil {
+			builder = &streamToolBuilder{}
+			if r.pendingTools == nil {
+				r.pendingTools = map[int]*streamToolBuilder{}
+			}
+			r.pendingTools[fragment.Index] = builder
+			r.toolOrder = append(r.toolOrder, fragment.Index)
+		}
+		if fragment.ID != "" {
+			builder.id = fragment.ID
+		}
+		if fragment.Function != nil {
+			if fragment.Function.Name != "" {
+				builder.name = fragment.Function.Name
+			}
+			builder.args.WriteString(fragment.Function.Arguments)
+		}
+	}
+}
+
+func (r *sseStreamReader) completeToolCalls() ([]lebro.ModelToolCall, error) {
+	calls := make([]lebro.ModelToolCall, 0, len(r.toolOrder))
+	for _, index := range r.toolOrder {
+		builder := r.pendingTools[index]
+		if builder.id == "" {
+			return nil, fmt.Errorf("lebro: streamed tool call at index %d is missing an id", index)
+		}
+		if builder.name == "" {
+			return nil, fmt.Errorf("lebro: streamed tool call %q is missing a function name", builder.id)
+		}
+		arguments := strings.TrimSpace(builder.args.String())
+		if arguments == "" {
+			arguments = "{}"
+		}
+		if !json.Valid([]byte(arguments)) {
+			return nil, fmt.Errorf("lebro: streamed tool call %q arguments are not valid JSON", builder.id)
+		}
+		calls = append(calls, lebro.ModelToolCall{ID: builder.id, ToolID: lebro.ToolID(builder.name), Arguments: json.RawMessage(arguments)})
+	}
+	return calls, nil
 }
 
 func (r *sseStreamReader) Close() error {
@@ -671,41 +972,6 @@ func (r *sseStreamReader) markTerminal() {
 	r.mu.Lock()
 	r.terminal = true
 	r.mu.Unlock()
-}
-
-func (r *sseStreamReader) mapStreamEvent(event chatStreamEvent) (lebro.StreamDelta, bool, error) {
-	if len(event.Choices) == 0 {
-		if event.Usage != (chatUsageBody{}) {
-			return lebro.StreamDelta{
-				Usage: lebro.ModelUsage{
-					InputTokens:  event.Usage.PromptTokens,
-					OutputTokens: event.Usage.CompletionTokens,
-					TotalTokens:  event.Usage.TotalTokens,
-				},
-			}, false, nil
-		}
-		return lebro.StreamDelta{}, false, nil
-	}
-	choice := event.Choices[0]
-	delta := lebro.StreamDelta{}
-	if choice.Delta.Content != "" {
-		delta.Text = choice.Delta.Content
-	}
-	if choice.FinishReason != "" {
-		delta.FinishReason = mapFinishReason(choice.FinishReason)
-	}
-	if event.Usage != (chatUsageBody{}) {
-		delta.Usage = lebro.ModelUsage{
-			InputTokens:  event.Usage.PromptTokens,
-			OutputTokens: event.Usage.CompletionTokens,
-			TotalTokens:  event.Usage.TotalTokens,
-		}
-	}
-	terminal := choice.FinishReason != ""
-	if delta.Text == "" && delta.ToolCall == nil && delta.StructuredOutput == "" && delta.FinishReason == "" && delta.Usage == (lebro.ModelUsage{}) {
-		return lebro.StreamDelta{}, terminal, nil
-	}
-	return delta, terminal, nil
 }
 
 func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {
@@ -761,6 +1027,22 @@ type chatStreamChoice struct {
 }
 
 type chatStreamDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string                   `json:"role,omitempty"`
+	Content   string                   `json:"content,omitempty"`
+	ToolCalls []chatStreamToolFragment `json:"tool_calls,omitempty"`
+}
+
+// chatStreamToolFragment is one incremental piece of a streamed tool call.
+// Fragments for the same call share an Index; the first carries the id and
+// function name, later fragments append argument JSON.
+type chatStreamToolFragment struct {
+	Index    int                              `json:"index"`
+	ID       string                           `json:"id,omitempty"`
+	Type     string                           `json:"type,omitempty"`
+	Function *chatToolFunctionWithPartialArgs `json:"function,omitempty"`
+}
+
+type chatToolFunctionWithPartialArgs struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }

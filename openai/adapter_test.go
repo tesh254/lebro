@@ -174,8 +174,6 @@ func TestGenerateRejectsUnsupportedRequests(t *testing.T) {
 	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
 	modelWithoutDefault := newAdapter(t, server, Config{APIKey: "k"})
 
-	tools := lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}, Tools: []lebro.ToolDefinition{{ID: "lookup"}}}
-	structured := lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}, OutputSchema: &lebro.ModelOutputSchema{Name: "result", Schema: json.RawMessage(`{"type":"object"}`)}}
 	noModel := lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}}
 	badExtension := lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}, Extension: json.RawMessage(`[1]`)}
 
@@ -184,8 +182,6 @@ func TestGenerateRejectsUnsupportedRequests(t *testing.T) {
 		model   *Model
 		request lebro.ModelRequest
 	}{
-		{"tools", model, tools},
-		{"structured output", model, structured},
 		{"no model", modelWithoutDefault, noModel},
 		{"bad extension", model, badExtension},
 	}
@@ -203,7 +199,10 @@ func TestGenerateRejectsUnsupportedRequests(t *testing.T) {
 	}
 }
 
-func TestGenerateRejectsAssistantToolCallHistory(t *testing.T) {
+// TestGenerateRejectsAssistantStructuredOutputHistory covers the one message
+// shape chat-completions cannot represent on the wire: an assistant turn whose
+// payload was structured output rather than text or tool calls.
+func TestGenerateRejectsAssistantStructuredOutputHistory(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, w, http.StatusOK, chatResponse{
@@ -213,18 +212,10 @@ func TestGenerateRejectsAssistantToolCallHistory(t *testing.T) {
 	t.Cleanup(server.Close)
 	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
 
-	toolCalls, err := lebro.NewModelToolCalls(lebro.ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
 	tests := []struct {
 		name     string
 		messages []lebro.Message
 	}{
-		{"tool calls", []lebro.Message{
-			{Role: lebro.RoleUser, Content: "hi"},
-			{Role: lebro.RoleAssistant, ToolCalls: toolCalls},
-		}},
 		{"structured output", []lebro.Message{
 			{Role: lebro.RoleUser, Content: "hi"},
 			{Role: lebro.RoleAssistant, StructuredOutput: lebro.NewModelStructuredOutput(json.RawMessage(`{"ok":true}`))},
@@ -236,6 +227,315 @@ func TestGenerateRejectsAssistantToolCallHistory(t *testing.T) {
 			var modelErr *lebro.ModelError
 			if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorInvalidRequest {
 				t.Fatalf("error = %v, want invalid_request", err)
+			}
+		})
+	}
+}
+
+func TestGenerateMapsToolCallHistoryToWire(t *testing.T) {
+	t.Parallel()
+	var observed observeRequest
+	server := newRecordedServer(t, &observed, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, chatResponse{
+			ID: "chatcmpl-2", Model: "gpt-4o",
+			Choices: []chatChoice{{Index: 0, Message: chatChoiceMessage{Role: "assistant", Content: json.RawMessage(`"done"`)}, FinishReason: "stop"}},
+		})
+	})
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+
+	calls, err := lebro.NewModelToolCalls(
+		lebro.ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"id":"42"}`)},
+		lebro.ModelToolCall{ID: "call-2", ToolID: "enrich", Arguments: json.RawMessage(`{"depth":2}`)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = model.Generate(context.Background(), lebro.ModelRequest{
+		Model: "gpt-4o",
+		Messages: []lebro.Message{
+			{Role: lebro.RoleUser, Content: "look it up"},
+			{Role: lebro.RoleAssistant, ToolCalls: calls},
+			{Role: lebro.RoleTool, Content: `{"name":"Ada"}`, ToolCallID: "call-1"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := observed.body(t)
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 3 {
+		t.Fatalf("wire messages = %#v", body["messages"])
+	}
+	assistant, _ := messages[1].(map[string]any)
+	content, hasContent := assistant["content"]
+	if !hasContent || content != nil {
+		t.Fatalf("assistant content = %#v, want null", assistant["content"])
+	}
+	wireCalls, _ := assistant["tool_calls"].([]any)
+	if len(wireCalls) != 2 {
+		t.Fatalf("assistant tool_calls = %#v", assistant["tool_calls"])
+	}
+	first, _ := wireCalls[0].(map[string]any)
+	if first["id"] != "call-1" || first["type"] != "function" {
+		t.Fatalf("tool call[0] = %#v", first)
+	}
+	function, _ := first["function"].(map[string]any)
+	if function["name"] != "lookup" || function["arguments"] != `{"id":"42"}` {
+		t.Fatalf("tool call function = %#v", function)
+	}
+	toolResult, _ := messages[2].(map[string]any)
+	if toolResult["role"] != "tool" || toolResult["tool_call_id"] != "call-1" || toolResult["content"] != `{"name":"Ada"}` {
+		t.Fatalf("tool result = %#v", toolResult)
+	}
+}
+
+func TestGenerateMapsToolsAndResponseFormatToWire(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		request lebro.ModelRequest
+		assert  func(t *testing.T, body map[string]any)
+	}{
+		{
+			name: "tools",
+			request: lebro.ModelRequest{
+				Model:    "gpt-4o",
+				Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+				Tools: []lebro.ToolDefinition{
+					{ID: "lookup", Description: "Finds records", InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}}}`)},
+					{ID: "ping"},
+				},
+			},
+			assert: func(t *testing.T, body map[string]any) {
+				tools, _ := body["tools"].([]any)
+				if len(tools) != 2 {
+					t.Fatalf("tools = %#v", body["tools"])
+				}
+				first, _ := tools[0].(map[string]any)
+				if first["type"] != "function" {
+					t.Fatalf("tool type = %#v", first)
+				}
+				function, _ := first["function"].(map[string]any)
+				if function["name"] != "lookup" || function["description"] != "Finds records" {
+					t.Fatalf("function = %#v", function)
+				}
+				parameters, _ := function["parameters"].(map[string]any)
+				if parameters == nil || parameters["properties"] == nil {
+					t.Fatalf("parameters = %#v", function["parameters"])
+				}
+				second, _ := tools[1].(map[string]any)
+				secondFunction, _ := second["function"].(map[string]any)
+				schema, _ := secondFunction["parameters"].(map[string]any)
+				if schema["type"] != "object" {
+					t.Fatalf("default parameters = %#v", secondFunction["parameters"])
+				}
+			},
+		},
+		{
+			name: "response format",
+			request: lebro.ModelRequest{
+				Model:    "gpt-4o",
+				Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+				OutputSchema: &lebro.ModelOutputSchema{
+					Name:        "invoice",
+					Description: "Extracted invoice fields",
+					Schema:      json.RawMessage(`{"type":"object","required":["invoice_id"]}`),
+					Strict:      true,
+				},
+			},
+			assert: func(t *testing.T, body map[string]any) {
+				format, _ := body["response_format"].(map[string]any)
+				if format["type"] != "json_schema" {
+					t.Fatalf("response_format type = %#v", format)
+				}
+				jsonSchema, _ := format["json_schema"].(map[string]any)
+				if jsonSchema["name"] != "invoice" || jsonSchema["strict"] != true || jsonSchema["description"] != "Extracted invoice fields" {
+					t.Fatalf("json_schema = %#v", jsonSchema)
+				}
+				schema, _ := jsonSchema["schema"].(map[string]any)
+				if schema == nil || schema["required"] == nil {
+					t.Fatalf("schema = %#v", jsonSchema["schema"])
+				}
+			},
+		},
+		{
+			name: "default schema name",
+			request: lebro.ModelRequest{
+				Model:        "gpt-4o",
+				Messages:     []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+				OutputSchema: &lebro.ModelOutputSchema{Schema: json.RawMessage(`{"type":"object"}`)},
+			},
+			assert: func(t *testing.T, body map[string]any) {
+				format, _ := body["response_format"].(map[string]any)
+				jsonSchema, _ := format["json_schema"].(map[string]any)
+				if jsonSchema["name"] != "response" {
+					t.Fatalf("default name = %#v", jsonSchema["name"])
+				}
+			},
+		},
+		{
+			name: "extension cannot clobber owned keys",
+			request: lebro.ModelRequest{
+				Model:        "gpt-4o",
+				Messages:     []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+				Tools:        []lebro.ToolDefinition{{ID: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+				OutputSchema: &lebro.ModelOutputSchema{Name: "invoice", Schema: json.RawMessage(`{"type":"object"}`), Strict: true},
+				Extension:    json.RawMessage(`{"tools":[{"hijacked":true}],"response_format":{"hijacked":true},"temperature":0.7,"tool_choice":"auto"}`),
+			},
+			assert: func(t *testing.T, body map[string]any) {
+				format, _ := body["response_format"].(map[string]any)
+				if format["type"] != "json_schema" {
+					t.Fatalf("response_format clobbered = %#v", body["response_format"])
+				}
+				tools, _ := body["tools"].([]any)
+				first, _ := tools[0].(map[string]any)
+				if first["type"] != "function" {
+					t.Fatalf("tools clobbered = %#v", body["tools"])
+				}
+				if body["temperature"] != 0.7 || body["tool_choice"] != "auto" {
+					t.Fatalf("extension passthrough lost: %#v", body)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var observed observeRequest
+			server := newRecordedServer(t, &observed, func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, http.StatusOK, chatResponse{
+					Choices: []chatChoice{{Message: chatChoiceMessage{Role: "assistant", Content: json.RawMessage(`"{\"ok\":true}"`)}, FinishReason: "stop"}},
+				})
+			})
+			model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+			_, err := model.Generate(context.Background(), test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.assert(t, observed.body(t))
+		})
+	}
+}
+
+func TestGenerateMapsToolCallResponse(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": "chatcmpl-3", "model": "gpt-4o",
+			"choices": []any{map[string]any{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": nil,
+					"tool_calls": []any{
+						map[string]any{
+							"id": "call-9", "type": "function",
+							"function": map[string]any{"name": "lookup", "arguments": `{"id":"42"}`},
+						},
+						map[string]any{
+							"id": "call-10", "type": "function",
+							"function": map[string]any{"name": "ping", "arguments": ""},
+						},
+					},
+				},
+				"finish_reason": "tool_calls",
+			}},
+			"usage": map[string]any{"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11},
+		})
+	}))
+	t.Cleanup(server.Close)
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+
+	response, err := model.Generate(context.Background(), lebro.ModelRequest{
+		Model:    "gpt-4o",
+		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+		Tools:    []lebro.ToolDefinition{{ID: "lookup"}, {ID: "ping"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.FinishReason != lebro.FinishReasonToolCalls {
+		t.Fatalf("finish reason = %q, want tool_calls", response.FinishReason)
+	}
+	calls := response.Message.ToolCalls.Values()
+	if len(calls) != 2 {
+		t.Fatalf("tool calls = %#v", response.Message.ToolCalls)
+	}
+	if calls[0].ID != "call-9" || calls[0].ToolID != "lookup" || string(calls[0].Arguments) != `{"id":"42"}` {
+		t.Fatalf("call[0] = %#v", calls[0])
+	}
+	if calls[1].ID != "call-10" || calls[1].ToolID != "ping" || string(calls[1].Arguments) != `{}` {
+		t.Fatalf("call[1] = %#v, want empty arguments defaulted to {}", calls[1])
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("validate = %v", err)
+	}
+}
+
+func TestGenerateRejectsToolCallsFinishWithoutToolCalls(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, chatResponse{
+			Choices: []chatChoice{{Message: chatChoiceMessage{Role: "assistant", Content: json.RawMessage(`"text"`)}, FinishReason: "tool_calls"}},
+		})
+	}))
+	t.Cleanup(server.Close)
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+
+	_, err := model.Generate(context.Background(), lebro.ModelRequest{Model: "gpt-4o", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorMalformedResponse {
+		t.Fatalf("error = %v, want malformed_response", err)
+	}
+}
+
+func TestGenerateAttachesStructuredOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		content   json.RawMessage
+		wantValid bool
+	}{
+		{name: "json inside string content", content: json.RawMessage(`"{\"ok\":true}"`), wantValid: true},
+		{name: "bare json object content", content: json.RawMessage(`{"ok":true}`), wantValid: true},
+		{name: "plain text is not valid output", content: json.RawMessage(`"nope"`), wantValid: false},
+		{name: "null content is not valid output", content: json.RawMessage(`null`), wantValid: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, chatResponse{
+					Choices: []chatChoice{{Message: chatChoiceMessage{Role: "assistant", Content: test.content}, FinishReason: "stop"}},
+				})
+			}))
+			t.Cleanup(server.Close)
+			model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o"})
+
+			response, err := model.Generate(context.Background(), lebro.ModelRequest{
+				Model:        "gpt-4o",
+				Messages:     []lebro.Message{{Role: lebro.RoleUser, Content: "return JSON"}},
+				OutputSchema: &lebro.ModelOutputSchema{Name: "result", Schema: json.RawMessage(`{"type":"object"}`), Strict: true},
+			})
+			if !test.wantValid {
+				var modelErr *lebro.ModelError
+				if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorMalformedResponse {
+					t.Fatalf("error = %v, want malformed_response", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Message.StructuredOutput == "" {
+				t.Fatal("structured output missing")
+			}
+			if got, want := string(response.Message.StructuredOutput.Raw()), `{"ok":true}`; got != want {
+				t.Fatalf("structured output = %s, want %s", got, want)
+			}
+			if err := response.Validate(); err != nil {
+				t.Fatalf("validate = %v", err)
 			}
 		})
 	}
@@ -254,7 +554,6 @@ func TestGenerateMapsFinishReasonsAndContentShapes(t *testing.T) {
 		{name: "length", reason: "length", content: json.RawMessage(`"cut"`), want: lebro.FinishReasonLength, text: "cut"},
 		{name: "content_filter", reason: "content_filter", content: json.RawMessage(`"filtered"`), want: lebro.FinishReasonContent, text: "filtered"},
 		{name: "unknown", reason: "vendor_reason", content: json.RawMessage(`"x"`), want: lebro.FinishReasonUnspecified, text: "x"},
-		{name: "tool_calls coerced", reason: "tool_calls", content: json.RawMessage(`"text"`), want: lebro.FinishReasonUnspecified, text: "text"},
 		{name: "null content", reason: "stop", content: json.RawMessage(`null`), want: lebro.FinishReasonStop, text: ""},
 		{name: "multimodal text parts", reason: "stop", content: json.RawMessage(`[{"type":"text","text":"alpha"},{"type":"image_url"},{"type":"text","text":"beta"}]`), want: lebro.FinishReasonStop, text: "alphabeta"},
 	}
