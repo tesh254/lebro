@@ -1,0 +1,45 @@
+obsv/axiom/exporter.go
+  s_5c0f3b18ea4c49::t_0dc243847a9062 6,39,43,47-48
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 40-42,44-46
+obsv/otlp/exporter.go
+  s_5c0f3b18ea4c49::t_eb78570dd57644 12
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 28,128-130,132-137,140-156,158-160,162-164,179-181,184-194
+  s_5c0f3b18ea4c49::t_3aedadfac2bba7 124-127,131,138-139,157,161,178,182-183
+channels/slack/adapter.go
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 307-308
+  s_5c0f3b18ea4c49::t_069551923c17d7 171-175,309
+channels/discord/adapter_test.go
+  s_5c0f3b18ea4c49::t_0dc243847a9062 12
+  s_5c0f3b18ea4c49::t_ae08d86e1116b9 21
+channels/handler.go
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 125-130
+  s_5c0f3b18ea4c49::t_069551923c17d7 61-63,66,73,86-101,123-124
+channels/server.go
+  s_5c0f3b18ea4c49::t_069551923c17d7 167-169
+channels/telegram/adapter.go
+  s_5c0f3b18ea4c49::t_8fd702c874eea0 126,130
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 127-129
+channels/text.go
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 7-9,14-16
+  s_5c0f3b18ea4c49::t_8fd702c874eea0 1-6,10-13,17-21
+channels/discord/adapter.go
+  s_5c0f3b18ea4c49::t_ae08d86e1116b9 13,15,24,41,51,82,95,97
+  s_5c0f3b18ea4c49::t_3b51b888f34c9a 21-23,25,42,52,73-81,100-102,193-195
+  s_5c0f3b18ea4c49::t_8fd702c874eea0 192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "29271135c1e1c562ea5f3ebbd305ff0c8bda2d0a",
+  "prompts": {},
+  "sessions": {
+    "s_5c0f3b18ea4c49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03fb6-5363-7550-ba3f-c9fed3aeb0a8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
