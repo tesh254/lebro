@@ -20,6 +20,11 @@ type ConversationRef struct {
 	// ID is the provider's opaque conversation key. It is never parsed by the
 	// core; a ThreadMapper hashes it to produce a deterministic ThreadID.
 	ID string
+	// ReplyTarget is optional adapter-owned reply state, such as a short-lived
+	// interaction token. ThreadMapper implementations must ignore it: it may
+	// change for every inbound message while ID remains the stable conversation
+	// key. Adapters must treat it as sensitive and never put it in run metadata.
+	ReplyTarget string
 }
 
 // ChannelIdentity is the sender of an inbound message as the platform reports
@@ -164,6 +169,15 @@ type Adapter interface {
 // only after the request signature has been checked, then echoed verbatim.
 type WebhookResponder interface {
 	WebhookResponse(r *http.Request, body []byte) (response []byte, handled bool, err error)
+}
+
+// WebhookAcknowledger is an optional extension for adapters that need a
+// provider-specific HTTP response after a message has been durably dispatched
+// but before the agent has run. It is used with Config.Dispatch; an adapter
+// implementing it cannot run synchronously because the provider response is
+// what makes later reply delivery possible.
+type WebhookAcknowledger interface {
+	WebhookAcknowledgement(r *http.Request, body []byte) (response []byte, contentType string, err error)
 }
 
 // DispatchJob is verified, deduplicated inbound work ready for a background

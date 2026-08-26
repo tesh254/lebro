@@ -81,7 +81,24 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
+			if acknowledger, ok := b.adapter.(WebhookAcknowledger); ok {
+				response, contentType, err := acknowledger.WebhookAcknowledgement(r, body)
+				if err != nil {
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				if contentType != "" {
+					w.Header().Set("Content-Type", contentType)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(response)
+				return
+			}
 			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if _, ok := b.adapter.(WebhookAcknowledger); ok {
+			http.Error(w, "channel adapter requires a dispatcher", http.StatusInternalServerError)
 			return
 		}
 

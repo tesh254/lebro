@@ -1896,6 +1896,23 @@ message-subtype events, uses a message's `thread_ts` (or its own `ts`) as the
 thread root, and sends only the final agent reply to stay inside Slack's message
 posting constraints.
 
+`channels/discord` is likewise optional. It receives signed application-command
+interactions (not Gateway messages), responds to Discord's `PING`, defers each
+accepted command, and edits that deferred response after the run completes. Its
+`ConversationRef.ID` is the Discord channel ID, so commands inside a native
+Discord thread retain their own durable thread. Use `PublicKey` from the Discord
+Developer Portal and the same durable `Dispatch` pattern; interaction tokens
+are kept out of run metadata and expire after 15 minutes.
+
+```go
+adapter, err := discord.New(discord.Config{
+    PublicKey: os.Getenv("DISCORD_APPLICATION_PUBLIC_KEY"),
+})
+if err != nil {
+    panic(err)
+}
+```
+
 An inbound message maps deterministically to a durable thread: a `ThreadMapper`
 derives a stable `ThreadID` from the conversation reference, so every message in
 one platform conversation lands on one persisted transcript and a reply

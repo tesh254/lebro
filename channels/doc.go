@@ -52,6 +52,8 @@
 // (logging, rate limiting, tracing), not for request authentication.
 // Platforms with a signed handshake response can implement [WebhookResponder];
 // the Server verifies the request before writing the platform-specific response.
+// An adapter with [WebhookAcknowledger] requires Config.Dispatch so its deferred
+// provider response is written only after durable work acceptance.
 
 // # Prompt acknowledgements
 //
