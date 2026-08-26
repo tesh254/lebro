@@ -1,0 +1,45 @@
+channels/slack/adapter.go
+  s_5c0f3b18ea4c49::t_b3aba0fdfb076e 1-21,29-236,238-239,243-304
+  s_5c0f3b18ea4c49::t_a0dec6dbf8cf7a 237,240-242
+  s_5c0f3b18ea4c49::t_a522f674fae1c7 22-28
+channels/handler.go
+  s_5c0f3b18ea4c49::t_ba38f847909afe 6
+  s_5c0f3b18ea4c49::t_475b4f0897984e 29-43,78,81-85
+  s_5c0f3b18ea4c49::t_85932d3c96588b 79-80,96-107
+README.md
+  s_5c0f3b18ea4c49::t_85932d3c96588b 1878-1879
+  s_5c0f3b18ea4c49::t_46b8c62315566b 1820-1825,1864-1877,1880-1897
+channels/contracts.go
+  s_5c0f3b18ea4c49::t_475b4f0897984e 157-168,178-179,182-185
+  s_5c0f3b18ea4c49::t_85932d3c96588b 169-177,180-181,186
+channels/slack/adapter_test.go
+  s_5c0f3b18ea4c49::t_4f4a688c434d6c 8,66,158-159,162
+  s_5c0f3b18ea4c49::t_28b1acd35073ed 1-7,9-65,67-157,160-161,163
+channels/doc.go
+  s_5c0f3b18ea4c49::t_475b4f0897984e 53-62
+channels/server_test.go
+  s_5c0f3b18ea4c49::t_d380df915a4329 34-42,68,137-146
+channels/slack/doc.go
+  s_5c0f3b18ea4c49::t_b3aba0fdfb076e 1-11
+channels/dispatch_test.go
+  s_5c0f3b18ea4c49::t_85932d3c96588b 27,30-31,48,51
+  s_5c0f3b18ea4c49::t_4f4a688c434d6c 1-26,28-29,32-47,49-50,52-60
+channels/server.go
+  s_5c0f3b18ea4c49::t_475b4f0897984e 33-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8235c56c25f2e7d703fabd3ee2341e9da1c2fa7b",
+  "prompts": {},
+  "sessions": {
+    "s_5c0f3b18ea4c49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03fb6-5363-7550-ba3f-c9fed3aeb0a8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
