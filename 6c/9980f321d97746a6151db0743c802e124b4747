@@ -1,0 +1,45 @@
+obsv/otlp/exporter.go
+  s_5c0f3b18ea4c49::t_42ebe614736706 1-24,26-113,115-133,140-141,150-169,194-210,217-220,224-227,229,233-241,245-259,263-271,275-285
+  s_5c0f3b18ea4c49::t_99da1339aad051 25,114,135-139,142-149,170-193,211-216,221-223,228,230-232,242-244,260-262,272-274
+  s_5c0f3b18ea4c49::t_cf2ee7416a9842 134
+README.md
+  s_5c0f3b18ea4c49::t_363b178f377e29 136
+examples/observability-otlp/README.md
+  s_5c0f3b18ea4c49::t_9bc41a8d3343fc 1-41
+examples/README.md
+  s_5c0f3b18ea4c49::t_363b178f377e29 242-249
+obsv/otlp/exporter_test.go
+  s_5c0f3b18ea4c49::t_42ebe614736706 1-4,6-13,15-20,33-37,41-47,51-52,56,72-75,100-102,112
+  s_5c0f3b18ea4c49::t_77f2f026607bbe 5,14,103-104,106-111,113-119
+  s_5c0f3b18ea4c49::t_99da1339aad051 21-32,38-40,48-50,53-55,57-71,76-85,89-99
+  s_5c0f3b18ea4c49::t_c231e554ed4593 86-88
+  s_5c0f3b18ea4c49::t_cf2ee7416a9842 105
+examples/observability-otlp/main.go
+  s_5c0f3b18ea4c49::t_9bc41a8d3343fc 1-84,88-91,95-98,102-103
+  s_5c0f3b18ea4c49::t_9ee5474b5143fa 85-87,92-94,99-101
+examples/observability-otlp/main_test.go
+  s_5c0f3b18ea4c49::t_317725ae5ac97e 3-4,6-8,10-45
+  s_5c0f3b18ea4c49::t_363b178f377e29 1-2,5,9
+obsv/otlp/doc.go
+  s_5c0f3b18ea4c49::t_42ebe614736706 1-9,18
+  s_5c0f3b18ea4c49::t_363b178f377e29 10-17
+examples/observability-otlp/providers.go
+  s_5c0f3b18ea4c49::t_9bc41a8d3343fc 1-4,8-9,13-15
+  s_5c0f3b18ea4c49::t_9ee5474b5143fa 5-7,10-12,16-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "6c9980f321d97746a6151db0743c802e124b4747",
+  "prompts": {},
+  "sessions": {
+    "s_5c0f3b18ea4c49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03fb6-5363-7550-ba3f-c9fed3aeb0a8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
