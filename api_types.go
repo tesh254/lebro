@@ -153,6 +153,20 @@ type (
 	WorkflowSnapshotRecord      = runtime.WorkflowSnapshotRecord
 	WorkflowFailureData         = runtime.WorkflowFailureData
 	WorkflowRunFilter           = runtime.WorkflowRunFilter
+	Metadata                    = runtime.Metadata
+	ObservabilityScope          = runtime.ObservabilityScope
+	ModelIdentityProvider       = runtime.ModelIdentityProvider
+	PluginAttribution           = runtime.PluginAttribution
+	ModelAttemptRecord          = runtime.ModelAttemptRecord
+	ModelAttemptFilter          = runtime.ModelAttemptFilter
+	ToolExecutionRecord         = runtime.ToolExecutionRecord
+	ToolExecutionFilter         = runtime.ToolExecutionFilter
+	RunEventRecord              = runtime.RunEventRecord
+	RunEventFilter              = runtime.RunEventFilter
+	RunEventRepository          = runtime.RunEventRepository
+	ModelAttemptRepository      = runtime.ModelAttemptRepository
+	ToolExecutionRepository     = runtime.ToolExecutionRepository
+	ObservabilityRepositories   = runtime.ObservabilityRepositories
 	ScheduleRecord              = runtime.ScheduleRecord
 	ScheduleExecutionRecord     = runtime.ScheduleExecutionRecord
 	ScheduleExecStatus          = runtime.ScheduleExecStatus
@@ -425,9 +439,16 @@ const (
 	FanOutFailFast   = runtime.FanOutFailFast
 	FanOutCollectAll = runtime.FanOutCollectAll
 
-	ModelAttemptSuccess  = runtime.ModelAttemptSuccess
-	ModelAttemptFallback = runtime.ModelAttemptFallback
-	ModelAttemptFailed   = runtime.ModelAttemptFailed
+	ModelAttemptSuccess   = runtime.ModelAttemptSuccess
+	ModelAttemptFallback  = runtime.ModelAttemptFallback
+	ModelAttemptFailed    = runtime.ModelAttemptFailed
+	ModelAttemptCancelled = runtime.ModelAttemptCancelled
+
+	MaxMetadataEntries = runtime.MaxMetadataEntries
+	MaxMetadataBytes   = runtime.MaxMetadataBytes
+	MaxMetadataDepth   = runtime.MaxMetadataDepth
+
+	RunEventPlugin = runtime.RunEventPlugin
 
 	DefaultAgentMaxSteps = runtime.DefaultAgentMaxSteps
 

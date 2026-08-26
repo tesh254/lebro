@@ -255,14 +255,6 @@ func (o *ModelStructuredOutput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ModelUsage records provider-reported token usage when available.
-type ModelUsage struct {
-	InputTokens     int64
-	OutputTokens    int64
-	ReasoningTokens int64
-	TotalTokens     int64
-}
-
 // FinishReason describes why a model stopped producing a response.
 type FinishReason string
 
@@ -294,6 +286,13 @@ type ModelResponse struct {
 // ModelError.
 type Model interface {
 	Generate(context.Context, ModelRequest) (ModelResponse, error)
+}
+
+// ModelIdentityProvider is an optional capability for direct model adapters.
+// Routers already supply a provider ID; direct adapters can implement this to
+// make their durable attempt records identify the actual provider.
+type ModelIdentityProvider interface {
+	ProviderID() ProviderID
 }
 
 // StreamingModel is implemented by adapters that can deliver generated text

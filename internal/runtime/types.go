@@ -101,6 +101,15 @@ type RunInput struct {
 	ThreadID     ThreadID
 	Metadata     map[string]string
 	OutputSchema *ModelOutputSchema
+	// Annotations attaches validated, namespaced application metadata to the
+	// durable records created for this run: transcript messages, model
+	// attempts, tool executions, and run events. It is validated before the
+	// run starts; nil leaves every record untouched.
+	Annotations Metadata
+	// ObservabilityScope isolates durable diagnostics that may exist before a
+	// thread is created (for example, a failed authorization or cancellation).
+	// When a thread already exists, its namespace and owner take precedence.
+	ObservabilityScope ObservabilityScope
 	// Reasoning configures reasoning for every model call in this run. Provider
 	// adapters reject settings their selected model cannot represent.
 	Reasoning ReasoningConfig
@@ -109,6 +118,13 @@ type RunInput struct {
 	// this run only.
 	Memory         *MemoryProcessorConfig
 	memoryRecalled bool
+}
+
+// ObservabilityScope identifies the tenant and owner allowed to query durable
+// run records. Both fields are optional for single-tenant applications.
+type ObservabilityScope struct {
+	Namespace string `json:"namespace,omitempty"`
+	OwnerID   string `json:"owner_id,omitempty"`
 }
 
 // RunStatus identifies the terminal or in-progress state of a run.
@@ -146,9 +162,10 @@ type ModelAttempt struct {
 type ModelAttemptStatus string
 
 const (
-	ModelAttemptSuccess  ModelAttemptStatus = "success"
-	ModelAttemptFallback ModelAttemptStatus = "fallback"
-	ModelAttemptFailed   ModelAttemptStatus = "failed"
+	ModelAttemptSuccess   ModelAttemptStatus = "success"
+	ModelAttemptFallback  ModelAttemptStatus = "fallback"
+	ModelAttemptFailed    ModelAttemptStatus = "failed"
+	ModelAttemptCancelled ModelAttemptStatus = "cancelled"
 )
 
 // StructuredOutput returns the structured JSON payload of the final assistant
