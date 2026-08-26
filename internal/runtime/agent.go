@@ -402,7 +402,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
 		runID := a.idSource.NewRunID()
+		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+		if journal != nil {
+			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
+		}
 		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+		journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
 		return RunResult{ID: runID, Status: RunStatusCancelled, Messages: nil, Metadata: input.Metadata}, a.cancelledError(0, err)
 	}
 
@@ -410,6 +415,18 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	defer cancel()
 
 	runID := a.idSource.NewRunID()
+	// The journal is nil unless a Store is configured; it captures attempts,
+	// tool executions, and events so they persist with (or without) the
+	// transcript. The pre-loop cancellation path creates and flushes its own
+	// journal because it returns before this run ID exists.
+	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+	defer journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
+	if journal != nil {
+		defer func() {
+			journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
+		}()
+		emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
+	}
 	emitter.emit(runID, 0, "", RunEventStarted)
 	metadata := cloneMetadata(input.Metadata)
 	var allAttempts []ModelAttempt
@@ -487,8 +504,9 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		} else {
 			request = *decision.Request
 		}
-		response, attempts, err := a.generateModel(runCtx, runConfig, runID, step, stepID, emitter, request)
+		response, attempts, err := a.generateModel(runCtx, runConfig, runID, step, stepID, emitter, newAgentModelAttemptObserver(emitter, a.clock, journal, runID, step, stepID), request)
 		allAttempts = append(allAttempts, attempts...)
+		journal.finishModelCall(response.Usage, response.FinishReason, err)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
 				cause := preferContextError(err, cancelledErr)
@@ -560,7 +578,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 				result = *decision.Result
 				transcript = cloneMessages(result.Messages)
 			}
-			if persistErr := a.persistNewMessages(ctx, input.ThreadID, runID, transcript, loadedCount, input.memoryRecalled); persistErr != nil {
+			if persistErr := a.persistRunRecords(ctx, input.ThreadID, runID, transcript, loadedCount, input.memoryRecalled, journal, input.Annotations); persistErr != nil {
 				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
 				result := a.failWithAttemptsResult(runID, metadata, step, transcript, persistAgentErr, allAttempts)
@@ -579,9 +597,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			emitter.emitToolRequested(runID, step, stepID, call.ID, call.ToolID)
 
 			toolStart := emitter.emitToolStarted(runID, step, stepID, call.ID, call.ToolID)
+			journal.toolStarted(step, stepID, call)
 
 			result := a.executeToolCall(runCtx, runID, step, stepID, input.ThreadID, call, metadata)
 			emitter.emitToolFinished(runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
+			journal.toolFinished(result)
 
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
@@ -707,7 +727,12 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
 		runID := a.idSource.NewRunID()
+		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+		if journal != nil {
+			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
+		}
 		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+		journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
 		return nil, a.cancelledError(0, err)
 	}
 
@@ -719,6 +744,11 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	}
 
 	runID := a.idSource.NewRunID()
+	// See Run: the journal is nil unless a Store is configured.
+	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+	if journal != nil {
+		emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
+	}
 	emitter.emit(runID, 0, "", RunEventStarted)
 
 	if authErr := a.authorizeRun(runCtx); authErr != nil {
@@ -798,6 +828,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		compiledOutput:  compiledOutput,
 		streamingModel:  streamingModel,
 		emitter:         emitter,
+		journal:         journal,
 		deltas:          deltas,
 		done:            done,
 		finished:        finished,
@@ -807,6 +838,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		memoryRecalled:  input.memoryRecalled,
 		modelName:       runConfig.modelName,
 		reasoning:       input.Reasoning,
+		annotations:     input.Annotations,
 	})
 
 	return run, nil
@@ -830,6 +862,7 @@ type streamRunParams struct {
 	compiledOutput  CompiledSchema
 	streamingModel  StreamingModel
 	emitter         *runEmitter
+	journal         *runJournal
 	deltas          chan<- StreamDelta
 	done            chan<- streamOutcome
 	finished        chan<- struct{}
@@ -839,12 +872,16 @@ type streamRunParams struct {
 	memoryRecalled  bool
 	modelName       string
 	reasoning       ReasoningConfig
+	annotations     Metadata
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
 	defer close(p.deltas)
 	defer close(p.done)
 	defer close(p.finished)
+	// Diagnostics for failed, cancelled, and panicked streaming runs persist
+	// after the loop exits; the detached context survives cancellation.
+	defer p.journal.flushDiagnostics(context.WithoutCancel(p.parentCtx), a.store)
 
 	transcript := p.transcript
 	var allAttempts []ModelAttempt
@@ -880,8 +917,9 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			request = *decision.Request
 		}
 
-		response, attempts, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, p.threadID, p.metadata, modelStart, p.emitter, p.deltas, request, p.streamingModel)
+		response, attempts, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, p.threadID, p.metadata, modelStart, p.emitter, newAgentModelAttemptObserver(p.emitter, a.clock, p.journal, p.runID, step, stepID), p.deltas, request, p.streamingModel)
 		allAttempts = append(allAttempts, attempts...)
+		p.journal.finishModelCall(response.Usage, response.FinishReason, streamErr)
 		if streamErr != nil {
 			cause := streamErr
 			if cancelledErr := p.ctx.Err(); processorCancelled(streamErr) || cancelledErr != nil {
@@ -957,7 +995,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 				result = *decision.Result
 				transcript = cloneMessages(result.Messages)
 			}
-			persistErr := a.persistNewMessages(p.parentCtx, p.threadID, p.runID, transcript, p.loadedCount, p.memoryRecalled)
+			persistErr := a.persistRunRecords(p.parentCtx, p.threadID, p.runID, transcript, p.loadedCount, p.memoryRecalled, p.journal, p.annotations)
 			if persistErr != nil {
 				persistAgentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, persistAgentErr)
@@ -978,8 +1016,10 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			}
 			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
 			toolStart := p.emitter.emitToolStarted(p.runID, step, stepID, call.ID, call.ToolID)
+			p.journal.toolStarted(step, stepID, call)
 			result := a.executeToolCall(p.ctx, p.runID, step, stepID, p.threadID, call, p.metadata)
 			p.emitter.emitToolFinished(p.runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
+			p.journal.toolFinished(result)
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, result.Err)
@@ -1004,18 +1044,20 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 // returns the aggregated terminal response. When the adapter does not
 // implement StreamingModel, it falls back to Generate and emits a single
 // delta carrying the full response so streaming callers observe equivalent
-// output shape.
-func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, threadID ThreadID, metadata map[string]string, modelStart time.Time, emitter *runEmitter, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, []ModelAttempt, error) {
+// output shape. The observer feeds run events and the durable journal for
+// every routed attempt and the direct-model call.
+func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, threadID ThreadID, metadata map[string]string, modelStart time.Time, emitter *runEmitter, observer *agentModelAttemptObserver, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, []ModelAttempt, error) {
 	if streamingModel == nil {
 		var response ModelResponse
 		var err error
 		var attempts []ModelAttempt
 		if a.router != nil {
-			result, genErr := a.router.GenerateWithAttempts(ctx, request)
+			result, genErr := a.router.generateWithAttempts(ctx, request, observer)
 			response = result.Response
 			err = genErr
 			attempts = result.Attempts
 		} else {
+			observer.beginDirectModel(a.model, request.Model)
 			response, err = a.model.Generate(ctx, request)
 		}
 		if err != nil {
@@ -1082,17 +1124,12 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	var attempts []ModelAttempt
 	var err error
 	if a.router != nil {
-		result, streamErr := a.router.streamWithAttempts(ctx, request, &agentModelAttemptObserver{
-			emitter: emitter,
-			runID:   runID,
-			step:    step,
-			stepID:  stepID,
-			starts:  make(map[ProviderID]time.Time),
-		})
+		result, streamErr := a.router.streamWithAttempts(ctx, request, observer)
 		reader = result.Reader
 		attempts = result.Attempts
 		err = streamErr
 	} else {
+		observer.beginDirectModel(streamingModel, request.Model)
 		reader, err = streamingModel.Stream(ctx, request)
 	}
 	if err != nil {
@@ -1245,6 +1282,9 @@ func (a *Agent) buildInitialTranscript(input RunInput, instructions string) ([]M
 	if err := input.Reasoning.Validate(); err != nil {
 		return nil, &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: fmt.Errorf("lebro: run input reasoning: %w", err)}
 	}
+	if err := input.Annotations.Validate(); err != nil {
+		return nil, &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: fmt.Errorf("lebro: run input annotations: %w", err)}
+	}
 	messages := make([]Message, 0, len(input.Messages)+1)
 	if instructions != "" {
 		system := Message{Role: RoleSystem, Content: instructions}
@@ -1372,26 +1412,38 @@ func (a *Agent) applyDeadline(ctx context.Context) (context.Context, context.Can
 
 // generateModel calls the model either directly or through the router, emitting
 // model_attempt events when routing is in use. It returns the response,
-// accumulated model attempts, and any error.
-func (a *Agent) generateModel(ctx context.Context, config agentRunConfig, runID RunID, step int, stepID StepID, emitter *runEmitter, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
+// accumulated model attempts, and any error. The observer feeds both run
+// events and the durable run journal.
+func (a *Agent) generateModel(ctx context.Context, config agentRunConfig, runID RunID, step int, stepID StepID, emitter *runEmitter, observer *agentModelAttemptObserver, request ModelRequest) (ModelResponse, []ModelAttempt, error) {
 	if config.router == nil {
+		observer.beginDirectModel(config.model, request.Model)
 		resp, err := config.model.Generate(ctx, request)
 		return resp, nil, err
 	}
 
-	result, err := config.router.generateWithAttempts(ctx, request, &agentModelAttemptObserver{
-		emitter: emitter,
-		runID:   runID,
-		step:    step,
-		stepID:  stepID,
-		starts:  make(map[ProviderID]time.Time),
-	})
+	result, err := config.router.generateWithAttempts(ctx, request, observer)
 
 	return result.Response, result.Attempts, err
 }
 
+// newAgentModelAttemptObserver builds the per-model-call observer shared by
+// the non-streaming and streaming paths.
+func newAgentModelAttemptObserver(emitter *runEmitter, clock Clock, journal *runJournal, runID RunID, step int, stepID StepID) *agentModelAttemptObserver {
+	return &agentModelAttemptObserver{
+		emitter: emitter,
+		clock:   clock,
+		journal: journal,
+		runID:   runID,
+		step:    step,
+		stepID:  stepID,
+		starts:  make(map[ProviderID]time.Time),
+	}
+}
+
 type agentModelAttemptObserver struct {
 	emitter *runEmitter
+	clock   Clock
+	journal *runJournal
 	runID   RunID
 	step    int
 	stepID  StepID
@@ -1400,10 +1452,23 @@ type agentModelAttemptObserver struct {
 
 func (o *agentModelAttemptObserver) modelAttemptStarted(provider ProviderID, model string) {
 	o.starts[provider] = o.emitter.emitModelAttemptStarted(o.runID, o.step, o.stepID, provider, model)
+	o.journal.beginModelAttempt(provider, model)
+}
+
+// beginDirectModel gives direct adapters a stable provider identity. Adapters
+// can expose their real provider through ModelIdentityProvider; generic custom
+// models are explicitly recorded as "direct" instead of losing identity.
+func (o *agentModelAttemptObserver) beginDirectModel(model Model, modelName string) {
+	provider := ProviderID("direct")
+	if identified, ok := model.(ModelIdentityProvider); ok && identified.ProviderID() != "" {
+		provider = identified.ProviderID()
+	}
+	o.journal.beginModelAttempt(provider, modelName)
 }
 
 func (o *agentModelAttemptObserver) modelAttemptFinished(attempt ModelAttempt) {
 	o.emitter.emitModelAttemptFinished(o.runID, o.step, o.stepID, attempt.Provider, attempt.Model, attempt.Status, o.starts[attempt.Provider], attempt.Error)
+	o.journal.completeModelAttempt(attempt)
 }
 
 // streamingModelForRun returns the streaming model for the current run. When
@@ -1617,18 +1682,12 @@ func (a *Agent) loadPriorMessages(ctx context.Context, input *RunInput) (int, er
 	return len(prior), nil
 }
 
-// persistNewMessages appends the new messages produced during a successful run
-// to the thread. The system message and prior loaded messages are excluded so
-// only caller-supplied and loop-produced messages are stored. When the store is
-// nil or threadID is empty, no persistence is configured and the method is a
-// no-op. The thread is created if it does not already exist so the first run
-// against a new thread ID succeeds without a separate CreateThread call. The
-// transaction is retried on ErrConflict so concurrent successful runs against
-// the same thread do not lose a transcript.
-func (a *Agent) persistNewMessages(ctx context.Context, threadID ThreadID, runID RunID, transcript []Message, loadedCount int, memoryRecalled bool) error {
-	if a.store == nil || threadID == "" {
-		return nil
-	}
+// newMessageRecords builds the durable records for messages produced during a
+// successful run. The system message and prior loaded messages are excluded so
+// only caller-supplied and loop-produced messages are stored. Recall context
+// is reconstructed from durable facts for every run; it is prompt-only state,
+// never conversation history, so it is not persisted either.
+func (a *Agent) newMessageRecords(threadID ThreadID, runID RunID, transcript []Message, loadedCount int, memoryRecalled bool, annotations Metadata) []MessageRecord {
 	systemOffset := 0
 	if a.definition.Instructions != "" {
 		systemOffset = 1
@@ -1640,36 +1699,70 @@ func (a *Agent) persistNewMessages(ctx context.Context, threadID ThreadID, runID
 	now := a.clock.Now()
 	records := make([]MessageRecord, 0, len(transcript)-start)
 	for i, message := range transcript[start:] {
-		// Recall context is reconstructed from durable facts for every run. It is
-		// prompt-only state, not conversation history, so never persist it.
 		if memoryRecalled && i == 0 {
 			continue
 		}
 		records = append(records, MessageRecord{
-			ID:        fmt.Sprintf("%s-msg-%d", runID, i+1),
-			ThreadID:  threadID,
-			Message:   cloneMessage(message),
-			CreatedAt: now,
+			ID:          fmt.Sprintf("%s-msg-%d", runID, i+1),
+			ThreadID:    threadID,
+			Message:     cloneMessage(message),
+			Annotations: annotations.Clone(),
+			CreatedAt:   now,
 		})
 	}
+	return records
+}
+
+// persistRunRecords appends the new transcript messages and the run's
+// observability records — model attempts, tool executions, and events — in one
+// transaction, so a successful run commits them atomically where the store
+// supports it. When ThreadID is empty only the observability records are
+// written. Stores that do not implement ObservabilityRepositories simply skip
+// those records; implementing the interface is the opt-in. The transaction is
+// retried on ErrConflict so concurrent successful runs against the same
+// thread do not lose a transcript.
+func (a *Agent) persistRunRecords(ctx context.Context, threadID ThreadID, runID RunID, transcript []Message, loadedCount int, memoryRecalled bool, journal *runJournal, annotations Metadata) error {
+	if a.store == nil || isNilInterface(a.store) {
+		return nil
+	}
+	records := a.newMessageRecords(threadID, runID, transcript, loadedCount, memoryRecalled, annotations)
+	for i := len(records) - 1; threadID != "" && i >= 0; i-- {
+		if records[i].Message.Role == RoleAssistant {
+			journal.linkProducedMessages([]string{records[i].ID})
+			break
+		}
+	}
+	events, attempts, tools := journal.snapshot()
+	if len(records) == 0 && len(events) == 0 && len(attempts) == 0 && len(tools) == 0 {
+		return nil
+	}
+	now := a.clock.Now()
 	const maxRetries = 3
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		err := a.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
-			if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
-				if err := repos.Threads().CreateThread(ctx, ThreadRecord{
-					ID:        threadID,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}); err != nil {
-					return fmt.Errorf("lebro: create thread for persist: %w", err)
+			if threadID != "" {
+				if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
+					if err := repos.Threads().CreateThread(ctx, ThreadRecord{
+						ID:        threadID,
+						CreatedAt: now,
+						UpdatedAt: now,
+					}); err != nil {
+						return fmt.Errorf("lebro: create thread for persist: %w", err)
+					}
+				} else if err != nil {
+					return fmt.Errorf("lebro: check thread for persist: %w", err)
 				}
-			} else if err != nil {
-				return fmt.Errorf("lebro: check thread for persist: %w", err)
+				if len(records) > 0 {
+					if err := repos.Messages().AppendMessages(ctx, records); err != nil {
+						return err
+					}
+				}
 			}
-			return repos.Messages().AppendMessages(ctx, records)
+			return writeObservability(ctx, repos, events, attempts, tools)
 		})
 		if err == nil {
+			journal.markPersisted(len(events), len(attempts), len(tools))
 			return nil
 		}
 		if !errors.Is(err, ErrConflict) {

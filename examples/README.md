@@ -17,6 +17,13 @@ Run the in-memory storage example:
 go run ./examples/storage-memory
 ```
 
+Run the durable run-timeline example, which persists model attempts, tool
+executions, and run events for one agent run and then queries them back:
+
+```sh
+go run ./examples/run-timeline
+```
+
 Run the deterministic, network-free model protocol and fixture example:
 
 ```sh

@@ -86,6 +86,11 @@ const (
 	RunEventModelAttemptFinished RunEventType = "model_attempt_finished"
 	// RunEventProcessor records a processor decision without recording content.
 	RunEventProcessor RunEventType = "processor"
+	// RunEventPlugin is reserved for runtime plugin lifecycle and decision
+	// events. Plugin hooks land with extensible-runtime work; plugins
+	// integrating today append RunEventRecords of this type through the
+	// repository themselves, setting Plugin attribution.
+	RunEventPlugin RunEventType = "plugin"
 )
 
 // IsTerminal reports whether the event type is a terminal run event.
@@ -280,6 +285,27 @@ func newRunEmitter(ctx context.Context, listener RunListener, clock Clock, _ IDS
 	return &runEmitter{listener: listener, clock: clock, parentRun: parent.runID, parentStep: parent.stepID, parentPos: parent.step}
 }
 
+// setListener replaces the dispatch target. The agent uses it to compose a
+// caller listener with the durable run journal once the run ID exists.
+func (e *runEmitter) setListener(listener RunListener) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.listener = listener
+}
+
+// fanoutListener dispatches one event to every non-nil listener in order.
+type fanoutListener struct {
+	listeners []RunListener
+}
+
+func (f fanoutListener) OnRunEvent(event RunEvent) {
+	for _, listener := range f.listeners {
+		if listener != nil {
+			listener.OnRunEvent(event)
+		}
+	}
+}
+
 func (e *runEmitter) dispatch(event RunEvent) {
 	e.mu.Lock()
 	e.seq++
@@ -287,8 +313,9 @@ func (e *runEmitter) dispatch(event RunEvent) {
 	event.ParentRunID = e.parentRun
 	event.ParentStepID = e.parentStep
 	event.ParentStep = e.parentPos
+	listener := e.listener
 	e.mu.Unlock()
-	e.listener.OnRunEvent(event)
+	listener.OnRunEvent(event)
 }
 
 // enabled reports whether the emitter will dispatch events. When false, all

@@ -29,6 +29,12 @@ type memoryState struct {
 	executions    map[ScheduleID][]ScheduleExecutionRecord
 	executionIDs  map[ScheduleID]map[string]struct{}
 	workingMemory map[string]WorkingMemoryFact
+	events        map[RunID][]RunEventRecord
+	eventIDs      map[RunID]map[string]struct{}
+	attempts      map[RunID][]ModelAttemptRecord
+	attemptIDs    map[RunID]map[string]struct{}
+	toolExecs     map[RunID][]ToolExecutionRecord
+	toolExecIDs   map[RunID]map[string]struct{}
 }
 
 // NewMemoryStore creates an empty in-memory storage implementation.
@@ -47,6 +53,12 @@ func newMemoryState() memoryState {
 		executions:    map[ScheduleID][]ScheduleExecutionRecord{},
 		executionIDs:  map[ScheduleID]map[string]struct{}{},
 		workingMemory: map[string]WorkingMemoryFact{},
+		events:        map[RunID][]RunEventRecord{},
+		eventIDs:      map[RunID]map[string]struct{}{},
+		attempts:      map[RunID][]ModelAttemptRecord{},
+		attemptIDs:    map[RunID]map[string]struct{}{},
+		toolExecs:     map[RunID][]ToolExecutionRecord{},
+		toolExecIDs:   map[RunID]map[string]struct{}{},
 	}
 }
 
@@ -59,6 +71,11 @@ func (s *MemoryStore) ScheduleExecutions() ScheduleExecutionRepository {
 	return s
 }
 func (s *MemoryStore) WorkingMemory() WorkingMemoryRepository { return s }
+func (s *MemoryStore) RunEvents() RunEventRepository          { return s }
+func (s *MemoryStore) ModelAttempts() ModelAttemptRepository  { return s }
+func (s *MemoryStore) ToolExecutions() ToolExecutionRepository {
+	return s
+}
 
 // Migrate is a no-op: MemoryStore has no external schema.
 func (s *MemoryStore) Migrate(context.Context) error { return nil }
@@ -225,6 +242,48 @@ func (s *MemoryStore) ListScheduleExecutions(ctx context.Context, id ScheduleID,
 	defer s.mu.RUnlock()
 	return listScheduleExecutions(ctx, s.state, id, page)
 }
+func (s *MemoryStore) AppendRunEvents(ctx context.Context, records []RunEventRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := appendRunEvents(ctx, &s.state, records)
+	if err == nil && len(records) > 0 {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) ListRunEvents(ctx context.Context, filter RunEventFilter, page PageRequest) (Page[RunEventRecord], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return listRunEvents(ctx, s.state, filter, page)
+}
+func (s *MemoryStore) SaveModelAttempts(ctx context.Context, records []ModelAttemptRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := saveModelAttempts(ctx, &s.state, records)
+	if err == nil && len(records) > 0 {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) ListModelAttempts(ctx context.Context, filter ModelAttemptFilter, page PageRequest) (Page[ModelAttemptRecord], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return listModelAttempts(ctx, s.state, filter, page)
+}
+func (s *MemoryStore) SaveToolExecutions(ctx context.Context, records []ToolExecutionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := saveToolExecutions(ctx, &s.state, records)
+	if err == nil && len(records) > 0 {
+		s.version++
+	}
+	return err
+}
+func (s *MemoryStore) ListToolExecutions(ctx context.Context, filter ToolExecutionFilter, page PageRequest) (Page[ToolExecutionRecord], error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return listToolExecutions(ctx, s.state, filter, page)
+}
 
 type memoryRepositories struct {
 	state memoryState
@@ -240,6 +299,11 @@ func (r *memoryRepositories) ScheduleExecutions() ScheduleExecutionRepository {
 	return r
 }
 func (r *memoryRepositories) WorkingMemory() WorkingMemoryRepository { return r }
+func (r *memoryRepositories) RunEvents() RunEventRepository          { return r }
+func (r *memoryRepositories) ModelAttempts() ModelAttemptRepository  { return r }
+func (r *memoryRepositories) ToolExecutions() ToolExecutionRepository {
+	return r
+}
 func (r *memoryRepositories) CreateThread(ctx context.Context, v ThreadRecord) error {
 	err := createThread(ctx, &r.state, v)
 	if err == nil {
@@ -333,6 +397,36 @@ func (r *memoryRepositories) SaveScheduleExecution(ctx context.Context, v Schedu
 }
 func (r *memoryRepositories) ListScheduleExecutions(ctx context.Context, id ScheduleID, p PageRequest) (Page[ScheduleExecutionRecord], error) {
 	return listScheduleExecutions(ctx, r.state, id, p)
+}
+func (r *memoryRepositories) AppendRunEvents(ctx context.Context, records []RunEventRecord) error {
+	err := appendRunEvents(ctx, &r.state, records)
+	if err == nil && len(records) > 0 {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) ListRunEvents(ctx context.Context, filter RunEventFilter, p PageRequest) (Page[RunEventRecord], error) {
+	return listRunEvents(ctx, r.state, filter, p)
+}
+func (r *memoryRepositories) SaveModelAttempts(ctx context.Context, records []ModelAttemptRecord) error {
+	err := saveModelAttempts(ctx, &r.state, records)
+	if err == nil && len(records) > 0 {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) ListModelAttempts(ctx context.Context, filter ModelAttemptFilter, p PageRequest) (Page[ModelAttemptRecord], error) {
+	return listModelAttempts(ctx, r.state, filter, p)
+}
+func (r *memoryRepositories) SaveToolExecutions(ctx context.Context, records []ToolExecutionRecord) error {
+	err := saveToolExecutions(ctx, &r.state, records)
+	if err == nil && len(records) > 0 {
+		r.dirty = true
+	}
+	return err
+}
+func (r *memoryRepositories) ListToolExecutions(ctx context.Context, filter ToolExecutionFilter, p PageRequest) (Page[ToolExecutionRecord], error) {
+	return listToolExecutions(ctx, r.state, filter, p)
 }
 
 func createThread(ctx context.Context, s *memoryState, v ThreadRecord) error {
@@ -736,6 +830,204 @@ func listScheduleExecutions(ctx context.Context, s memoryState, id ScheduleID, p
 	return paginate(s.executions[id], p, cloneScheduleExecutionRecord)
 }
 
+func appendRunEvents(ctx context.Context, s *memoryState, vs []RunEventRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.eventIDs == nil {
+		s.eventIDs = map[RunID]map[string]struct{}{}
+	}
+	// Appends are idempotent: a record whose (run, ID) pair already exists is
+	// skipped, because observability writes must never fail a run when two
+	// independently constructed agents sharing a store reuse default run IDs.
+	for _, v := range vs {
+		if err := validateRunEventRecord(v); err != nil {
+			return err
+		}
+	}
+	for _, v := range vs {
+		if s.eventIDs[v.RunID] == nil {
+			s.eventIDs[v.RunID] = map[string]struct{}{}
+			s.events[v.RunID] = nil
+		}
+		if _, ok := s.eventIDs[v.RunID][v.ID]; ok {
+			continue
+		}
+		s.events[v.RunID] = append(s.events[v.RunID], cloneRunEventRecord(v))
+		s.eventIDs[v.RunID][v.ID] = struct{}{}
+	}
+	return nil
+}
+
+func listRunEvents(ctx context.Context, s memoryState, filter RunEventFilter, p PageRequest) (Page[RunEventRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[RunEventRecord]{}, err
+	}
+	matched := make([]RunEventRecord, 0)
+	for _, runID := range orderedRunIDs(s.events) {
+		if filter.RunID != "" && runID != filter.RunID {
+			continue
+		}
+		for _, event := range s.events[runID] {
+			if !runEventMatchesFilter(event, filter) {
+				continue
+			}
+			matched = append(matched, cloneRunEventRecord(event))
+		}
+	}
+	return paginate(matched, p, func(v RunEventRecord) RunEventRecord { return v })
+}
+
+// orderedRunIDs returns map keys in insertion-independent but deterministic
+// order. Records keep their insertion order inside each run; runs are walked
+// in ID order so unfiltered listings are stable.
+func orderedRunIDs[V any](byRun map[RunID][]V) []RunID {
+	ids := make([]RunID, 0, len(byRun))
+	for id := range byRun {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+func runEventMatchesFilter(event RunEventRecord, filter RunEventFilter) bool {
+	if filter.ThreadID != "" && event.ThreadID != filter.ThreadID {
+		return false
+	}
+	if filter.Namespace != "" && event.Namespace != filter.Namespace {
+		return false
+	}
+	if filter.OwnerID != "" && event.OwnerID != filter.OwnerID {
+		return false
+	}
+	if filter.Type != "" && event.Type != filter.Type {
+		return false
+	}
+	if filter.Provider != "" && event.Provider != filter.Provider {
+		return false
+	}
+	if filter.ToolID != "" && event.ToolID != filter.ToolID {
+		return false
+	}
+	return withinEventRange(event.Timestamp, filter.From, filter.To)
+}
+
+func saveModelAttempts(ctx context.Context, s *memoryState, vs []ModelAttemptRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.attemptIDs == nil {
+		s.attemptIDs = map[RunID]map[string]struct{}{}
+	}
+	// Idempotent save: see appendRunEvents.
+	for _, v := range vs {
+		if err := validateModelAttemptRecord(v); err != nil {
+			return err
+		}
+	}
+	for _, v := range vs {
+		if s.attemptIDs[v.RunID] == nil {
+			s.attemptIDs[v.RunID] = map[string]struct{}{}
+			s.attempts[v.RunID] = nil
+		}
+		if _, ok := s.attemptIDs[v.RunID][v.ID]; ok {
+			continue
+		}
+		s.attempts[v.RunID] = append(s.attempts[v.RunID], cloneModelAttemptRecord(v))
+		s.attemptIDs[v.RunID][v.ID] = struct{}{}
+	}
+	return nil
+}
+
+func listModelAttempts(ctx context.Context, s memoryState, filter ModelAttemptFilter, p PageRequest) (Page[ModelAttemptRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ModelAttemptRecord]{}, err
+	}
+	matched := make([]ModelAttemptRecord, 0)
+	for _, runID := range orderedRunIDs(s.attempts) {
+		if filter.RunID != "" && runID != filter.RunID {
+			continue
+		}
+		for _, attempt := range s.attempts[runID] {
+			if filter.ThreadID != "" && attempt.ThreadID != filter.ThreadID {
+				continue
+			}
+			if filter.Namespace != "" && attempt.Namespace != filter.Namespace {
+				continue
+			}
+			if filter.OwnerID != "" && attempt.OwnerID != filter.OwnerID {
+				continue
+			}
+			if filter.Provider != "" && attempt.Provider != filter.Provider {
+				continue
+			}
+			if filter.Status != "" && attempt.Status != filter.Status {
+				continue
+			}
+			matched = append(matched, cloneModelAttemptRecord(attempt))
+		}
+	}
+	return paginate(matched, p, func(v ModelAttemptRecord) ModelAttemptRecord { return v })
+}
+
+func saveToolExecutions(ctx context.Context, s *memoryState, vs []ToolExecutionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.toolExecIDs == nil {
+		s.toolExecIDs = map[RunID]map[string]struct{}{}
+	}
+	// Idempotent save: see appendRunEvents.
+	for _, v := range vs {
+		if err := validateToolExecutionRecord(v); err != nil {
+			return err
+		}
+	}
+	for _, v := range vs {
+		if s.toolExecIDs[v.RunID] == nil {
+			s.toolExecIDs[v.RunID] = map[string]struct{}{}
+			s.toolExecs[v.RunID] = nil
+		}
+		if _, ok := s.toolExecIDs[v.RunID][v.ID]; ok {
+			continue
+		}
+		s.toolExecs[v.RunID] = append(s.toolExecs[v.RunID], cloneToolExecutionRecord(v))
+		s.toolExecIDs[v.RunID][v.ID] = struct{}{}
+	}
+	return nil
+}
+
+func listToolExecutions(ctx context.Context, s memoryState, filter ToolExecutionFilter, p PageRequest) (Page[ToolExecutionRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return Page[ToolExecutionRecord]{}, err
+	}
+	matched := make([]ToolExecutionRecord, 0)
+	for _, runID := range orderedRunIDs(s.toolExecs) {
+		if filter.RunID != "" && runID != filter.RunID {
+			continue
+		}
+		for _, execution := range s.toolExecs[runID] {
+			if filter.ThreadID != "" && execution.ThreadID != filter.ThreadID {
+				continue
+			}
+			if filter.Namespace != "" && execution.Namespace != filter.Namespace {
+				continue
+			}
+			if filter.OwnerID != "" && execution.OwnerID != filter.OwnerID {
+				continue
+			}
+			if filter.ToolID != "" && execution.ToolID != filter.ToolID {
+				continue
+			}
+			if filter.State != "" && execution.State != filter.State {
+				continue
+			}
+			matched = append(matched, cloneToolExecutionRecord(execution))
+		}
+	}
+	return paginate(matched, p, func(v ToolExecutionRecord) ToolExecutionRecord { return v })
+}
+
 func paginate[T any](records []T, request PageRequest, cloneRecord func(T) T) (Page[T], error) {
 	start := 0
 	if request.Cursor != "" {
@@ -812,6 +1104,42 @@ func cloneMemoryState(s memoryState) memoryState {
 	for k, v := range s.workingMemory {
 		out.workingMemory[k] = cloneWorkingMemoryFact(v)
 	}
+	for runID, events := range s.events {
+		out.events[runID] = make([]RunEventRecord, len(events))
+		for i, event := range events {
+			out.events[runID][i] = cloneRunEventRecord(event)
+		}
+	}
+	for runID, ids := range s.eventIDs {
+		out.eventIDs[runID] = make(map[string]struct{}, len(ids))
+		for id := range ids {
+			out.eventIDs[runID][id] = struct{}{}
+		}
+	}
+	for runID, attempts := range s.attempts {
+		out.attempts[runID] = make([]ModelAttemptRecord, len(attempts))
+		for i, attempt := range attempts {
+			out.attempts[runID][i] = cloneModelAttemptRecord(attempt)
+		}
+	}
+	for runID, ids := range s.attemptIDs {
+		out.attemptIDs[runID] = make(map[string]struct{}, len(ids))
+		for id := range ids {
+			out.attemptIDs[runID][id] = struct{}{}
+		}
+	}
+	for runID, executions := range s.toolExecs {
+		out.toolExecs[runID] = make([]ToolExecutionRecord, len(executions))
+		for i, execution := range executions {
+			out.toolExecs[runID][i] = cloneToolExecutionRecord(execution)
+		}
+	}
+	for runID, ids := range s.toolExecIDs {
+		out.toolExecIDs[runID] = make(map[string]struct{}, len(ids))
+		for id := range ids {
+			out.toolExecIDs[runID][id] = struct{}{}
+		}
+	}
 	return out
 }
 
@@ -839,6 +1167,27 @@ func cloneScheduleExecutionRecord(v ScheduleExecutionRecord) ScheduleExecutionRe
 func cloneThreadRecord(v ThreadRecord) ThreadRecord { v.Metadata = cloneJSON(v.Metadata); return v }
 func cloneMessageRecord(v MessageRecord) MessageRecord {
 	v.Metadata = cloneJSON(v.Metadata)
+	v.Annotations = v.Annotations.Clone()
+	return v
+}
+func cloneRunEventRecord(v RunEventRecord) RunEventRecord {
+	v.Payload = cloneJSON(v.Payload)
+	v.Metadata = v.Metadata.Clone()
+	if v.Plugin != nil {
+		plugin := *v.Plugin
+		v.Plugin = &plugin
+	}
+	return v
+}
+func cloneModelAttemptRecord(v ModelAttemptRecord) ModelAttemptRecord {
+	if len(v.ProducedMessageIDs) > 0 {
+		v.ProducedMessageIDs = append([]string(nil), v.ProducedMessageIDs...)
+	}
+	v.Metadata = v.Metadata.Clone()
+	return v
+}
+func cloneToolExecutionRecord(v ToolExecutionRecord) ToolExecutionRecord {
+	v.Metadata = v.Metadata.Clone()
 	return v
 }
 func cloneWorkflowRunRecord(v WorkflowRunRecord) WorkflowRunRecord {

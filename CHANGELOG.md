@@ -6,6 +6,29 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Durable run observability records across Memory, SQLite, and Postgres
+  stores. Store-bound agent runs now persist one `ModelAttemptRecord` per
+  provider attempt (provider and model identity, routed target, attempt status
+  including a new `cancelled` value, token usage, finish reason, timestamps,
+  safe error classification, produced message IDs, and optional
+  cost/request-ID fields), one `ToolExecutionRecord` per tool invocation
+  (lifecycle state, timing, redacted error data — never arguments or results),
+  and every non-delta `RunEvent` as an ordered `RunEventRecord` with typed
+  plugin attribution, so transcripts, attempts, tool calls, and events
+  correlate through stable IDs. Records live behind an opt-in
+  `ObservabilityRepositories` capability interface: existing custom `Store`
+  implementations keep compiling and behave unchanged until they add support,
+  built-in adapters persist observability records transactionally with the
+  transcript on success, and failed or cancelled runs retain safe diagnostics
+  without claiming a completed transcript. New namespaced, size- and
+  depth-bounded `Metadata` attaches validated application annotations at run,
+  message, attempt, tool-execution, and event scopes (`RunInput.Annotations`,
+  `MessageRecord.Annotations`). Delta text, tool arguments/results, raw
+  prompts, secrets, and opaque reasoning replay data are never persisted by
+  default; see `docs/run-records.md`. SQLite and Postgres migrations are
+  append-only (three new tables plus indexes). A runnable walkthrough lives in
+  `examples/run-timeline`.
+
 - First-class reasoning and thinking support across model calls, agent runs,
   streams, durable transcripts, observability, and HTTP. `ReasoningConfig`
   provides `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or an

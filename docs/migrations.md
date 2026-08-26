@@ -41,6 +41,17 @@ provider replay payload in the existing `messages.message` JSON column. Run
 `Migrate` as part of the normal deployment procedure, but no new schema version
 is introduced solely for reasoning.
 
+## Durable run records
+
+MAD-83 observability support adds three append-only tables to the SQLite and
+Postgres schemas (`run_events`, `model_attempts`, `tool_executions`) plus
+indexes; `MemoryStore` needs no schema. Run `Migrate` as part of the normal
+deployment procedure. The tables are independent of `threads` on purpose, so
+failed runs can persist diagnostics before any transcript exists. Records are
+written only by stores that opt into `ObservabilityRepositories`; existing
+databases gain empty tables and nothing else changes. See
+`docs/run-records.md` for retention and redaction guidance.
+
 ## Durable workflows and schedules
 
 Persisted workflow records retain caller-supplied definition/version references;

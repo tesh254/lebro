@@ -35,6 +35,7 @@ func StorageContractSuite(t *testing.T, newStore StoreFactory) {
 	t.Run("workflow run durable fields round-trip", func(t *testing.T) { storageContractWorkflowRunDurableFields(t, newStore) })
 	t.Run("workflow runs list and filter", func(t *testing.T) { storageContractWorkflowRunList(t, newStore) })
 	t.Run("thread namespace and owner round-trip", func(t *testing.T) { storageContractThreadNamespaceOwner(t, newStore) })
+	t.Run("observability records", func(t *testing.T) { storageContractObservability(t, newStore) })
 }
 
 func storageContractRepository(t *testing.T, newStore StoreFactory) {
@@ -848,5 +849,251 @@ func storageContractWorkflowRunList(t *testing.T, newStore StoreFactory) {
 	}
 	if len(paged.Records) != 2 || paged.NextCursor == "" {
 		t.Fatalf("paged run list = %#v, want 2 records and a next cursor", paged)
+	}
+}
+
+// storageContractObservability verifies the durable run-event, model-attempt,
+// and tool-execution repositories: round-trips, filter vocabulary, ordering,
+// pagination, validation, idempotent appends, transaction participation, and
+// independence from the threads table.
+func storageContractObservability(t *testing.T, newStore StoreFactory) {
+	t.Helper()
+	ctx := context.Background()
+	store := newStore(t)
+	obs, ok := store.(runtime.ObservabilityRepositories)
+	if !ok {
+		t.Fatalf("store does not implement runtime.ObservabilityRepositories; observability support is mandatory for built-in adapters")
+	}
+
+	now := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	metadata := runtime.Metadata{"app.customer_id": json.RawMessage(`"acme"`)}
+
+	events := []runtime.RunEventRecord{
+		{ID: "evt-1", RunID: "run-1", ThreadID: "thread-1", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now},
+		{ID: "evt-2", RunID: "run-1", ThreadID: "thread-1", Sequence: 2, Type: runtime.RunEventModelFinished, Timestamp: now.Add(time.Second),
+			FinishReason: runtime.FinishReasonStop, Usage: runtime.ModelUsage{InputTokens: 4, OutputTokens: 7}, DurationNanos: int64(time.Second)},
+		{ID: "evt-3", RunID: "run-1", ThreadID: "thread-1", Sequence: 3, Type: runtime.RunEventSucceeded, Timestamp: now.Add(2 * time.Second), Status: runtime.RunStatusSucceeded},
+		{ID: "evt-4", RunID: "run-2", ThreadID: "thread-1", Sequence: 1, Type: runtime.RunEventFailed, Timestamp: now.Add(3 * time.Second),
+			Status: runtime.RunStatusFailed, ErrorKind: string(runtime.AgentErrorToolFailure), ErrorMessage: "lebro: agent tool failure: boom"},
+		{ID: "evt-5", RunID: "run-2", ThreadID: "thread-1", Sequence: 2, Type: runtime.RunEventPlugin, Timestamp: now.Add(4 * time.Second),
+			Payload: json.RawMessage(`{"decision":"compact"}`),
+			Plugin:  &runtime.PluginAttribution{ID: "compactor", Version: "1.0.0", Action: "compact", Outcome: "approved"}},
+	}
+	for i := range events {
+		events[i].Metadata = metadata
+		events[i].Namespace = "tenant-a"
+		events[i].OwnerID = "owner-a"
+	}
+	if err := obs.RunEvents().AppendRunEvents(ctx, events); err != nil {
+		t.Fatalf("AppendRunEvents: %v", err)
+	}
+	if err := obs.RunEvents().AppendRunEvents(ctx, nil); err != nil {
+		t.Fatalf("AppendRunEvents(nil): %v", err)
+	}
+
+	all, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{ThreadID: "thread-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Records) != len(events) {
+		t.Fatalf("ListRunEvents = %d records, want %d", len(all.Records), len(events))
+	}
+	for i, got := range all.Records {
+		if want := events[i]; got.ID != want.ID || got.Type != want.Type || !got.Timestamp.Equal(want.Timestamp) {
+			t.Fatalf("ListRunEvents[%d] = %#v, want %#v (ordering must follow run then sequence)", i, got, want)
+		}
+		if string(got.Metadata["app.customer_id"]) != `"acme"` {
+			t.Fatalf("ListRunEvents[%d].Metadata = %#v, want namespaced metadata preserved", i, got.Metadata)
+		}
+	}
+	paged, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{ThreadID: "thread-1"}, runtime.PageRequest{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paged.Records) != 2 || paged.NextCursor == "" {
+		t.Fatalf("paged ListRunEvents = %#v, want 2 records and a cursor", paged)
+	}
+
+	byType, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{Type: runtime.RunEventModelFinished}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byType.Records) != 1 || byType.Records[0].Usage.OutputTokens != 7 {
+		t.Fatalf("ListRunEvents(type=model_finished) = %#v, want the usage-bearing event", byType.Records)
+	}
+	byRange, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{From: now.Add(2 * time.Second), To: now.Add(4 * time.Second)}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRange.Records) != 2 {
+		t.Fatalf("ListRunEvents(time range) = %d records, want 2 (from inclusive, to exclusive)", len(byRange.Records))
+	}
+	byProvider, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{Provider: "openai"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byProvider.Records) != 0 {
+		t.Fatalf("ListRunEvents(provider=openai) = %d records, want 0", len(byProvider.Records))
+	}
+	byScope, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{Namespace: "tenant-a", OwnerID: "owner-a"}, runtime.PageRequest{})
+	if err != nil || len(byScope.Records) != len(events) {
+		t.Fatalf("ListRunEvents(scope) = %#v, %v; want scoped records", byScope, err)
+	}
+
+	attempts := []runtime.ModelAttemptRecord{
+		{ID: "att-1", RunID: "run-1", ThreadID: "thread-1", Namespace: "tenant-a", OwnerID: "owner-a", StepID: "step-001", Step: 1, Index: 1,
+			Provider: "openai", Model: "gpt-x", Status: runtime.ModelAttemptFailed,
+			StartedAt: now, FinishedAt: now.Add(100 * time.Millisecond),
+			ErrorKind: "rate_limited", ErrorMessage: "rate limited"},
+		{ID: "att-2", RunID: "run-1", ThreadID: "thread-1", Namespace: "tenant-a", OwnerID: "owner-a", StepID: "step-001", Step: 1, Index: 2,
+			Provider: "anthropic", Model: "claude-y", RoutedModel: "claude-y-latest", Status: runtime.ModelAttemptFallback,
+			FinishReason: runtime.FinishReasonStop, Usage: runtime.ModelUsage{InputTokens: 11, OutputTokens: 5, ReasoningTokens: 2, TotalTokens: 18},
+			StartedAt: now.Add(150 * time.Millisecond), FinishedAt: now.Add(900 * time.Millisecond),
+			ProducedMessageIDs: []string{"run-1-msg-2"}, Metadata: metadata},
+	}
+	if err := obs.ModelAttempts().SaveModelAttempts(ctx, attempts); err != nil {
+		t.Fatalf("SaveModelAttempts: %v", err)
+	}
+	gotAttempts, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{RunID: "run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotAttempts.Records) != 2 {
+		t.Fatalf("ListModelAttempts = %d records, want 2 (every attempt is retained, not only the winner)", len(gotAttempts.Records))
+	}
+	if gotAttempts.Records[0].Status != runtime.ModelAttemptFailed || gotAttempts.Records[1].Usage.TotalTokens != 18 {
+		t.Fatalf("ListModelAttempts round-trip mismatch: %#v", gotAttempts.Records)
+	}
+	if len(gotAttempts.Records[1].ProducedMessageIDs) != 1 || gotAttempts.Records[1].ProducedMessageIDs[0] != "run-1-msg-2" {
+		t.Fatalf("attempt produced message IDs = %#v", gotAttempts.Records[1].ProducedMessageIDs)
+	}
+	fallbacks, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{Status: runtime.ModelAttemptFallback}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fallbacks.Records) != 1 || fallbacks.Records[0].ID != "att-2" {
+		t.Fatalf("ListModelAttempts(status=fallback) = %#v", fallbacks.Records)
+	}
+	openai, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{Provider: "openai"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(openai.Records) != 1 || openai.Records[0].ID != "att-1" {
+		t.Fatalf("ListModelAttempts(provider=openai) = %#v", openai.Records)
+	}
+	if scoped, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{Namespace: "tenant-a", OwnerID: "owner-a"}, runtime.PageRequest{}); err != nil || len(scoped.Records) != 2 {
+		t.Fatalf("ListModelAttempts(scope) = %#v, %v", scoped, err)
+	}
+
+	tools := []runtime.ToolExecutionRecord{
+		{ID: "tool-1", RunID: "run-1", ThreadID: "thread-1", Namespace: "tenant-a", OwnerID: "owner-a", Step: 1, StepID: "step-001",
+			ToolCallID: "call-1", ToolID: "weather", State: runtime.ToolExecutionHandlerError,
+			StartedAt: now.Add(time.Second), FinishedAt: now.Add(1200 * time.Millisecond),
+			ErrorKind: string(runtime.ToolExecutionHandlerError), ErrorMessage: `lebro: tool "weather" execution handler_error: lookup failed`, Metadata: metadata},
+		{ID: "tool-2", RunID: "run-1", ThreadID: "thread-1", Namespace: "tenant-a", OwnerID: "owner-a", Step: 1, StepID: "step-001",
+			ToolCallID: "call-2", ToolID: "clock", State: runtime.ToolExecutionSucceeded,
+			StartedAt: now.Add(1300 * time.Millisecond), FinishedAt: now.Add(1350 * time.Millisecond)},
+	}
+	if err := obs.ToolExecutions().SaveToolExecutions(ctx, tools); err != nil {
+		t.Fatalf("SaveToolExecutions: %v", err)
+	}
+	gotTools, err := obs.ToolExecutions().ListToolExecutions(ctx, runtime.ToolExecutionFilter{RunID: "run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotTools.Records) != 2 || gotTools.Records[0].State != runtime.ToolExecutionHandlerError {
+		t.Fatalf("ListToolExecutions = %#v", gotTools.Records)
+	}
+	failed, err := obs.ToolExecutions().ListToolExecutions(ctx, runtime.ToolExecutionFilter{State: runtime.ToolExecutionHandlerError}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failed.Records) != 1 || failed.Records[0].ToolID != "weather" {
+		t.Fatalf("ListToolExecutions(state=handler_error) = %#v", failed.Records)
+	}
+	if failed.Records[0].ErrorMessage == "" || failed.Records[0].FinishedAt.IsZero() {
+		t.Fatalf("tool failure record must carry state, duration, and safe error data: %#v", failed.Records[0])
+	}
+	if scoped, err := obs.ToolExecutions().ListToolExecutions(ctx, runtime.ToolExecutionFilter{Namespace: "tenant-a", OwnerID: "owner-a"}, runtime.PageRequest{}); err != nil || len(scoped.Records) != 2 {
+		t.Fatalf("ListToolExecutions(scope) = %#v, %v", scoped, err)
+	}
+
+	// Records must not require the thread to exist: failed runs persist
+	// diagnostics before any transcript.
+	orphan := runtime.RunEventRecord{ID: "evt-orphan", RunID: "run-orphan", Sequence: 1, Type: runtime.RunEventCancelled, Timestamp: now}
+	if err := obs.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{orphan}); err != nil {
+		t.Fatalf("AppendRunEvents without thread: %v", err)
+	}
+
+	// Duplicate appends are skipped, not errors: two independently constructed
+	// agents sharing one store can reuse default run IDs.
+	if err := obs.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{{ID: "evt-1", RunID: "run-1", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now}}); err != nil {
+		t.Fatalf("duplicate AppendRunEvents must be idempotent: %v", err)
+	}
+	duped, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(duped.Records) != 3 {
+		t.Fatalf("after duplicate append ListRunEvents = %d records, want 3", len(duped.Records))
+	}
+
+	// Validation parity with MemoryStore.
+	invalid := []runtime.RunEventRecord{{ID: "", RunID: "run-1", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now}}
+	if err := obs.RunEvents().AppendRunEvents(ctx, invalid); err == nil {
+		t.Fatal("AppendRunEvents accepted an empty event ID")
+	}
+	badMeta := []runtime.RunEventRecord{{ID: "evt-bad", RunID: "run-1", Sequence: 9, Type: runtime.RunEventStarted, Timestamp: now,
+		Metadata: runtime.Metadata{"noplural": json.RawMessage(`"x"`)}}}
+	if err := obs.RunEvents().AppendRunEvents(ctx, badMeta); err == nil {
+		t.Fatal("AppendRunEvents accepted non-namespaced metadata")
+	}
+	badStatus := []runtime.ModelAttemptRecord{{ID: "att-bad", RunID: "run-1", Index: 1, Status: "weird",
+		StartedAt: now, FinishedAt: now}}
+	if err := obs.ModelAttempts().SaveModelAttempts(ctx, badStatus); err == nil {
+		t.Fatal("SaveModelAttempts accepted an invalid status")
+	}
+	badState := []runtime.ToolExecutionRecord{{ID: "tool-bad", RunID: "run-1", ToolCallID: "c", ToolID: "t",
+		State: "exploded", StartedAt: now}}
+	if err := obs.ToolExecutions().SaveToolExecutions(ctx, badState); err == nil {
+		t.Fatal("SaveToolExecutions accepted an invalid state")
+	}
+
+	// Transaction participation: observability writes join the caller's
+	// transaction and roll back with it.
+	err = store.Transaction(ctx, func(ctx context.Context, repos runtime.Repositories) error {
+		txObs, ok := repos.(runtime.ObservabilityRepositories)
+		if !ok {
+			t.Fatal("transaction repositories do not implement ObservabilityRepositories")
+		}
+		if err := txObs.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{{ID: "evt-tx", RunID: "run-tx", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now}}); err != nil {
+			return err
+		}
+		return errors.New("rollback please")
+	})
+	if err == nil {
+		t.Fatal("expected transaction error")
+	}
+	page, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "run-tx"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Records) != 0 {
+		t.Fatalf("rolled-back event survived: %#v", page.Records)
+	}
+
+	// Defensive copies: mutating returned records must not affect stored data.
+	page, err = obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.Records[0].Payload = json.RawMessage(`{"tampered":true}`)
+	page.Records[0].Metadata["app.customer_id"] = json.RawMessage(`"evil"`)
+	again, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again.Records[0].Metadata["app.customer_id"]) != `"acme"` {
+		t.Fatalf("returned records alias stored state: %#v", again.Records[0].Metadata)
 	}
 }

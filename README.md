@@ -115,6 +115,7 @@ their selected command. Examples marked **external** need the named service.
 | In-memory storage | [Storage](#file-backed-sqlite-storage) | [`storage-memory`](examples/storage-memory): `go run ./examples/storage-memory` |
 | SQLite storage | [SQLite](#file-backed-sqlite-storage) | [`storage-sqlite`](examples/storage-sqlite): `go run ./examples/storage-sqlite` |
 | Postgres storage | [Postgres](#postgresql-storage) | [`storage-postgres`](examples/storage-postgres): `go run ./examples/storage-postgres` |
+| Durable run timeline (attempts, tools, events) | [Run records](docs/run-records.md) | [`run-timeline`](examples/run-timeline): `go run ./examples/run-timeline` |
 | In-memory vector search | [Vector storage](#vector-storage) | [`vector-search`](examples/vector-search): `go run ./examples/vector-search` |
 | Qdrant vector search | [Vector storage](#vector-storage) | [`vector-qdrant`](examples/vector-qdrant): `go run ./examples/vector-qdrant` **external: Qdrant** |
 | Recursive and sliding chunkers | [RAG](#retrieval-augmented-generation) | [`rag-chunkers`](examples/rag-chunkers): `go run ./examples/rag-chunkers` |
@@ -601,6 +602,31 @@ agent, _ := lebro.NewAgent(lebro.AgentConfig{
 | `RunEventCancelled` | Terminal: run was cancelled |
 | `RunEventSuspended` | Run suspended at a step boundary (non-terminal; resumes with `RunEventResumed`) |
 | `RunEventResumed` | Previously suspended run resumed from its durable snapshot |
+
+### Durable run records
+
+When an agent is bound to a `Store`, the same lifecycle data persists as
+queryable records: one `ModelAttemptRecord` per provider attempt (identity,
+usage, finish reason, retry/fallback lineage), one `ToolExecutionRecord` per
+tool call, and every non-delta event as an ordered `RunEventRecord` —
+correlated by run, step, tool-call, and produced-message IDs. Delta text,
+tool arguments/results, raw prompts, and reasoning replay data are never
+persisted by default. Namespaced `Metadata` annotations attach validated
+application metadata at every scope. Support is opt-in for custom stores via
+`ObservabilityRepositories`; existing stores keep working unchanged.
+
+```go
+page, err := store.ModelAttempts().ListModelAttempts(ctx, lebro.ModelAttemptFilter{
+    RunID: result.ID,
+}, lebro.PageRequest{})
+for _, attempt := range page.Records {
+    fmt.Printf("%s %s tokens=%d produced=%v\n",
+        attempt.Provider, attempt.Status, attempt.Usage.TotalTokens, attempt.ProducedMessageIDs)
+}
+```
+
+See [run records](docs/run-records.md) for the full contract and
+[`run-timeline`](examples/run-timeline) for a runnable walkthrough.
 
 ## File-backed SQLite storage
 

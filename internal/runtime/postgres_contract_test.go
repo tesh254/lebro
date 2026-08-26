@@ -31,7 +31,7 @@ func TestPostgresStorePassesStorageContract(t *testing.T) {
 	testkit.StorageContractSuite(t, func(t *testing.T) lebro.Store {
 		t.Helper()
 		ctx := context.Background()
-		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "schema_migrations"} {
+		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "working_memory_facts", "run_events", "model_attempts", "tool_executions", "schema_migrations"} {
 			if _, err := cleanupDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 				t.Fatalf("drop %s: %v", table, err)
 			}
@@ -62,7 +62,7 @@ func TestPostgresStorePassesWorkingMemoryContract(t *testing.T) {
 	testkit.WorkingMemoryContractSuite(t, func(t *testing.T) lebro.Store {
 		t.Helper()
 		ctx := context.Background()
-		for _, table := range []string{"working_memory_facts", "schema_migrations"} {
+		for _, table := range []string{"working_memory_facts", "schedules", "schedule_executions", "workflow_snapshots", "workflow_runs", "messages", "threads", "run_events", "model_attempts", "tool_executions", "schema_migrations"} {
 			if _, err := cleanupDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 				t.Fatalf("drop %s: %v", table, err)
 			}
@@ -93,7 +93,7 @@ func TestPostgresStorePassesWorkflowCheckpointContract(t *testing.T) {
 	testkit.WorkflowCheckpointContractSuite(t, func(t *testing.T) lebro.Store {
 		t.Helper()
 		ctx := context.Background()
-		for _, table := range []string{"workflow_snapshots", "workflow_runs", "schema_migrations"} {
+		for _, table := range []string{"workflow_snapshots", "workflow_runs", "messages", "threads", "schedules", "schedule_executions", "working_memory_facts", "run_events", "model_attempts", "tool_executions", "schema_migrations"} {
 			if _, err := cleanupDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
 				t.Fatalf("drop %s: %v", table, err)
 			}
