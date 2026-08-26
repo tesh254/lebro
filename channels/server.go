@@ -30,6 +30,15 @@ type Config struct {
 	// TextFormat is the rendering applied to every reply chunk. The zero value
 	// is FormatMarkdown.
 	TextFormat TextFormat
+	// Dispatch optionally accepts verified, deduplicated work before the
+	// webhook is acknowledged. It is useful for platforms such as Slack that
+	// require a prompt HTTP acknowledgement. A nil Dispatch runs the agent
+	// synchronously and preserves failures as HTTP 500 responses.
+	//
+	// The dispatcher owns durable handoff and background error reporting. The
+	// Server has already recorded deduplication before it calls Dispatch, so a
+	// dispatcher must not return nil unless it has accepted the work.
+	Dispatch DispatchFunc
 	// Middleware wraps the router. The first element is outermost, matching the
 	// httpapi convention; use it for logging, rate limiting, and tracing. Per-
 	// adapter request authentication is the adapter's Verify, not middleware.

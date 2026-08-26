@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -24,6 +25,21 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
+		}
+		if responder, ok := b.adapter.(WebhookResponder); ok {
+			response, handled, err := responder.WebhookResponse(r, body)
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if handled {
+				if len(response) > 0 {
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(response)
+				return
+			}
 		}
 
 		message, ok, err := b.adapter.Decode(r, body)
@@ -59,12 +75,36 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 			}
 		}
 
+		if s.config.Dispatch != nil {
+			job := DispatchJob{AgentID: b.agentID, Platform: b.adapter.Platform(), Message: message}
+			if err := s.config.Dispatch(r.Context(), job); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
 		if err := s.run(r.Context(), b, message); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+}
+
+// RunDispatch runs one previously accepted [DispatchJob]. It is intended for a
+// background worker paired with Config.Dispatch. The job must come from the
+// same Server's verified webhook handler; callers must not construct jobs from
+// untrusted input, because the job's sender identity is used for authorization.
+func (s *Server) RunDispatch(ctx context.Context, job DispatchJob) error {
+	s.mu.RLock()
+	b, ok := s.routes[webhookPath(job.AgentID, job.Platform)]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("lebro/channels: dispatch route for agent %q platform %q is not registered", job.AgentID, job.Platform)
+	}
+	return s.run(ctx, b, job.Message)
 }
 
 // run maps the message to a thread, runs the agent as the sender, and relays

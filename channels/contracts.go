@@ -154,3 +154,33 @@ type Adapter interface {
 	// chunk. Send must not retain the OutboundMessage past the call.
 	Send(ctx context.Context, conversation ConversationRef, message OutboundMessage) error
 }
+
+// WebhookResponder is an optional extension for platforms whose verified
+// webhook handshake requires a response body. The Server calls it after
+// Adapter.Verify and before Adapter.Decode. When handled is true, it writes the
+// returned body with HTTP 200 and does not invoke the agent.
+//
+// Slack's url_verification handshake is one example: its challenge is trusted
+// only after the request signature has been checked, then echoed verbatim.
+type WebhookResponder interface {
+	WebhookResponse(r *http.Request, body []byte) (response []byte, handled bool, err error)
+}
+
+// DispatchJob is verified, deduplicated inbound work ready for a background
+// worker. It contains only provider-neutral values, so a dispatcher may encode
+// it into a durable queue. A worker resumes it with [Server.RunDispatch].
+type DispatchJob struct {
+	AgentID  string
+	Platform string
+	Message  InboundMessage
+}
+
+// DispatchFunc accepts verified, deduplicated channel work for execution. It
+// must return only after durable acceptance when the platform needs a prompt
+// webhook acknowledgement. A worker resumes the accepted job with
+// [Server.RunDispatch].
+//
+// Leaving Config.Dispatch nil preserves synchronous request handling. A
+// dispatcher that runs work asynchronously should detach cancellation from the
+// inbound HTTP request and report failures through its own operational path.
+type DispatchFunc func(ctx context.Context, job DispatchJob) error

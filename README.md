@@ -1817,6 +1817,12 @@ deterministic thread mapping, deduplication, and a streamed-reply relay — and
 leaves the platform-specific edges to an `Adapter`. The root module gains no
 provider dependency.
 
+`channels/slack` is the first native adapter. It validates Slack Events API
+signatures, echoes its signed URL-verification challenge, maps each
+workspace/channel/thread to one durable Lebro thread, deduplicates `event_id`,
+and sends the completed reply with Slack's `chat.postMessage` API. It uses only
+the Go standard HTTP client; no Slack SDK is imported.
+
 ```go
 agent, err := lebro.NewAgent(lebro.AgentConfig{
     Definition: lebro.AgentDefinition{ID: "assistant", Name: "Assistant"},
@@ -1854,6 +1860,41 @@ if err := server.ExposeAgent(agent, adapter); err != nil {
 // Serve the webhook route: /agents/{id}/channels/{platform}/webhook
 http.ListenAndServe(":8080", server)
 ```
+
+For Slack, use a durable dispatcher so Slack can be acknowledged before the
+agent work completes:
+
+```go
+adapter, err := slack.New(slack.Config{
+    SigningSecret: os.Getenv("SLACK_SIGNING_SECRET"),
+    BotToken:      os.Getenv("SLACK_BOT_TOKEN"),
+})
+if err != nil {
+    panic(err)
+}
+
+server, err := channels.NewServer(channels.Config{
+    Store: store,
+    // Dispatch must enqueue the job durably; a worker resumes it with
+    // server.RunDispatch(ctx, job).
+    // A successful return means the handoff is durable, so Slack receives 200.
+    Dispatch: enqueueChannelWork,
+})
+if err != nil {
+    panic(err)
+}
+if err := server.ExposeAgent(agent, adapter); err != nil {
+    panic(err)
+}
+```
+
+Import Slack as `github.com/tesh254/lebro/channels/slack`. Subscribe the Slack
+app to message events appropriate to its installation, grant `chat:write`, and
+set its Events API request URL to
+`/agents/{agent-id}/channels/slack/webhook`. The adapter ignores bot and
+message-subtype events, uses a message's `thread_ts` (or its own `ts`) as the
+thread root, and sends only the final agent reply to stay inside Slack's message
+posting constraints.
 
 An inbound message maps deterministically to a durable thread: a `ThreadMapper`
 derives a stable `ThreadID` from the conversation reference, so every message in

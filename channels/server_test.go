@@ -31,6 +31,15 @@ type controllableAdapter struct {
 	failFinalOnly bool
 }
 
+type challengeAdapter struct {
+	controllableAdapter
+	challenge []byte
+}
+
+func (a *challengeAdapter) WebhookResponse(*http.Request, []byte) ([]byte, bool, error) {
+	return a.challenge, true, nil
+}
+
 func (a *controllableAdapter) Platform() string { return a.platform }
 
 func (a *controllableAdapter) Verify(*http.Request) ([]byte, error) { return nil, nil }
@@ -56,6 +65,7 @@ func (a *controllableAdapter) delivers() []channels.OutboundMessage {
 }
 
 var _ channels.Adapter = (*controllableAdapter)(nil)
+var _ channels.WebhookResponder = (*challengeAdapter)(nil)
 
 func newServer(t *testing.T, store lebro.Store, mapper channels.ThreadMapper, dedup channels.Deduplicator) *channels.Server {
 	t.Helper()
@@ -121,6 +131,19 @@ func TestServerStreamsReplyToAdapter(t *testing.T) {
 	}
 	if incremental.String() != "Hello, world" {
 		t.Fatalf("incremental text = %q, want %q", incremental.String(), "Hello, world")
+	}
+}
+
+func TestServerWritesVerifiedWebhookChallenge(t *testing.T) {
+	server := newServer(t, nil, channels.NamespaceThreadMapper{}, channels.NewMemoryDeduplicator(4))
+	agent := newTestAgent(t, "assistant", newScriptedStreamModel("unused"), nil)
+	adapter := &challengeAdapter{controllableAdapter: controllableAdapter{platform: "webhook"}, challenge: []byte("challenge-value")}
+	if err := server.ExposeAgent(agent, adapter); err != nil {
+		t.Fatalf("ExposeAgent: %v", err)
+	}
+	rec := post(server, "/agents/assistant/channels/webhook/webhook")
+	if rec.Code != http.StatusOK || rec.Body.String() != "challenge-value" {
+		t.Fatalf("response = (%d, %q), want (200, challenge-value)", rec.Code, rec.Body.String())
 	}
 }
 
