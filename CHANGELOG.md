@@ -6,6 +6,18 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- First-class Google Vertex AI model adapter (`github.com/tesh254/lebro/vertexai`)
+  for calling Vertex-hosted Gemini models through the stable v1 endpoint using
+  Google Application Default Credentials. No API key is accepted or logged; the
+  caller must enable the Vertex AI API and grant `roles/aiplatform.user`. The
+  adapter supports text, system instructions, multi-turn messages, tool
+  definitions and results, JSON-schema output, streaming, and the same Gemini
+  reasoning controls as the Developer API adapter. Vertex response metadata is
+  exposed through `ModelResponse.Extension`. The Gemini request/response mapping
+  shared between the Developer API and Vertex AI adapters now lives in
+  `internal/geminiapi`, keeping the two adapters' authentication and endpoint
+  configuration independent. Deterministic unit tests use a fake HTTP transport
+  with no GCP credentials.
 - Durable run observability records across Memory, SQLite, and Postgres
   stores. Store-bound agent runs now persist one `ModelAttemptRecord` per
   provider attempt (provider and model identity, routed target, attempt status

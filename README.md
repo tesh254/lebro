@@ -270,6 +270,7 @@ trusted-client redactor explicitly if a client needs it.
 | `openai` | `reasoning.effort` or `reasoning.max_tokens`; set `Config.IncludeReasoning` for OpenRouter-style endpoints to also send `include_reasoning` | reasoning text, `reasoning_details`, `reasoning_tokens` |
 | `anthropic` | Extended-thinking token budget: low/minimal 1024, medium half `MaxTokens`, high three quarters, xhigh/max `MaxTokens-1` | thinking text, signed/redacted blocks, `thinking_tokens` |
 | `gemini` | Gemini 2.5 uses a budget (1024/4096/8192); newer Gemini uses thinking levels | thought text/signatures, `thoughts_token_count` |
+| `vertexai` | Same Gemini thinking mapping as `gemini`, served through Vertex AI | thought text/signatures, `thoughts_token_count` |
 
 The `examples/reasoning` program is an OpenRouter-backed architecture-review
 run with a durable thread and streamed reasoning. It requires an API key and
@@ -321,9 +322,10 @@ if err != nil {
 }
 ```
 
-The optional `github.com/tesh254/lebro/anthropic` and
-`github.com/tesh254/lebro/gemini` packages add native Claude and Gemini
-adapters. Both support text, client tool calls, streaming, and structured
+The optional `github.com/tesh254/lebro/anthropic`,
+`github.com/tesh254/lebro/gemini`, and `github.com/tesh254/lebro/vertexai`
+packages add native Claude, Gemini Developer API, and Google Vertex AI
+adapters. All support text, client tool calls, streaming, and structured
 output without coupling those provider SDKs to the root package:
 
 ```go
@@ -332,7 +334,16 @@ model, err := anthropic.New(anthropic.Config{
     Model:  "claude-sonnet-4-5",
 })
 // Or: gemini.New(gemini.Config{APIKey: os.Getenv("GEMINI_API_KEY"), Model: "gemini-2.5-flash"})
+// Or: vertexai.New(vertexai.Config{Project: os.Getenv("GOOGLE_CLOUD_PROJECT"), Location: "global", Model: "gemini-2.5-flash"})
 ```
+
+The `vertexai` package authenticates through Google Application Default
+Credentials (ADC) — run `gcloud auth application-default login` first — and
+targets the stable Vertex AI v1 endpoint. No API key is accepted or logged.
+Enable the Vertex AI API and grant the runtime principal
+`roles/aiplatform.user`. The `gemini` and `vertexai` adapters share the same
+Gemini request/response mapping but keep their authentication and endpoint
+configuration separate.
 
 ### Custom endpoints and OpenRouter
 
