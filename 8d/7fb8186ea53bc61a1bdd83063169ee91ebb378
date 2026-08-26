@@ -1,0 +1,25 @@
+obsv/axiom/exporter.go
+  s_5c0f3b18ea4c49::t_b486546168d35c 1-13,18,20-22,24-28,38-40,44-45
+  s_5c0f3b18ea4c49::t_4106b6f76a76cb 14-17,19,23,29-37,41-43
+obsv/axiom/doc.go
+  s_5c0f3b18ea4c49::t_b486546168d35c 1-5
+obsv/axiom/exporter_test.go
+  s_5c0f3b18ea4c49::t_b486546168d35c 1-8,12-16,23
+  s_5c0f3b18ea4c49::t_4106b6f76a76cb 9-11,17-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "8d7fb8186ea53bc61a1bdd83063169ee91ebb378",
+  "prompts": {},
+  "sessions": {
+    "s_5c0f3b18ea4c49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03fb6-5363-7550-ba3f-c9fed3aeb0a8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
