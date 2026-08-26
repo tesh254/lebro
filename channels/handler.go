@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -25,6 +26,21 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if responder, ok := b.adapter.(WebhookResponder); ok {
+			response, handled, err := responder.WebhookResponse(r, body)
+			if err != nil {
+				http.Error(w, "bad request", http.StatusBadRequest)
+				return
+			}
+			if handled {
+				if len(response) > 0 {
+					w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(response)
+				return
+			}
+		}
 
 		message, ok, err := b.adapter.Decode(r, body)
 		if err != nil {
@@ -42,7 +58,33 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 			return
 		}
 
-		// Deduplicate before running: a redelivery must not produce a second
+		// A dispatcher owns durable acceptance. Deduplicate only when its worker
+		// calls RunDispatch, so a failed handoff leaves no marker that could make
+		// a platform redelivery disappear.
+		if s.config.Dispatch != nil {
+			job := DispatchJob{AgentID: b.agentID, Platform: b.adapter.Platform(), Message: message}
+			if err := s.config.Dispatch(context.WithoutCancel(r.Context()), job); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			if acknowledger, ok := b.adapter.(WebhookAcknowledger); ok {
+				response, contentType, err := acknowledger.WebhookAcknowledgement(r, body)
+				if err != nil {
+					http.Error(w, "internal error", http.StatusInternalServerError)
+					return
+				}
+				if contentType != "" {
+					w.Header().Set("Content-Type", contentType)
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(response)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Deduplicate before a synchronous run: a redelivery must not produce a second
 		// reply. A message with no provider ID cannot be keyed, so it is always
 		// processed. The key is scoped to this agent-platform route so an equal
 		// provider ID from a different platform or agent, routed through the same
@@ -65,6 +107,29 @@ func (s *Server) webhookHandler(b binding) http.Handler {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+}
+
+// RunDispatch runs one previously accepted [DispatchJob]. It is intended for a
+// background worker paired with Config.Dispatch. The job must come from the
+// same Server's verified webhook handler; callers must not construct jobs from
+// untrusted input, because the job's sender identity is used for authorization.
+func (s *Server) RunDispatch(ctx context.Context, job DispatchJob) error {
+	s.mu.RLock()
+	b, ok := s.routes[webhookPath(job.AgentID, job.Platform)]
+	s.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("lebro/channels: dispatch route for agent %q platform %q is not registered", job.AgentID, job.Platform)
+	}
+	if job.Message.ProviderMessageID != "" {
+		duplicate, err := s.deduplicator.Seen(ctx, b.dedupKey(job.Message.ProviderMessageID))
+		if err != nil {
+			return err
+		}
+		if duplicate {
+			return nil
+		}
+	}
+	return s.run(ctx, b, job.Message)
 }
 
 // run maps the message to a thread, runs the agent as the sender, and relays

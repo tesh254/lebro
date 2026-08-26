@@ -133,6 +133,7 @@ their selected command. Examples marked **external** need the named service.
 | MCP client, external stdio process | [MCP usage](docs/mcp.md#client-for-an-external-server) | [`mcp-client-command`](examples/mcp-client-command): see [MCP command](docs/mcp.md#client-for-an-external-server) |
 | Local Studio | [Studio](#local-studio-style-developer-ui) | [`studio`](examples/studio): `go run ./examples/studio` |
 | Signed webhook channels | [Channels](#messaging-channel-adapters) | [`channels`](examples/channels): `go run ./examples/channels` |
+| OTLP/HTTP trace export | [OTLP observability](obsv/otlp) | [`observability-otlp`](examples/observability-otlp): `go run ./examples/observability-otlp` |
 | Voice session | [Voice](#voice) | [`voice`](examples/voice): `go run ./examples/voice` |
 | Datasets, scorers, experiments | [Evaluations](#dataset-evaluation-scorers-and-experiment-runs) | [`evals-dataset`](examples/evals-dataset): `go run ./examples/evals-dataset` |
 
@@ -1816,6 +1817,12 @@ deterministic thread mapping, deduplication, and a streamed-reply relay — and
 leaves the platform-specific edges to an `Adapter`. The root module gains no
 provider dependency.
 
+`channels/slack` is the first native adapter. It validates Slack Events API
+signatures, echoes its signed URL-verification challenge, maps each
+workspace/channel/thread to one durable Lebro thread, deduplicates `event_id`,
+and sends the completed reply with Slack's `chat.postMessage` API. It uses only
+the Go standard HTTP client; no Slack SDK is imported.
+
 ```go
 agent, err := lebro.NewAgent(lebro.AgentConfig{
     Definition: lebro.AgentDefinition{ID: "assistant", Name: "Assistant"},
@@ -1853,6 +1860,64 @@ if err := server.ExposeAgent(agent, adapter); err != nil {
 // Serve the webhook route: /agents/{id}/channels/{platform}/webhook
 http.ListenAndServe(":8080", server)
 ```
+
+For Slack, use a durable dispatcher so Slack can be acknowledged before the
+agent work completes:
+
+```go
+adapter, err := slack.New(slack.Config{
+    SigningSecret: os.Getenv("SLACK_SIGNING_SECRET"),
+    BotToken:      os.Getenv("SLACK_BOT_TOKEN"),
+})
+if err != nil {
+    panic(err)
+}
+
+server, err := channels.NewServer(channels.Config{
+    Store: store,
+    // Dispatch must enqueue the job durably; a worker resumes it with
+    // server.RunDispatch(ctx, job).
+    // A successful return means the handoff is durable, so Slack receives 200.
+    Dispatch: enqueueChannelWork,
+})
+if err != nil {
+    panic(err)
+}
+if err := server.ExposeAgent(agent, adapter); err != nil {
+    panic(err)
+}
+```
+
+Import Slack as `github.com/tesh254/lebro/channels/slack`. Subscribe the Slack
+app to message events appropriate to its installation, grant `chat:write`, and
+set its Events API request URL to
+`/agents/{agent-id}/channels/slack/webhook`. The adapter ignores bot and
+message-subtype events, uses a message's `thread_ts` (or its own `ts`) as the
+thread root, and sends only the final agent reply to stay inside Slack's message
+posting constraints.
+
+`channels/discord` is likewise optional. It receives signed application-command
+interactions (not Gateway messages), responds to Discord's `PING`, defers each
+accepted command, and edits that deferred response after the run completes. Its
+`ConversationRef.ID` is the Discord channel ID, so commands inside a native
+Discord thread retain their own durable thread. Use `PublicKey` from the Discord
+Developer Portal and the same durable `Dispatch` pattern; interaction tokens
+are kept out of run metadata and expire after 15 minutes.
+
+```go
+adapter, err := discord.New(discord.Config{
+    PublicKey: os.Getenv("DISCORD_APPLICATION_PUBLIC_KEY"),
+})
+if err != nil {
+    panic(err)
+}
+```
+
+`channels/telegram` is an optional Bot API webhook adapter. Configure Telegram
+`setWebhook` with a `secret_token`, then provide that same `SecretToken` and the
+bot token to the adapter. It verifies the secret header before decoding, uses
+each update ID for deduplication, keeps a chat/topic as one durable thread, and
+uses `sendMessage` for the final native reply.
 
 An inbound message maps deterministically to a durable thread: a `ThreadMapper`
 derives a stable `ThreadID` from the conversation reference, so every message in

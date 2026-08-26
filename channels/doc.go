@@ -50,6 +50,18 @@
 // credentials read them from their own configuration; the package holds no
 // secrets of its own. The [Server]'s middleware is for cross-cutting concerns
 // (logging, rate limiting, tracing), not for request authentication.
+// Platforms with a signed handshake response can implement [WebhookResponder];
+// the Server verifies the request before writing the platform-specific response.
+// An adapter with [WebhookAcknowledger] requires Config.Dispatch so its deferred
+// provider response is written only after durable work acceptance.
+
+// # Prompt acknowledgements
+//
+// Some providers require a prompt webhook acknowledgement. Configure
+// [Config.Dispatch] to hand verified, deduplicated work to a durable queue or
+// worker before the Server returns HTTP 200. The dispatcher owns reliability
+// after accepting the work; leaving it nil keeps synchronous execution and
+// reports run or delivery failures as HTTP 500.
 //
 // # Retries and duplicate delivery
 //
