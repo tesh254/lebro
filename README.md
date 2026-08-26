@@ -1913,6 +1913,12 @@ if err != nil {
 }
 ```
 
+`channels/telegram` is an optional Bot API webhook adapter. Configure Telegram
+`setWebhook` with a `secret_token`, then provide that same `SecretToken` and the
+bot token to the adapter. It verifies the secret header before decoding, uses
+each update ID for deduplication, keeps a chat/topic as one durable thread, and
+uses `sendMessage` for the final native reply.
+
 An inbound message maps deterministically to a durable thread: a `ThreadMapper`
 derives a stable `ThreadID` from the conversation reference, so every message in
 one platform conversation lands on one persisted transcript and a reply
