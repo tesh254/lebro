@@ -239,6 +239,14 @@ webhook is signed and served in-process, so no network or API key is required):
 go run ./examples/channels
 ```
 
+Run the OTLP observability example (converts a filtered Lebro span to
+OTLP/HTTP protobuf and sends it to an in-process collector endpoint; no network
+or API key is required):
+
+```sh
+go run ./examples/observability-otlp
+```
+
 Run the voice example (transcribes an audio utterance to a user turn through a
 fake recognizer, runs an agent, and synthesizes the reply back to audio through
 a fake synthesizer; the fakes stand in for optional provider adapters, so no

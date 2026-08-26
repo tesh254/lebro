@@ -133,6 +133,7 @@ their selected command. Examples marked **external** need the named service.
 | MCP client, external stdio process | [MCP usage](docs/mcp.md#client-for-an-external-server) | [`mcp-client-command`](examples/mcp-client-command): see [MCP command](docs/mcp.md#client-for-an-external-server) |
 | Local Studio | [Studio](#local-studio-style-developer-ui) | [`studio`](examples/studio): `go run ./examples/studio` |
 | Signed webhook channels | [Channels](#messaging-channel-adapters) | [`channels`](examples/channels): `go run ./examples/channels` |
+| OTLP/HTTP trace export | [OTLP observability](obsv/otlp) | [`observability-otlp`](examples/observability-otlp): `go run ./examples/observability-otlp` |
 | Voice session | [Voice](#voice) | [`voice`](examples/voice): `go run ./examples/voice` |
 | Datasets, scorers, experiments | [Evaluations](#dataset-evaluation-scorers-and-experiment-runs) | [`evals-dataset`](examples/evals-dataset): `go run ./examples/evals-dataset` |
 
