@@ -1,0 +1,25 @@
+channels/telegram/adapter.go
+  s_5c0f3b18ea4c49::t_975fe0a72bb1dc 1-30,34-53,66-72,76-79,86-92,96-100,104,106,110-115,122,126-127,137-142,146,150-151,166,173,202,207,244-245
+  s_5c0f3b18ea4c49::t_1ec017a0e0de60 31-33,54-65,73-75,80-85,93-95,101-103,105,107-109,116-121,123-125,128-136,143-145,147-149,152-165,167-172,174-201,203-206,208-243
+channels/telegram/doc.go
+  s_5c0f3b18ea4c49::t_975fe0a72bb1dc 1-5
+channels/telegram/adapter_test.go
+  s_5c0f3b18ea4c49::t_4403936e3a5fcc 1-17,21,25-33,37,47-52,56-60,67-69,77
+  s_5c0f3b18ea4c49::t_7e29965ed68d72 18-20,22-24,34-36,38-46,53-55,61-66,70-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d383ac3e83dd8623f421224594beaa0e3a3c3b2e",
+  "prompts": {},
+  "sessions": {
+    "s_5c0f3b18ea4c49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03fb6-5363-7550-ba3f-c9fed3aeb0a8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
