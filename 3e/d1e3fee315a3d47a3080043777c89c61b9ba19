@@ -1,0 +1,47 @@
+internal/geminiapi/adapter_test.go
+  s_3b8d1d1ef7d424::t_9379a6049b2678 1-174
+gemini/adapter_test.go
+  s_3b8d1d1ef7d424::t_bd5a8a91263df8 24,50
+README.md
+  s_3b8d1d1ef7d424::t_a2b54c3b6affa8 325-328,337,340-346
+  s_3b8d1d1ef7d424::t_af864c2b734d5b 273
+vertexai/main_test.go
+  s_3b8d1d1ef7d424::t_367c19a986bb13 15-17
+  s_3b8d1d1ef7d424::t_c7fd5a0dc2dd34 1-14,18-19
+vertexai/adapter_test.go
+  s_3b8d1d1ef7d424::t_824c413ebb162e 128,169
+  s_3b8d1d1ef7d424::t_23b62e56d3b5d8 156
+  s_3b8d1d1ef7d424::t_5bbd3d42626978 1-27,29-58,60-77,79-95,97-114,118-127,129-135,137-154,157-168,170-188
+  s_3b8d1d1ef7d424::t_bd5a8a91263df8 28,59,78,96,115-117,155
+vertexai/adapter.go
+  s_3b8d1d1ef7d424::t_03ff63cbbb0263 1-55,57-74
+gemini/adapter.go
+  s_3b8d1d1ef7d424::t_b613079d2d054f 11,26-27,29,48
+internal/geminiapi/roundtrip_test.go
+  s_3b8d1d1ef7d424::t_165443ac54e9bb 1-4,6-42,44-65,67-80,82-94,98-106,108-126,129-143,145-159,162-180,182-191,193,195-200,202-229,231-241,244-253,255-272,275-281,283-305,307-328,330-374
+  s_3b8d1d1ef7d424::t_51f292fdab114e 5
+  s_3b8d1d1ef7d424::t_bd5a8a91263df8 43,66,81,107,144,160-161,194,242-243,273-274,306,329
+  s_3b8d1d1ef7d424::t_f76895f7afa4b0 95-97
+  s_3b8d1d1ef7d424::t_9d0f275d2f5f9c 127-128
+  s_3b8d1d1ef7d424::t_824c413ebb162e 181,201,230,254,282
+  s_3b8d1d1ef7d424::t_f3dc1f987a56c7 192
+internal/geminiapi/adapter.go
+  s_3b8d1d1ef7d424::t_1cafef39108cd2 376-379,381
+  s_3b8d1d1ef7d424::t_6576624b7c4194 1-375,380,382-474
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3ed1e3fee315a3d47a3080043777c89c61b9ba19",
+  "prompts": {},
+  "sessions": {
+    "s_3b8d1d1ef7d424": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbfeba201ffeiVZWXHenPxmW3B",
+        "model": "glm-5.3"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
