@@ -10,16 +10,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tesh254/lebro/channels"
 )
 
 const (
-	platform          = "discord"
-	defaultAPIBaseURL = "https://discord.com/api/v10"
-	defaultMaxBody    = 1 << 20
-	maxMessageRunes   = 2000
+	platform            = "discord"
+	defaultAPIBaseURL   = "https://discord.com/api/v10"
+	defaultMaxBody      = 1 << 20
+	defaultMaxClockSkew = 5 * time.Minute
+	maxMessageRunes     = 2000
 )
 
 // Config configures a Discord application-command interaction adapter.
@@ -35,6 +38,8 @@ type Config struct {
 	APIBaseURL string
 	// MaxBodyBytes limits inbound request reads. Zero uses 1 MiB.
 	MaxBodyBytes int64
+	MaxClockSkew time.Duration
+	Now          func() time.Time
 }
 
 // Adapter is a concurrent-safe Discord interaction adapter.
@@ -43,6 +48,8 @@ type Adapter struct {
 	httpClient   *http.Client
 	apiBaseURL   string
 	maxBodyBytes int64
+	maxClockSkew time.Duration
+	now          func() time.Time
 }
 
 // New constructs a Discord interaction adapter.
@@ -63,7 +70,16 @@ func New(config Config) (*Adapter, error) {
 	if config.MaxBodyBytes < 1 {
 		return nil, errors.New("lebro/channels/discord: MaxBodyBytes must be positive")
 	}
-	return &Adapter{publicKey: ed25519.PublicKey(publicKey), httpClient: config.HTTPClient, apiBaseURL: strings.TrimRight(config.APIBaseURL, "/"), maxBodyBytes: config.MaxBodyBytes}, nil
+	if config.MaxClockSkew == 0 {
+		config.MaxClockSkew = defaultMaxClockSkew
+	}
+	if config.MaxClockSkew < 0 {
+		return nil, errors.New("lebro/channels/discord: MaxClockSkew must not be negative")
+	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
+	return &Adapter{publicKey: ed25519.PublicKey(publicKey), httpClient: config.HTTPClient, apiBaseURL: strings.TrimRight(config.APIBaseURL, "/"), maxBodyBytes: config.MaxBodyBytes, maxClockSkew: config.MaxClockSkew, now: config.Now}, nil
 }
 
 // Platform reports Discord's stable channels platform identifier.
@@ -76,9 +92,13 @@ func (a *Adapter) Verify(r *http.Request) ([]byte, error) {
 		return nil, errors.New("lebro/channels/discord: request is nil")
 	}
 	timestamp := r.Header.Get("X-Signature-Timestamp")
+	seconds, timestampErr := strconv.ParseInt(timestamp, 10, 64)
 	signature, err := hex.DecodeString(r.Header.Get("X-Signature-Ed25519"))
-	if timestamp == "" || err != nil || len(signature) != ed25519.SignatureSize {
+	if timestamp == "" || timestampErr != nil || err != nil || len(signature) != ed25519.SignatureSize {
 		return nil, errors.New("lebro/channels/discord: invalid request signature headers")
+	}
+	if delta := a.now().Sub(time.Unix(seconds, 0)); delta > a.maxClockSkew || delta < -a.maxClockSkew {
+		return nil, errors.New("lebro/channels/discord: request timestamp outside allowed skew")
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, a.maxBodyBytes+1))
 	if err != nil {
@@ -169,7 +189,10 @@ func (a *Adapter) Send(ctx context.Context, conversation channels.ConversationRe
 	if !ok {
 		return errors.New("lebro/channels/discord: invalid reply target")
 	}
-	chunks := splitMessage(message.Text)
+	chunks := channels.SplitText(message.Text, maxMessageRunes)
+	if len(chunks) == 0 {
+		return nil
+	}
 	for i, chunk := range chunks {
 		path := "/webhooks/" + applicationID + "/" + token
 		method := http.MethodPost
@@ -280,23 +303,6 @@ func parseReplyTarget(value string) (applicationID, token string, ok bool) {
 		return "", "", false
 	}
 	return parts[0], parts[1], true
-}
-
-func splitMessage(text string) []string {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return []string{""}
-	}
-	chunks := make([]string, 0, (len(runes)+maxMessageRunes-1)/maxMessageRunes)
-	for len(runes) > 0 {
-		end := maxMessageRunes
-		if end > len(runes) {
-			end = len(runes)
-		}
-		chunks = append(chunks, string(runes[:end]))
-		runes = runes[end:]
-	}
-	return chunks
 }
 
 var (

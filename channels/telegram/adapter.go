@@ -123,7 +123,11 @@ func (a *Adapter) Send(ctx context.Context, conversation channels.ConversationRe
 	if !ok {
 		return errors.New("lebro/channels/telegram: invalid reply target")
 	}
-	for i, text := range splitMessage(message.Text) {
+	chunks := channels.SplitText(message.Text, maxMessageRunes)
+	if len(chunks) == 0 {
+		return nil
+	}
+	for i, text := range chunks {
 		payload := sendMessage{ChatID: chatID, Text: text}
 		if topicID != 0 {
 			payload.MessageThreadID = topicID
@@ -224,22 +228,6 @@ func parseReplyTarget(value string) (chatID, topicID, messageID int64, ok bool) 
 		return 0, 0, 0, false
 	}
 	return chatID, topicID, messageID, true
-}
-func splitMessage(text string) []string {
-	runes := []rune(text)
-	if len(runes) == 0 {
-		return []string{""}
-	}
-	chunks := make([]string, 0, (len(runes)+maxMessageRunes-1)/maxMessageRunes)
-	for len(runes) > 0 {
-		end := maxMessageRunes
-		if end > len(runes) {
-			end = len(runes)
-		}
-		chunks = append(chunks, string(runes[:end]))
-		runes = runes[end:]
-	}
-	return chunks
 }
 
 var _ channels.Adapter = (*Adapter)(nil)

@@ -164,6 +164,9 @@ func (s *Server) ExposeAgent(agent *lebro.Agent, adapters ...Adapter) error {
 		if isNilAdapter(adapter) {
 			return fmt.Errorf("lebro/channels: agent %q has a nil adapter", id)
 		}
+		if _, needsDispatch := adapter.(WebhookAcknowledger); needsDispatch && s.config.Dispatch == nil {
+			return fmt.Errorf("lebro/channels: agent %q adapter %q requires Config.Dispatch", id, adapter.Platform())
+		}
 		platform := adapter.Platform()
 		if platform == "" {
 			return fmt.Errorf("lebro/channels: agent %q adapter has an empty platform", id)

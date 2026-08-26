@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tesh254/lebro/channels"
 	"github.com/tesh254/lebro/channels/discord"
@@ -17,7 +18,7 @@ import (
 func newAdapter(t *testing.T, configure func(*discord.Config)) (*discord.Adapter, ed25519.PrivateKey) {
 	t.Helper()
 	privateKey := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	config := discord.Config{PublicKey: hex.EncodeToString(privateKey.Public().(ed25519.PublicKey))}
+	config := discord.Config{PublicKey: hex.EncodeToString(privateKey.Public().(ed25519.PublicKey)), Now: func() time.Time { return time.Unix(1_700_000_000, 0) }}
 	if configure != nil {
 		configure(&config)
 	}

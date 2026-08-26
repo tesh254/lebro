@@ -3,6 +3,7 @@ package axiom
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/tesh254/lebro/obsv"
@@ -35,9 +36,16 @@ func New(config Config) (*Exporter, error) {
 	if strings.TrimSpace(config.Dataset) == "" {
 		return nil, fmt.Errorf("axiom: dataset must not be empty")
 	}
-	domain := strings.TrimPrefix(strings.TrimSuffix(strings.TrimSpace(config.Domain), "/"), "https://")
-	domain = strings.TrimPrefix(domain, "http://")
-	exporter, err := otlp.New(otlp.Config{Endpoint: "https://" + domain + "/v1/traces", Headers: map[string]string{"Authorization": "Bearer " + config.Token, "X-Axiom-Dataset": config.Dataset}, ServiceName: config.ServiceName, ResourceAttributes: config.ResourceAttributes, HTTPClient: config.HTTPClient})
+	domain := strings.TrimSuffix(strings.TrimSpace(config.Domain), "/")
+	if !strings.Contains(domain, "://") {
+		domain = "https://" + domain
+	}
+	endpoint, err := url.Parse(domain)
+	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+		return nil, fmt.Errorf("axiom: Domain must be an absolute HTTP URL or host")
+	}
+	endpoint.Path = strings.TrimSuffix(endpoint.Path, "/") + "/v1/traces"
+	exporter, err := otlp.New(otlp.Config{Endpoint: endpoint.String(), Headers: map[string]string{"Authorization": "Bearer " + config.Token, "X-Axiom-Dataset": config.Dataset}, ServiceName: config.ServiceName, ResourceAttributes: config.ResourceAttributes, HTTPClient: config.HTTPClient})
 	if err != nil {
 		return nil, fmt.Errorf("axiom: %w", err)
 	}

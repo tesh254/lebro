@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ const (
 	// DefaultEndpoint is the standard OTLP/HTTP traces endpoint.
 	DefaultEndpoint      = "http://localhost:4318/v1/traces"
 	instrumentationScope = "github.com/tesh254/lebro/obsv/otlp"
+	maxExportAttempts    = 3
 )
 
 // Config configures an OTLP/HTTP exporter.
@@ -119,22 +121,47 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []obsv.Span) error {
 		return fmt.Errorf("otlp: marshal trace request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint.String(), bytes.NewReader(requestBody))
-	if err != nil {
-		return fmt.Errorf("otlp: create export request: %w", err)
-	}
-	req.Header = e.headers.Clone()
-	req.Header.Set("Content-Type", "application/x-protobuf")
-	req.Header.Set("Accept", "application/x-protobuf")
-
-	response, err := e.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("otlp: export traces: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	body, _ := io.ReadAll(io.LimitReader(response.Body, 4<<10))
-	if response.StatusCode/100 != 2 {
-		return fmt.Errorf("otlp: export traces: server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+	var body []byte
+	var response *http.Response
+	for attempt := 0; attempt < maxExportAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint.String(), bytes.NewReader(requestBody))
+		if err != nil {
+			return fmt.Errorf("otlp: create export request: %w", err)
+		}
+		req.Header = e.headers.Clone()
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/x-protobuf")
+		}
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/x-protobuf")
+		}
+		response, err = e.client.Do(req)
+		if err == nil {
+			body, err = io.ReadAll(io.LimitReader(response.Body, 4<<10))
+			closeErr := response.Body.Close()
+			if err != nil {
+				return fmt.Errorf("otlp: read export response: %w", err)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("otlp: close export response: %w", closeErr)
+			}
+			if response.StatusCode/100 == 2 {
+				break
+			}
+			if !retryableStatus(response.StatusCode) || attempt == maxExportAttempts-1 {
+				return fmt.Errorf("otlp: export traces: server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+			}
+			if err := waitRetry(ctx, response.Header.Get("Retry-After"), attempt); err != nil {
+				return err
+			}
+			continue
+		}
+		if attempt == maxExportAttempts-1 {
+			return fmt.Errorf("otlp: export traces: %w", err)
+		}
+		if err := waitRetry(ctx, "", attempt); err != nil {
+			return err
+		}
 	}
 	if len(body) == 0 {
 		return nil
@@ -147,6 +174,24 @@ func (e *Exporter) ExportSpans(ctx context.Context, spans []obsv.Span) error {
 		return fmt.Errorf("otlp: collector rejected %d span(s): %s", partial.GetRejectedSpans(), partial.GetErrorMessage())
 	}
 	return nil
+}
+
+func retryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable || status == http.StatusBadGateway || status == http.StatusGatewayTimeout
+}
+func waitRetry(ctx context.Context, retryAfter string, attempt int) error {
+	delay := time.Duration(attempt+1) * 100 * time.Millisecond
+	if seconds, err := strconv.Atoi(retryAfter); err == nil && seconds >= 0 {
+		delay = time.Duration(seconds) * time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func convertSpans(spans []obsv.Span) []*tracepb.Span {

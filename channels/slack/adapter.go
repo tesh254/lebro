@@ -168,6 +168,11 @@ func (*Adapter) WebhookResponse(_ *http.Request, body []byte) ([]byte, bool, err
 	return []byte(envelope.Challenge), true, nil
 }
 
+// WebhookAcknowledgement promptly acknowledges accepted Events API deliveries.
+func (*Adapter) WebhookAcknowledgement(_ *http.Request, _ []byte) ([]byte, string, error) {
+	return nil, "", nil
+}
+
 // Decode converts a verified Slack message event into the neutral channel
 // contract. Bot and subtype messages are ignored to prevent reply loops and
 // avoid treating message mutations as new user turns.
@@ -299,6 +304,7 @@ func parseConversationID(value string) (teamID, channelID, threadTS string, ok b
 }
 
 var (
-	_ channels.Adapter          = (*Adapter)(nil)
-	_ channels.WebhookResponder = (*Adapter)(nil)
+	_ channels.Adapter             = (*Adapter)(nil)
+	_ channels.WebhookResponder    = (*Adapter)(nil)
+	_ channels.WebhookAcknowledger = (*Adapter)(nil)
 )
