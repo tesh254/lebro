@@ -1,0 +1,25 @@
+obsv/langsmith/doc.go
+  s_5c0f3b18ea4c49::t_feebff6b93867d 1-6
+obsv/langsmith/exporter_test.go
+  s_5c0f3b18ea4c49::t_feebff6b93867d 1-13,20-23,30-32,36
+  s_5c0f3b18ea4c49::t_c30ec58f83342f 14-19,24-29,33-35
+obsv/langsmith/exporter.go
+  s_5c0f3b18ea4c49::t_c30ec58f83342f 22-23,25,29,35-37,39-41,43-45,47-49
+  s_5c0f3b18ea4c49::t_feebff6b93867d 1-21,24,26-28,30-34,38,42,46,50-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ee9bc2a12be3360c4597b196bdf368b3ee31df50",
+  "prompts": {},
+  "sessions": {
+    "s_5c0f3b18ea4c49": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a03fb6-5363-7550-ba3f-c9fed3aeb0a8",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
