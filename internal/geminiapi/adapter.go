@@ -42,9 +42,14 @@ type Model struct {
 var _ lebro.Model = (*Model)(nil)
 var _ lebro.StreamingModel = (*Model)(nil)
 
-// New creates a shared adapter safe for concurrent use.
-func New(config Config) *Model {
-	return &Model{client: config.Client, model: config.Model, provider: config.Provider}
+// New creates a shared adapter safe for concurrent use. It fails when the
+// client is missing so misuse surfaces at construction instead of panicking
+// on the first call.
+func New(config Config) (*Model, error) {
+	if config.Client == nil {
+		return nil, errors.New("lebro: genai client is required")
+	}
+	return &Model{client: config.Client, model: config.Model, provider: config.Provider}, nil
 }
 
 func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro.ModelResponse, error) {
@@ -122,7 +127,7 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 		case lebro.RoleTool:
 			name := callNames[message.ToolCallID]
 			if name == "" {
-				return "", nil, nil, m.invalid(errors.New("lebro: Gemini tool result has no matching tool call"))
+				return "", nil, nil, m.invalid(fmt.Errorf("lebro: %s tool result has no matching tool call", m.provider))
 			}
 			contents = append(contents, genai.NewContentFromParts([]*genai.Part{
 				{FunctionResponse: &genai.FunctionResponse{ID: message.ToolCallID, Name: name, Response: map[string]any{"result": message.Content}}},
@@ -252,7 +257,7 @@ func newGeminiReasoning(text string, details []geminiReasoningDetail) lebro.Mode
 
 func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateContentResponse) (lebro.ModelResponse, error) {
 	if result == nil || len(result.Candidates) == 0 {
-		return lebro.ModelResponse{}, m.malformed(errors.New("lebro: Gemini response has no candidates"))
+		return lebro.ModelResponse{}, m.malformed(fmt.Errorf("lebro: %s response has no candidates", m.provider))
 	}
 	candidate := result.Candidates[0]
 	message := lebro.Message{Role: lebro.RoleAssistant}
@@ -286,7 +291,7 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 	}
 	if request.OutputSchema != nil && len(calls) == 0 {
 		if !json.Valid([]byte(message.Content)) {
-			return lebro.ModelResponse{}, m.malformed(errors.New("lebro: Gemini structured output is not valid JSON"))
+			return lebro.ModelResponse{}, m.malformed(structuredOutputError(m.provider))
 		}
 		message.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(message.Content))
 	}
@@ -390,7 +395,21 @@ func (r *stream) send(delta lebro.StreamDelta) bool {
 	}
 }
 
+func (r *stream) malformed(err error) error {
+	return &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: r.provider, Message: err.Error(), Err: err}
+}
+
+// structuredOutputError reports structured output the backend returned as
+// unparseable JSON; both streaming and non-streaming paths use it so the
+// message stays identical.
+func structuredOutputError(provider string) error {
+	return fmt.Errorf("lebro: %s structured output is not valid JSON", provider)
+}
+
 func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence func(func(*genai.GenerateContentResponse, error) bool)) {
+	// Consumers that read to EOF without calling Close must not leak the
+	// stream context; cancel is idempotent so Close stays correct.
+	defer r.cancel()
 	defer close(r.values)
 	var text strings.Builder
 	failed := false
@@ -434,7 +453,7 @@ func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence f
 					hasToolCalls = true
 					args, err := json.Marshal(call.Args)
 					if err != nil {
-						r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: r.provider, Message: err.Error(), Err: err}})
+						r.send(lebro.StreamDelta{Err: r.malformed(err)})
 						failed = true
 						return false
 					}
@@ -453,7 +472,14 @@ func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence f
 	if hasToolCalls {
 		terminal.FinishReason = lebro.FinishReasonToolCalls
 	}
-	if request.OutputSchema != nil && json.Valid([]byte(text.String())) {
+	if request.OutputSchema != nil && !hasToolCalls {
+		if !json.Valid([]byte(text.String())) {
+			// Match the non-streaming path: a structured-output request that
+			// produced unparseable text fails loudly instead of delivering a
+			// terminal delta with the structured output silently missing.
+			r.send(lebro.StreamDelta{Err: r.malformed(structuredOutputError(r.provider))})
+			return
+		}
 		terminal.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(text.String()))
 	}
 	r.send(terminal)

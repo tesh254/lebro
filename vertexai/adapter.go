@@ -70,5 +70,9 @@ func New(config Config) (*Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lebro: vertexai: %w", err)
 	}
-	return &Model{Model: geminiapi.New(geminiapi.Config{Provider: providerName, Client: client, Model: config.Model})}, nil
+	shared, err := geminiapi.New(geminiapi.Config{Provider: providerName, Client: client, Model: config.Model})
+	if err != nil {
+		return nil, err
+	}
+	return &Model{Model: shared}, nil
 }

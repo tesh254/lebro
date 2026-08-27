@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,13 +28,23 @@ func newClientModel(t *testing.T, provider, model string, handler http.HandlerFu
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(Config{Provider: provider, Client: client, Model: model}), server
+	shared, err := New(Config{Provider: provider, Client: client, Model: model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return shared, server
 }
 
-func TestNewReturnsAdapter(t *testing.T) {
-	m := New(Config{Provider: "gemini", Client: nil, Model: "m"})
-	if m == nil || m.model != "m" || m.provider != "gemini" {
-		t.Fatalf("New = %#v", m)
+func TestNewValidatesClient(t *testing.T) {
+	if _, err := New(Config{Provider: "gemini", Client: nil, Model: "m"}); err == nil {
+		t.Fatal("New() error = nil, want nil-client error")
+	}
+	shared, err := New(Config{Provider: "gemini", Client: &genai.Client{}, Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared.model != "m" || shared.provider != "gemini" {
+		t.Fatalf("New = %#v", shared)
 	}
 }
 
@@ -104,7 +115,7 @@ func TestGenerateMapsNotFoundAndServerErrors(t *testing.T) {
 			m, server := newClientModel(t, "gemini", "m", func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.code)
-				_, _ = w.Write([]byte(`{"error":{"code":` + itoa(tc.code) + `,"status":"ERR","message":"x"}}`))
+				_, _ = w.Write([]byte(`{"error":{"code":` + strconv.Itoa(tc.code) + `,"status":"ERR","message":"x"}}`))
 			})
 			defer server.Close()
 			_, err := m.Generate(t.Context(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
@@ -267,6 +278,41 @@ func TestStreamStructuredOutputTerminal(t *testing.T) {
 	}
 }
 
+func TestStreamStructuredOutputInvalidJSONFailsLoudly(t *testing.T) {
+	m, server := newClientModel(t, "vertexai", "m", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"not json\"}]},\"contentRating\":{}}]}\n\n"))
+		w.(http.Flusher).Flush()
+	})
+	defer server.Close()
+	reader, err := m.Stream(t.Context(), lebro.ModelRequest{
+		OutputSchema: &lebro.ModelOutputSchema{Schema: json.RawMessage(`{"type":"object"}`)},
+		Messages:     []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	var streamErr error
+	for {
+		delta, err := reader.Next()
+		if err != nil {
+			break
+		}
+		if delta.Err != nil {
+			streamErr = delta.Err
+			break
+		}
+	}
+	var modelErr *lebro.ModelError
+	if !errors.As(streamErr, &modelErr) || modelErr.Kind != lebro.ModelErrorMalformedResponse {
+		t.Fatalf("stream error = %#v, want malformed", streamErr)
+	}
+	if modelErr.Provider != "vertexai" || modelErr.Message != "lebro: vertexai structured output is not valid JSON" {
+		t.Fatalf("error = %#v", modelErr)
+	}
+}
+
 func TestStreamToolCallTerminal(t *testing.T) {
 	m, server := newClientModel(t, "gemini", "m", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -357,18 +403,4 @@ func TestGenerateMapsUnknownError(t *testing.T) {
 	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorUnavailable {
 		t.Fatalf("error = %#v, want unavailable", err)
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }
