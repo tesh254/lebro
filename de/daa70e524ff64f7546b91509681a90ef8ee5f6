@@ -1,0 +1,37 @@
+internal/geminiapi/adapter.go
+  s_3b8d1d1ef7d424::t_379ebaf266e9e3 45-52
+  s_3b8d1d1ef7d424::t_b797626e13af3c 480
+  s_3b8d1d1ef7d424::t_bb8d38acd72890 398-408
+  s_3b8d1d1ef7d424::t_1f5704283e7d61 260
+  s_3b8d1d1ef7d424::t_2a67a31e343908 294
+  s_3b8d1d1ef7d424::t_8a70c9ef22fdf0 456
+  s_3b8d1d1ef7d424::t_2d7d0382c2064d 475-479,481-482
+  s_3b8d1d1ef7d424::t_e0d8bda803ee80 410-412
+  s_3b8d1d1ef7d424::t_39814a14dab5ba 130
+gemini/adapter.go
+  s_3b8d1d1ef7d424::t_30462c5d3cc2bd 48-52
+vertexai/adapter.go
+  s_3b8d1d1ef7d424::t_2fcf4579234819 73-77
+internal/geminiapi/roundtrip_test.go
+  s_3b8d1d1ef7d424::t_ca32e8f8cf0cc0 9
+  s_3b8d1d1ef7d424::t_33c63bf8c24833 118
+  s_3b8d1d1ef7d424::t_a13d624d49fd6b 281-315
+  s_3b8d1d1ef7d424::t_6c1c21aea28352 31-35
+  s_3b8d1d1ef7d424::t_8bbc58c6f64fc4 38-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "dedaa70e524ff64f7546b91509681a90ef8ee5f6",
+  "prompts": {},
+  "sessions": {
+    "s_3b8d1d1ef7d424": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fbfeba201ffeiVZWXHenPxmW3B",
+        "model": "glm-5.3"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
