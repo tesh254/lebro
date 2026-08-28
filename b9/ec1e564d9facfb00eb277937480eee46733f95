@@ -1,0 +1,93 @@
+examples/custom-store/main.go
+  s_85fbad58bde38c::t_780e37363621cc 366-371,373,375-381,383-384,390-399,401-402,405-421
+  s_85fbad58bde38c::t_9acfd0a7bb4781 33-34
+  s_85fbad58bde38c::t_567a1ec8a63ed7 1-32,35-365,372,374,382,385-389,400,403-404,422-433
+internal/runtime/runtime_store_bridge.go
+  s_85fbad58bde38c::t_fa61a14df2fb03 1-250,252-253,255-376
+  s_85fbad58bde38c::t_963130bede9824 251,254
+  s_85fbad58bde38c::t_be0837cd97323f 377
+examples/custom-store/main_test.go
+  s_85fbad58bde38c::t_7a7b7ee6163d8f 1-57
+internal/testkit/contract_runtime_store.go
+  s_85fbad58bde38c::t_be0837cd97323f 472
+  s_85fbad58bde38c::t_0d0945fa891689 1-446,448-449,451-471
+  s_85fbad58bde38c::t_649e6c01a87320 447,450
+internal/runtime/agent.go
+  s_85fbad58bde38c::t_38f0a4032e5415 1696-1697
+  s_85fbad58bde38c::t_283c6dd829953f 356
+  s_85fbad58bde38c::t_0b2fa03663e7fb 287
+  s_85fbad58bde38c::t_c17409c787ffcc 1766-1770
+  s_85fbad58bde38c::t_3203a26647597d 355,357-365,369-375,378-381,404-405
+  s_85fbad58bde38c::t_73555fcf5a6f9c 366-368
+  s_85fbad58bde38c::t_3ab66d8e4cd67f 246-253
+  s_85fbad58bde38c::t_81001f52442e44 1702-1704
+CHANGELOG.md
+  s_85fbad58bde38c::t_c62d27c6d5c126 9-26
+internal/runtime/runtime_store.go
+  s_85fbad58bde38c::t_be0837cd97323f 213-216,218-229,314
+  s_85fbad58bde38c::t_4a895a4b0b53cd 232,241
+  s_85fbad58bde38c::t_7e211a4ad65da4 1-212,217,230-231,233-240,242-313
+internal/testkit/contract_runtime_store_test.go
+  s_85fbad58bde38c::t_a2d5fe54ba6091 17
+  s_85fbad58bde38c::t_7e2d4044ab0bc3 1-16
+docs/custom-storage.md
+  s_85fbad58bde38c::t_579b5bd12ebab5 1-178
+internal/runtime/memory_storage.go
+  s_85fbad58bde38c::t_be0837cd97323f 46-47
+  s_85fbad58bde38c::t_2385c9551b91a9 45,48-66
+internal/runtime/sqlite_storage.go
+  s_85fbad58bde38c::t_c69f8f567bc74d 355-376
+internal/runtime/postgres_storage.go
+  s_85fbad58bde38c::t_cc0df61bf0ef82 366-387
+README.md
+  s_85fbad58bde38c::t_79492d552f2bdc 118
+  s_85fbad58bde38c::t_3dbaee4692368e 2031-2039
+internal/runtime/postgres_contract_test.go
+  s_85fbad58bde38c::t_31874a99af7f35 49-67
+internal/runtime/contract_suite_test.go
+  s_85fbad58bde38c::t_c7bc183318314f 110-120,130-131
+  s_85fbad58bde38c::t_cf80b724e922d3 121-129
+api_types.go
+  s_85fbad58bde38c::t_92c1c2539dbe58 197-203
+  s_85fbad58bde38c::t_51a3a9e1b1894f 487-489
+  s_85fbad58bde38c::t_052e328e1b1171 491
+  s_85fbad58bde38c::t_dc19b1e2042f87 194-196
+  s_85fbad58bde38c::t_f58d93a2be5e43 508
+  s_85fbad58bde38c::t_0994d5a6220b23 490,492-500
+internal/runtime/runtime_store_test.go
+  s_85fbad58bde38c::t_5abc23229d141f 572
+  s_85fbad58bde38c::t_02df88c4fd2fb8 171
+  s_85fbad58bde38c::t_811cde35b858b0 796,798-862,864-865
+  s_85fbad58bde38c::t_cfc8c548f05ed8 214
+  s_85fbad58bde38c::t_38ccc137cf8ae4 148-149,155
+  s_85fbad58bde38c::t_25595bd75bc087 180-182
+  s_85fbad58bde38c::t_e2fb12e2903483 172
+  s_85fbad58bde38c::t_08f311188fbf73 867-915
+  s_85fbad58bde38c::t_23d1b38f5ce19a 916
+  s_85fbad58bde38c::t_ee73763b53d9f7 154,157-159
+  s_85fbad58bde38c::t_495123ca1d352b 477-571,573-723,727-791,794-795
+  s_85fbad58bde38c::t_379ecd9678843a 1-9,11-147,150-153,156,160-170,173-179,183-213,215-254,257-335,340-440,442-443,446-475
+  s_85fbad58bde38c::t_e148e52754d6c1 917-976
+  s_85fbad58bde38c::t_7f5d9ce1d4420d 977
+  s_85fbad58bde38c::t_529baf3b24394f 792-793
+  s_85fbad58bde38c::t_5f43433209d6a8 724-726
+  s_85fbad58bde38c::t_4cfd94b8f3df6d 863
+  s_85fbad58bde38c::t_08d4688aa9be32 10,255-256,336-339,441,444-445,476
+  s_85fbad58bde38c::t_6ee09250a6dd52 797,866
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b9ec1e564d9facfb00eb277937480eee46733f95",
+  "prompts": {},
+  "sessions": {
+    "s_85fbad58bde38c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_fba693477ffeJhZ60yHym6zQFg",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
