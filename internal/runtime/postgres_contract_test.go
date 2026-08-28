@@ -46,6 +46,25 @@ func TestPostgresStorePassesStorageContract(t *testing.T) {
 		}
 		return store
 	})
+
+	testkit.RuntimeStoreContractSuite(t, func(t *testing.T) lebro.RuntimeStore {
+		t.Helper()
+		ctx := context.Background()
+		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "working_memory_facts", "run_events", "model_attempts", "tool_executions", "schema_migrations"} {
+			if _, err := cleanupDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
+				t.Fatalf("drop %s: %v", table, err)
+			}
+		}
+		store, err := lebro.NewPostgresStore(dsn, lebro.PostgresStoreOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		if err := store.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return store
+	})
 }
 
 func TestPostgresStorePassesWorkingMemoryContract(t *testing.T) {

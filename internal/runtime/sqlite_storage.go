@@ -352,6 +352,28 @@ func (s *SQLiteStore) Transaction(ctx context.Context, fn func(context.Context, 
 	return nil
 }
 
+var (
+	_ RuntimeStore       = (*SQLiteStore)(nil)
+	_ TranscriptStore    = (*SQLiteStore)(nil)
+	_ WorkingMemoryStore = (*SQLiteStore)(nil)
+	_ WorkflowStateStore = (*SQLiteStore)(nil)
+	_ ScheduleStore      = (*SQLiteStore)(nil)
+	_ ObservabilityStore = (*SQLiteStore)(nil)
+	_ TransactionalStore = (*SQLiteStore)(nil)
+)
+
+// Capabilities reports full support: SQLiteStore implements every repository
+// capability and transactional writes.
+func (s *SQLiteStore) Capabilities() StoreCapabilities { return AllStoreCapabilities() }
+
+// InTransaction implements TransactionalStore by running fn against the
+// store's transaction boundary.
+func (s *SQLiteStore) InTransaction(ctx context.Context, fn func(context.Context, RuntimeStore) error) error {
+	return s.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		return fn(ctx, newRuntimeStoreView(s.Capabilities(), repos))
+	})
+}
+
 func (s *SQLiteStore) Threads() ThreadRepository           { return &sqliteRepositories{q: s.db} }
 func (s *SQLiteStore) Messages() MessageRepository         { return &sqliteRepositories{q: s.db} }
 func (s *SQLiteStore) WorkflowRuns() WorkflowRunRepository { return &sqliteRepositories{q: s.db} }

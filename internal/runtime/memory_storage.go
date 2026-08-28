@@ -42,6 +42,28 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{state: newMemoryState()}
 }
 
+var (
+	_ RuntimeStore       = (*MemoryStore)(nil)
+	_ TranscriptStore    = (*MemoryStore)(nil)
+	_ WorkingMemoryStore = (*MemoryStore)(nil)
+	_ WorkflowStateStore = (*MemoryStore)(nil)
+	_ ScheduleStore      = (*MemoryStore)(nil)
+	_ ObservabilityStore = (*MemoryStore)(nil)
+	_ TransactionalStore = (*MemoryStore)(nil)
+)
+
+// Capabilities reports full support: MemoryStore implements every repository
+// capability and transactional writes.
+func (s *MemoryStore) Capabilities() StoreCapabilities { return AllStoreCapabilities() }
+
+// InTransaction implements TransactionalStore by running fn against the
+// store's transaction boundary.
+func (s *MemoryStore) InTransaction(ctx context.Context, fn func(context.Context, RuntimeStore) error) error {
+	return s.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		return fn(ctx, newRuntimeStoreView(s.Capabilities(), repos))
+	})
+}
+
 func newMemoryState() memoryState {
 	return memoryState{
 		threads:       map[ThreadID]ThreadRecord{},

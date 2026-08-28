@@ -191,6 +191,16 @@ type (
 	Store                       = runtime.Store
 	ThreadStore                 = runtime.ThreadStore
 	WorkflowRunStore            = runtime.WorkflowRunStore
+	RuntimeStore                = runtime.RuntimeStore
+	StoreCapabilities           = runtime.StoreCapabilities
+	StoreCapability             = runtime.StoreCapability
+	TranscriptStore             = runtime.TranscriptStore
+	WorkingMemoryStore          = runtime.WorkingMemoryStore
+	WorkflowStateStore          = runtime.WorkflowStateStore
+	ScheduleStore               = runtime.ScheduleStore
+	ObservabilityStore          = runtime.ObservabilityStore
+	TransactionalStore          = runtime.TransactionalStore
+	StoreCapabilityError        = runtime.StoreCapabilityError
 	MemoryStore                 = runtime.MemoryStore
 	SQLiteStore                 = runtime.SQLiteStore
 	PostgresStore               = runtime.PostgresStore
@@ -474,10 +484,20 @@ const (
 	ChunkMetadataSource     = runtime.ChunkMetadataSource
 	ChunkMetadataChunkIndex = runtime.ChunkMetadataChunkIndex
 
-	DefaultChunkSize           = runtime.DefaultChunkSize
-	DefaultEmbeddingBatchSize  = runtime.DefaultEmbeddingBatchSize
-	DefaultRetrievalTopK       = runtime.DefaultRetrievalTopK
-	DefaultRerankCandidateTopK = runtime.DefaultRerankCandidateTopK
+	DefaultChunkSize            = runtime.DefaultChunkSize
+	DefaultEmbeddingBatchSize   = runtime.DefaultEmbeddingBatchSize
+	DefaultRetrievalTopK        = runtime.DefaultRetrievalTopK
+	DefaultRerankCandidateTopK  = runtime.DefaultRerankCandidateTopK
+	RuntimeStoreContractVersion = runtime.RuntimeStoreContractVersion
+)
+
+const (
+	StoreCapabilityTranscript    = runtime.StoreCapabilityTranscript
+	StoreCapabilityWorkingMemory = runtime.StoreCapabilityWorkingMemory
+	StoreCapabilityWorkflowState = runtime.StoreCapabilityWorkflowState
+	StoreCapabilitySchedules     = runtime.StoreCapabilitySchedules
+	StoreCapabilityObservability = runtime.StoreCapabilityObservability
+	StoreCapabilityTransactions  = runtime.StoreCapabilityTransactions
 )
 
 var (
@@ -485,6 +505,7 @@ var (
 	ErrNotFound              = runtime.ErrNotFound
 	ErrConflict              = runtime.ErrConflict
 	ErrInvalidPage           = runtime.ErrInvalidPage
+	ErrCapabilityMissing     = runtime.ErrCapabilityMissing
 	ErrSchedulerRunning      = runtime.ErrSchedulerRunning
 	ErrProviderNotFound      = runtime.ErrProviderNotFound
 	ErrProviderAlreadyExists = runtime.ErrProviderAlreadyExists

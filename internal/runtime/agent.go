@@ -243,6 +243,14 @@ type AgentConfig struct {
 	// leave no messages, so the thread's message sequence stays valid. When
 	// nil, agent behavior is unchanged.
 	Store Store
+	// RuntimeStore optionally binds agent runs to a capability-based storage
+	// adapter the application owns, without Lebro's schema, migrations, or
+	// full built-in Store. Exactly one of Store and RuntimeStore may be set.
+	// Required capabilities are validated up front: a Memory configuration
+	// needs the working-memory capability, and a run with a ThreadID needs the
+	// transcript capability, with failures reported as a *StoreCapabilityError
+	// before any model call. See RuntimeStore for the contract.
+	RuntimeStore RuntimeStore
 	// Policy optionally authorizes the run at start and every model-requested
 	// tool call against the caller Identity carried on the run context (see
 	// WithIdentity). A denied run or tool call fails with an
@@ -276,6 +284,7 @@ type Agent struct {
 	clock                Clock
 	idSource             IDSource
 	store                Store
+	storeCaps            StoreCapabilities
 	policy               Policy
 	processors           ProcessorPipeline
 	instructionsResolver InstructionsResolver
@@ -343,9 +352,33 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	if idSource == nil {
 		idSource = &sequentialIDSource{}
 	}
+	store := config.Store
+	var storeCaps StoreCapabilities
+	if config.RuntimeStore != nil && !isNilInterface(config.RuntimeStore) {
+		if store != nil && !isNilInterface(store) {
+			return nil, errors.New("lebro: agent store and runtime store are mutually exclusive")
+		}
+		bridged, err := bridgeRuntimeStore(config.RuntimeStore)
+		if err != nil {
+			return nil, err
+		}
+		store = bridged
+		// bridgeRuntimeStore validated the advertisement, so Capabilities is
+		// available and consistent on both bridge variants.
+		storeCaps = store.(RuntimeStore).Capabilities()
+	} else {
+		caps, err := storeCapabilitiesOf(store)
+		if err != nil {
+			return nil, err
+		}
+		storeCaps = caps
+	}
 	processors := config.Processors
 	if config.Memory != nil {
-		memory, err := newMemoryProcessor(config.Store, config.Memory, clock)
+		if err := requireCapability(storeCaps, StoreCapabilityWorkingMemory, "memory processor"); err != nil {
+			return nil, err
+		}
+		memory, err := newMemoryProcessor(store, config.Memory, clock)
 		if err != nil {
 			return nil, err
 		}
@@ -368,7 +401,8 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		listener:             config.Listener,
 		clock:                clock,
 		idSource:             idSource,
-		store:                config.Store,
+		store:                store,
+		storeCaps:            storeCaps,
 		policy:               config.Policy,
 		processors:           processors,
 		instructionsResolver: config.InstructionsResolver,
@@ -1659,10 +1693,14 @@ func cloneToolDefinitions(definitions []ToolDefinition) []ToolDefinition {
 // from the store and prepends it to input.Messages. When the store is nil or
 // ThreadID is empty, no persistence is configured and the input is unchanged.
 // A missing thread (ErrNotFound) is treated as an empty history so the first
-// run against a new thread starts cleanly.
+// run against a new thread starts cleanly. A store without the transcript
+// capability fails with a *StoreCapabilityError before the run starts.
 func (a *Agent) loadPriorMessages(ctx context.Context, input *RunInput) (int, error) {
 	if a.store == nil || input.ThreadID == "" {
 		return 0, nil
+	}
+	if err := requireCapability(a.storeCaps, StoreCapabilityTranscript, "thread persistence"); err != nil {
+		return 0, err
 	}
 	page, err := a.store.Messages().ListMessages(ctx, input.ThreadID, PageRequest{Limit: int(^uint(0) >> 1)})
 	if err != nil {
@@ -1724,6 +1762,11 @@ func (a *Agent) newMessageRecords(threadID ThreadID, runID RunID, transcript []M
 func (a *Agent) persistRunRecords(ctx context.Context, threadID ThreadID, runID RunID, transcript []Message, loadedCount int, memoryRecalled bool, journal *runJournal, annotations Metadata) error {
 	if a.store == nil || isNilInterface(a.store) {
 		return nil
+	}
+	if threadID != "" {
+		if err := requireCapability(a.storeCaps, StoreCapabilityTranscript, "thread persistence"); err != nil {
+			return err
+		}
 	}
 	records := a.newMessageRecords(threadID, runID, transcript, loadedCount, memoryRecalled, annotations)
 	for i := len(records) - 1; threadID != "" && i >= 0; i-- {

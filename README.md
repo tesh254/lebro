@@ -115,6 +115,7 @@ their selected command. Examples marked **external** need the named service.
 | In-memory storage | [Storage](#file-backed-sqlite-storage) | [`storage-memory`](examples/storage-memory): `go run ./examples/storage-memory` |
 | SQLite storage | [SQLite](#file-backed-sqlite-storage) | [`storage-sqlite`](examples/storage-sqlite): `go run ./examples/storage-sqlite` |
 | Postgres storage | [Postgres](#postgresql-storage) | [`storage-postgres`](examples/storage-postgres): `go run ./examples/storage-postgres` |
+| Custom storage adapter (capability-based) | [Custom storage](docs/custom-storage.md) | [`custom-store`](examples/custom-store): `go run ./examples/custom-store` |
 | Durable run timeline (attempts, tools, events) | [Run records](docs/run-records.md) | [`run-timeline`](examples/run-timeline): `go run ./examples/run-timeline` |
 | In-memory vector search | [Vector storage](#vector-storage) | [`vector-search`](examples/vector-search): `go run ./examples/vector-search` |
 | Qdrant vector search | [Vector storage](#vector-storage) | [`vector-qdrant`](examples/vector-qdrant): `go run ./examples/vector-qdrant` **external: Qdrant** |
@@ -2025,6 +2026,15 @@ database, closes it, reopens it, and reads the records back:
 
 ```sh
 go run ./examples/storage-sqlite
+```
+
+The custom-store example attaches a developer-owned, capability-based storage
+adapter — its own key layout, no Lebro migrations — to an agent and persists
+and reloads a multi-turn thread; see [the custom storage
+guide](docs/custom-storage.md):
+
+```sh
+go run ./examples/custom-store
 ```
 
 The model-fixtures example runs a deterministic tool-using model conversation,

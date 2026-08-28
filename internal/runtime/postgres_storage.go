@@ -363,6 +363,28 @@ func (s *PostgresStore) Transaction(ctx context.Context, fn func(context.Context
 	return nil
 }
 
+var (
+	_ RuntimeStore       = (*PostgresStore)(nil)
+	_ TranscriptStore    = (*PostgresStore)(nil)
+	_ WorkingMemoryStore = (*PostgresStore)(nil)
+	_ WorkflowStateStore = (*PostgresStore)(nil)
+	_ ScheduleStore      = (*PostgresStore)(nil)
+	_ ObservabilityStore = (*PostgresStore)(nil)
+	_ TransactionalStore = (*PostgresStore)(nil)
+)
+
+// Capabilities reports full support: PostgresStore implements every repository
+// capability and transactional writes.
+func (s *PostgresStore) Capabilities() StoreCapabilities { return AllStoreCapabilities() }
+
+// InTransaction implements TransactionalStore by running fn against the
+// store's transaction boundary.
+func (s *PostgresStore) InTransaction(ctx context.Context, fn func(context.Context, RuntimeStore) error) error {
+	return s.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
+		return fn(ctx, newRuntimeStoreView(s.Capabilities(), repos))
+	})
+}
+
 func (s *PostgresStore) Threads() ThreadRepository           { return &postgresRepositories{q: s.db} }
 func (s *PostgresStore) Messages() MessageRepository         { return &postgresRepositories{q: s.db} }
 func (s *PostgresStore) WorkflowRuns() WorkflowRunRepository { return &postgresRepositories{q: s.db} }
