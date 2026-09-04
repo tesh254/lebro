@@ -1,0 +1,113 @@
+README.md
+  s_c929cddf0b1a80::t_2d4a69053093af 119
+internal/runtime/network.go
+  s_c929cddf0b1a80::t_6f61cd712ef5e8 182
+memory.go
+  s_c929cddf0b1a80::t_77fc17de84fbf3 8-11
+internal/runtime/storage_guard.go
+  s_c929cddf0b1a80::t_ece07ea46625ad 194-196,204-211,213-215,217,220-222,228-233,235-237,318-323,395-400
+  s_c929cddf0b1a80::t_2fc2490736f2c3 6,9-18,153,157,324,328,347,401,405,424
+  s_c929cddf0b1a80::t_076712a189588f 87,97,107,125,133,141,245-254,258,262,276,290,298,305,359,363,367,371-373,375,382,439,443,447,451,455,459,466
+  s_c929cddf0b1a80::t_6f61cd712ef5e8 154-156,193,197,212,216,223,227,234,238,317,325-327,343-345,394,402-404,420-422
+  s_c929cddf0b1a80::t_80ed820cb226aa 255-257,259-261,355,360-362,364-366,368-370,438,440,444-446,448-450,452-454
+  s_c929cddf0b1a80::t_c278c9e3d50942 19-28,342,346,419,423
+internal/runtime/schedule.go
+  s_c929cddf0b1a80::t_c6990c08ce46a1 64-65,91-92,107-108
+api_types.go
+  s_c929cddf0b1a80::t_ea13c70a3ea5b2 509-510
+  ai_agent 156
+internal/runtime/agent_test.go
+  s_c929cddf0b1a80::t_056e1f7fe719bc 123
+internal/runtime/postgres_storage.go
+  s_c929cddf0b1a80::t_8e32e97648d3c2 100,854-863,1012-1019
+  s_c929cddf0b1a80::t_c0167e6fae8ebc 299-304,789-790,794-795,810,821,840,951-952,955-956,968,979,998,1077-1078,1095,1201
+  s_c929cddf0b1a80::t_f282a26c333dfa 1269,1314
+  s_c929cddf0b1a80::t_346146e602c0e0 28-29,40-43,54-56,61-68,83-99,101-104,107-109
+internal/runtime/memory_storage.go
+  s_c929cddf0b1a80::t_bc1f5965aece1d 687-692,806-809
+internal/runtime/sqlite_storage.go
+  ai_agent 817-824,977-983
+  s_c929cddf0b1a80::t_030d5c9d1ffd43 273-278,753-754,758-759,774,785,805,915-916,919-920,932,943,963,1051-1052,1069,1207,1290,1343
+internal/runtime/memory_processor.go
+  s_c929cddf0b1a80::t_c6990c08ce46a1 86-99
+internal/runtime/types.go
+  s_c929cddf0b1a80::t_77fc17de84fbf3 102-104
+  s_c929cddf0b1a80::t_fd0016dfebac3f 100-101,126-128
+storetest/storetest.go
+  s_c929cddf0b1a80::t_6734426971bdd9 1-26
+internal/runtime/postgres_contract_test.go
+  s_c929cddf0b1a80::t_21e7a621047020 10
+  s_c929cddf0b1a80::t_6f49c7cfa37e02 24-26,29-31,34-36,39-41,44-46,48-53,55-60,62-64,66-71
+  s_c929cddf0b1a80::t_b6fe16e4487218 6,16-23,27-28,32-33,37-38,42-43,47,54,61,65,72
+internal/runtime/agent.go
+  s_c929cddf0b1a80::t_77fc17de84fbf3 353,441,454,693-694,772,789,857,891-895
+  s_c929cddf0b1a80::t_6f61cd712ef5e8 436-438,695,766-768
+internal/runtime/run_record.go
+  s_c929cddf0b1a80::t_dd11319429d647 5,7,184-187,192-199,201-204
+  s_c929cddf0b1a80::t_ea13c70a3ea5b2 188-191
+  s_c929cddf0b1a80::t_8e32e97648d3c2 200
+  s_c929cddf0b1a80::t_c6990c08ce46a1 221-241
+internal/runtime/workflow_test.go
+  s_c929cddf0b1a80::t_056e1f7fe719bc 568-569,877-878
+internal/runtime/authz.go
+  s_c929cddf0b1a80::t_2fc2490736f2c3 64,68-81
+authz.go
+  s_c929cddf0b1a80::t_2fc2490736f2c3 17-24
+httpapi/server_test.go
+  s_c929cddf0b1a80::t_3584c9e730bef3 36-52
+internal/runtime/scheduler.go
+  s_c929cddf0b1a80::t_334824a5f2bbf3 42,47-51,343-345
+  s_c929cddf0b1a80::t_8c94f5c8e2435b 441-444
+  s_c929cddf0b1a80::t_bc1f5965aece1d 369
+  s_c929cddf0b1a80::t_c6990c08ce46a1 43-46,67,88-109,121,132-133
+httpapi/handlers.go
+  s_c929cddf0b1a80::t_cc9e3f2c0a2001 102-103,108,125-126,141,216
+docs/migrations.md
+  s_c929cddf0b1a80::t_2d4a69053093af 29-47
+examples/custom-postgres-runtime-store/main.go
+  s_c929cddf0b1a80::t_7cdb3267b61635 1-58
+internal/runtime/run_record_test.go
+  s_c929cddf0b1a80::t_056e1f7fe719bc 625-626
+internal/runtime/runtime_scope_test.go
+  s_c929cddf0b1a80::t_6f49c7cfa37e02 35-37,48-50,52-54
+  s_c929cddf0b1a80::t_9b969e5ff73c82 62-64,66-71,73-78,84-86,88-90
+  s_c929cddf0b1a80::t_3584c9e730bef3 1-34,38-47,51,55-58
+  s_c929cddf0b1a80::t_037a61cc0e96bb 59-61,65,72,79-83,87,91
+examples/agent-loop/main_test.go
+  s_c929cddf0b1a80::t_056e1f7fe719bc 21
+observability.go
+  s_c929cddf0b1a80::t_77fc17de84fbf3 14-16
+httpapi/server.go
+  ai_agent 50
+  s_c929cddf0b1a80::t_cc9e3f2c0a2001 39-43,51-52,77,82-106
+internal/runtime/workflow.go
+  s_c929cddf0b1a80::t_dd11319429d647 897-898,909,952-956
+  s_c929cddf0b1a80::t_bc1f5965aece1d 1484,1548,1739,1970-1971
+  s_c929cddf0b1a80::t_f18de47c3cbfa1 509-510,680,899-908
+  s_c929cddf0b1a80::t_c6990c08ce46a1 511-515,675-679,701,733-755,762,778-779
+examples/morning-digest/main_test.go
+  s_c929cddf0b1a80::t_e4cb7b98c9ce6c 19
+internal/runtime/postgres_schema_test.go
+  s_c929cddf0b1a80::t_3584c9e730bef3 1-6,10-11,15-16
+  s_c929cddf0b1a80::t_6f49c7cfa37e02 7-9,12-14
+docs/custom-storage.md
+  s_c929cddf0b1a80::t_2d4a69053093af 127-163
+internal/runtime/storage.go
+  s_c929cddf0b1a80::t_c6990c08ce46a1 35-46,99-100,137-138,355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "848d39e4f99bce168afbda85fe4ce8a34c7ea84a",
+  "prompts": {},
+  "sessions": {
+    "s_c929cddf0b1a80": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a06ce8-7f0e-7e60-8ca5-d16fbdeb0c3b",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
