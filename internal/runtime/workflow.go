@@ -914,6 +914,9 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 		if _, err := w.store.WorkflowRuns().GetWorkflowRun(ctx, runID); err == nil {
 			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrRunIDAlreadyExists}
 		} else if !errors.Is(err, ErrNotFound) {
+			if ctx.Err() != nil {
+				return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorCancelled, Err: ctx.Err()}
+			}
 			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: check supplied workflow run ID: %w", err)}
 		}
 	}

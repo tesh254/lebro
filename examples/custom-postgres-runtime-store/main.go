@@ -42,9 +42,11 @@ func organizationScope(organizationID, userID string) lebro.RuntimeScope {
 
 // postgresRuntimeStore shows the complete capability shape. The repositories
 // below are deliberately injected: a production constructor supplies SQL
-// implementations that issue schema-qualified queries using one *sql.Tx per
-// InTransaction callback. Keeping those application repositories behind this
-// adapter lets Lebro validate the capability contract at startup.
+// implementations that issue schema-qualified queries. This adapter omits the
+// Transactions capability, so Lebro performs coupled writes sequentially and
+// preserves any writes that completed before a later failure. Keeping those
+// application repositories behind this adapter lets Lebro validate the
+// capability contract at startup.
 type postgresRuntimeStore struct {
 	threads   lebro.ThreadRepository
 	messages  lebro.MessageRepository

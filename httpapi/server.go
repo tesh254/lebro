@@ -94,7 +94,7 @@ func NewServerE(config ServerConfig) (*Server, error) {
 	} else if config.RuntimeStore != nil {
 		if !config.RuntimeStore.Capabilities().Transcript {
 			server.configErr = &lebro.StoreCapabilityError{Capability: lebro.StoreCapabilityTranscript, Feature: "http thread routes", Reason: "the attached storage adapter does not advertise it"}
-		} else if transcript, ok := config.RuntimeStore.(lebro.TranscriptStore); ok && transcript != nil && !isNil(transcript.Threads()) && !isNil(transcript.Messages()) {
+		} else if transcript, ok := config.RuntimeStore.(lebro.TranscriptStore); ok && !isNil(transcript) && !isNil(transcript.Threads()) && !isNil(transcript.Messages()) {
 			server.transcript = transcript
 		} else {
 			server.configErr = &lebro.StoreCapabilityError{Capability: lebro.StoreCapabilityTranscript, Feature: "http thread routes", Reason: "the adapter returned a nil transcript repository"}
@@ -202,9 +202,14 @@ func (s *Server) handlerBuilt() bool { return s.handler != nil }
 func (s *Server) Handler() http.Handler {
 	s.handlerOnce.Do(func() {
 		if s.configErr != nil {
-			built := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				writeError(w, r, ErrorCodeInvalidRequest)
+			var built http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, r, ErrorCodeInternal)
 			})
+			for i := len(s.config.Middleware) - 1; i >= 0; i-- {
+				if s.config.Middleware[i] != nil {
+					built = s.config.Middleware[i](built)
+				}
+			}
 			s.mu.Lock()
 			s.handler = built
 			s.mu.Unlock()

@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/tesh254/lebro"
@@ -175,7 +176,8 @@ func (s *ownStore) ListMessages(ctx context.Context, threadID lebro.ThreadID, pa
 	keys := append([]string(nil), s.messageOrder[threadID]...)
 	start := 0
 	if page.Cursor != "" {
-		if _, err := fmt.Sscanf(page.Cursor, "%d", &start); err != nil || start < 0 {
+		var err error
+		if start, err = strconv.Atoi(page.Cursor); err != nil || start < 0 {
 			return lebro.Page[lebro.MessageRecord]{}, lebro.ErrInvalidPage
 		}
 	}
@@ -270,7 +272,8 @@ func (s *ownStore) ListWorkingMemoryFacts(ctx context.Context, scope lebro.Worki
 	}
 	start := 0
 	if page.Cursor != "" {
-		if _, err := fmt.Sscanf(page.Cursor, "%d", &start); err != nil || start < 0 {
+		var err error
+		if start, err = strconv.Atoi(page.Cursor); err != nil || start < 0 {
 			return lebro.Page[lebro.WorkingMemoryFact]{}, lebro.ErrInvalidPage
 		}
 	}

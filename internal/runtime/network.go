@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -134,6 +135,8 @@ type Network struct {
 	clock       Clock
 	idSource    IDSource
 	listener    RunListener
+	claimsMu    sync.Mutex
+	activeIDs   map[RunID]struct{}
 }
 
 var _ Workflow = (*Network)(nil)
@@ -181,7 +184,7 @@ func NewNetwork(config NetworkConfig) (*Network, error) {
 	if ids == nil {
 		ids = NewUUIDIDSource()
 	}
-	return &Network{definition: config.Definition, router: config.Router, specialists: specialists, maxHops: maxHops, deadline: config.Deadline, policy: config.Policy, store: config.Store, clock: clock, idSource: ids, listener: config.Listener}, nil
+	return &Network{definition: config.Definition, router: config.Router, specialists: specialists, maxHops: maxHops, deadline: config.Deadline, policy: config.Policy, store: config.Store, clock: clock, idSource: ids, listener: config.Listener, activeIDs: make(map[RunID]struct{})}, nil
 }
 
 func (n *Network) Definition() WorkflowDefinition {
@@ -207,6 +210,24 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	runID := input.RunID
 	if runID == "" {
 		runID = n.idSource.NewRunID()
+	} else {
+		if !n.claimRunID(runID) {
+			return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: ErrRunIDAlreadyExists}
+		}
+		defer n.releaseRunID(runID)
+		if err := ctx.Err(); err != nil {
+			return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: err}
+		}
+		if n.store != nil && !isNilInterface(n.store) {
+			if _, err := n.store.WorkflowRuns().GetWorkflowRun(ctx, runID); err == nil {
+				return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: ErrRunIDAlreadyExists}
+			} else if !errors.Is(err, ErrNotFound) {
+				if ctx.Err() != nil {
+					return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: ctx.Err()}
+				}
+				return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: fmt.Errorf("lebro: check supplied network run ID: %w", err)}
+			}
+		}
 	}
 	emitter := newRunEmitter(ctx, n.listener, n.clock, n.idSource)
 	emitter.emit(runID, 0, "", RunEventStarted)
@@ -225,6 +246,9 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	// specialist. Specialists declare their own output contracts; the network
 	// validates their handoff presence below.
 	current := input
+	// RunID belongs to the network traversal; child specialists receive their
+	// own durable identities from their configured ID source.
+	current.RunID = ""
 	current.OutputSchema = nil
 	var last RunResult
 	for hop := 1; hop <= n.maxHops; hop++ {
@@ -270,6 +294,22 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		current = RunInput{Messages: []Message{{Role: RoleUser, Content: networkHandoffPrompt(task, child)}}, ThreadID: input.ThreadID, Metadata: input.Metadata, Reasoning: input.Reasoning, Memory: input.Memory}
 	}
 	return n.fail(runCtx, emitter, runID, input, routes, n.maxHops, NetworkErrorHopLimit, fmt.Errorf("lebro: network reached max hops %d", n.maxHops))
+}
+
+func (n *Network) claimRunID(id RunID) bool {
+	n.claimsMu.Lock()
+	defer n.claimsMu.Unlock()
+	if _, exists := n.activeIDs[id]; exists {
+		return false
+	}
+	n.activeIDs[id] = struct{}{}
+	return true
+}
+
+func (n *Network) releaseRunID(id RunID) {
+	n.claimsMu.Lock()
+	delete(n.activeIDs, id)
+	n.claimsMu.Unlock()
 }
 
 func (n *Network) candidates(visited map[ToolID]struct{}) []RoutingCandidate {
