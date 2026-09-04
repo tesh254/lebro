@@ -700,6 +700,8 @@ type LinearWorkflow struct {
 	store      Store
 	storeCaps  StoreCapabilities
 	policy     Policy
+	claimsMu   sync.Mutex
+	activeIDs  map[RunID]struct{}
 }
 
 // NewLinearWorkflow validates the configuration, compiles step schemas once,
@@ -778,6 +780,7 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		store:      store,
 		storeCaps:  storeCaps,
 		policy:     config.Policy,
+		activeIDs:  make(map[RunID]struct{}),
 	}, nil
 }
 
@@ -898,6 +901,12 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: err}
 	}
 	runID := w.runID(input.RunID)
+	if input.RunID != "" {
+		if !w.claimRunID(runID) {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrRunIDAlreadyExists}
+		}
+		defer w.releaseRunID(runID)
+	}
 	if input.RunID != "" && w.store != nil && !isNilInterface(w.store) {
 		if err := ctx.Err(); err != nil {
 			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err}
@@ -955,6 +964,26 @@ func (w *LinearWorkflow) runID(supplied RunID) RunID {
 		return supplied
 	}
 	return w.idSource.NewRunID()
+}
+
+// claimRunID prevents two concurrent calls on this workflow instance from
+// executing the same caller-supplied identity. Durable adapters remain
+// responsible for cross-process uniqueness when a control plane permits
+// multiple workers to start the same externally supplied run.
+func (w *LinearWorkflow) claimRunID(id RunID) bool {
+	w.claimsMu.Lock()
+	defer w.claimsMu.Unlock()
+	if _, exists := w.activeIDs[id]; exists {
+		return false
+	}
+	w.activeIDs[id] = struct{}{}
+	return true
+}
+
+func (w *LinearWorkflow) releaseRunID(id RunID) {
+	w.claimsMu.Lock()
+	delete(w.activeIDs, id)
+	w.claimsMu.Unlock()
 }
 
 // stepFrame is one level of the execution stack. The top frame holds the
