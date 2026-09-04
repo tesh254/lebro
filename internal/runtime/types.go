@@ -97,11 +97,8 @@ type AgentDefinition struct {
 
 // RunInput is the common input shape for future agent and workflow runs.
 type RunInput struct {
-	Messages []Message
-	ThreadID ThreadID
-	// RunID optionally supplies the durable identity for this run. It is
-	// validated before any model call; an empty value uses the IDSource.
-	RunID        RunID
+	Messages     []Message
+	ThreadID     ThreadID
 	Metadata     map[string]string
 	OutputSchema *ModelOutputSchema
 	// Annotations attaches validated, namespaced application metadata to the
@@ -123,9 +120,12 @@ type RunInput struct {
 	memoryRecalled bool
 }
 
-// ObservabilityScope is retained for source compatibility. It is the same
-// reusable RuntimeScope used by workflow and scheduling persistence.
-type ObservabilityScope = RuntimeScope
+// ObservabilityScope identifies the tenant and owner allowed to query durable
+// run records. Both fields are optional for single-tenant applications.
+type ObservabilityScope struct {
+	Namespace string `json:"namespace,omitempty"`
+	OwnerID   string `json:"owner_id,omitempty"`
+}
 
 // RunStatus identifies the terminal or in-progress state of a run.
 type RunStatus string

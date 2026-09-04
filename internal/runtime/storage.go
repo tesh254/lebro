@@ -32,18 +32,6 @@ type Page[T any] struct {
 	NextCursor string `json:"next_cursor,omitempty"`
 }
 
-// RuntimeScope identifies an application-controlled runtime boundary. Namespace
-// conventionally names the tenant or organization and OwnerID names a user (or
-// other principal) within it. Both fields are optional so existing
-// single-tenant applications keep their zero-value behavior.
-//
-// Lebro deliberately does not attach application meaning to either value: an
-// application owns organizations, users, credentials, and authorization.
-type RuntimeScope struct {
-	Namespace string `json:"namespace,omitempty"`
-	OwnerID   string `json:"owner_id,omitempty"`
-}
-
 // ThreadRecord owns conversation metadata. Messages are stored separately so
 // adapters can append to long-lived threads efficiently. Namespace and OwnerID
 // scope threads for multi-tenant and embedding applications; both are optional
@@ -96,8 +84,6 @@ type WorkflowRunRecord struct {
 	ID              RunID                `json:"id"`
 	WorkflowID      WorkflowID           `json:"workflow_id"`
 	ThreadID        ThreadID             `json:"thread_id,omitempty"`
-	Namespace       string               `json:"namespace,omitempty"`
-	OwnerID         string               `json:"owner_id,omitempty"`
 	Status          RunStatus            `json:"status"`
 	Input           json.RawMessage      `json:"input,omitempty"`
 	Output          json.RawMessage      `json:"output,omitempty"`
@@ -134,8 +120,6 @@ type WorkflowSnapshotRecord struct {
 type WorkflowRunFilter struct {
 	WorkflowID WorkflowID
 	Status     RunStatus
-	Namespace  string
-	OwnerID    string
 }
 
 // ModelUsage records provider-reported token usage when available.
@@ -352,12 +336,7 @@ type WorkingMemoryFact struct {
 }
 
 // WorkingMemoryScope selects facts owned by one user in one tenant.
-// WorkingMemoryScope retains its original JSON field names for wire
-// compatibility. RuntimeScope is the reusable scope for new record types.
-type WorkingMemoryScope struct {
-	Namespace string
-	OwnerID   string
-}
+type WorkingMemoryScope struct{ Namespace, OwnerID string }
 
 // WorkingMemoryRepository owns scoped fact CRUD. expectedVersion is zero for
 // create and otherwise must equal the stored version; conflicts return

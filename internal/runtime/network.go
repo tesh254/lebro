@@ -134,7 +134,6 @@ type Network struct {
 	clock       Clock
 	idSource    IDSource
 	listener    RunListener
-	claims      runIDClaims
 }
 
 var _ Workflow = (*Network)(nil)
@@ -180,7 +179,7 @@ func NewNetwork(config NetworkConfig) (*Network, error) {
 	}
 	ids := config.IDSource
 	if ids == nil {
-		ids = NewUUIDIDSource()
+		ids = &sequentialIDSource{}
 	}
 	return &Network{definition: config.Definition, router: config.Router, specialists: specialists, maxHops: maxHops, deadline: config.Deadline, policy: config.Policy, store: config.Store, clock: clock, idSource: ids, listener: config.Listener}, nil
 }
@@ -202,31 +201,7 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if ctx == nil {
 		return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: errors.New("lebro: network context is nil")}
 	}
-	if err := validateSuppliedRunID(input.RunID); err != nil {
-		return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: err}
-	}
-	runID := input.RunID
-	if runID == "" {
-		runID = n.idSource.NewRunID()
-	} else {
-		if !n.claims.Claim(runID) {
-			return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: ErrRunIDAlreadyExists}
-		}
-		defer n.claims.Release(runID)
-		if err := ctx.Err(); err != nil {
-			return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: err}
-		}
-		if n.store != nil && !isNilInterface(n.store) {
-			if _, err := n.store.WorkflowRuns().GetWorkflowRun(ctx, runID); err == nil {
-				return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: ErrRunIDAlreadyExists}
-			} else if !errors.Is(err, ErrNotFound) {
-				if ctx.Err() != nil {
-					return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: ctx.Err()}
-				}
-				return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: fmt.Errorf("lebro: check supplied network run ID: %w", err)}
-			}
-		}
-	}
+	runID := n.idSource.NewRunID()
 	emitter := newRunEmitter(ctx, n.listener, n.clock, n.idSource)
 	emitter.emit(runID, 0, "", RunEventStarted)
 	task, err := networkTask(input.Messages)
@@ -244,9 +219,6 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	// specialist. Specialists declare their own output contracts; the network
 	// validates their handoff presence below.
 	current := input
-	// RunID belongs to the network traversal; child specialists receive their
-	// own durable identities from their configured ID source.
-	current.RunID = ""
 	current.OutputSchema = nil
 	var last RunResult
 	for hop := 1; hop <= n.maxHops; hop++ {
@@ -357,8 +329,7 @@ func (n *Network) save(ctx context.Context, id RunID, input RunInput, routes []N
 	} else if text := networkOutput(result); text != "" {
 		output, _ = json.Marshal(map[string]string{"output": text})
 	}
-	scope, _ := RuntimeScopeFromContext(ctx)
-	record := WorkflowRunRecord{ID: id, WorkflowID: n.definition.ID, ThreadID: input.ThreadID, Namespace: scope.Namespace, OwnerID: scope.OwnerID, Status: result.Status, Input: networkInputRecord(input), Output: output, StepOutputs: outputs, CurrentStep: len(routes), Metadata: metadataJSON(input.Metadata), StartedAt: now, UpdatedAt: now}
+	record := WorkflowRunRecord{ID: id, WorkflowID: n.definition.ID, ThreadID: input.ThreadID, Status: result.Status, Input: networkInputRecord(input), Output: output, StepOutputs: outputs, CurrentStep: len(routes), Metadata: metadataJSON(input.Metadata), StartedAt: now, UpdatedAt: now}
 	if result.Status == RunStatusSucceeded || result.Status == RunStatusFailed || result.Status == RunStatusCancelled {
 		record.FinishedAt = &now
 	}

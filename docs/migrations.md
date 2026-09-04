@@ -26,25 +26,6 @@ attempts serialize. Do not hand-edit `schema_migrations`,
 `vector_schema_migrations`, `PRAGMA user_version`, or runtime tables: those are
 implementation details, not a public schema API.
 
-### PostgreSQL schemas
-
-`PostgresStoreOptions.Schema` optionally places every Lebro table and its
-`schema_migrations` ledger in one validated PostgreSQL schema. Empty keeps the
-database's existing `search_path`. The store applies the configured search path
-to every pooled connection, creates the schema when needed, and uses it for
-migration and repository queries. Supply only a simple PostgreSQL identifier;
-invalid values are rejected before opening a connection.
-
-```go
-store, err := lebro.NewPostgresStore(dsn, lebro.PostgresStoreOptions{
-    Schema: "lebro_runtime",
-})
-```
-
-Two stores may safely use different schemas in one database; their tables and
-migration ledgers do not collide. This option is for Lebro's built-in store.
-An application-owned RuntimeStore instead owns its own migrations and schema.
-
 Lebro migrations are forward-only. A binary built for an older schema might not
 read newer records; rollback means restore a tested backup or redeploy code
 compatible with the migrated schema. Application-owned JSON in metadata, inputs,
