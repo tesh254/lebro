@@ -2,8 +2,11 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -179,6 +182,32 @@ type IDSource interface {
 	NewStepID() StepID
 }
 
+// ErrInvalidRunID is returned before execution for a malformed caller-supplied
+// run identity. The default UUID source and FixedIDSource both remain valid.
+var ErrInvalidRunID = errors.New("lebro: invalid supplied run ID")
+
+// ErrRunIDAlreadyExists prevents a caller-supplied workflow run identity from
+// replacing an unrelated persisted run.
+var ErrRunIDAlreadyExists = errors.New("lebro: supplied run ID already exists")
+
+func validateSuppliedRunID(id RunID) error {
+	if id == "" {
+		return nil
+	}
+	if len(id) > 128 {
+		return ErrInvalidRunID
+	}
+	if strings.TrimSpace(string(id)) == "" {
+		return ErrInvalidRunID
+	}
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f {
+			return ErrInvalidRunID
+		}
+	}
+	return nil
+}
+
 // defaultClock uses time.Now.
 type defaultClock struct{}
 
@@ -191,6 +220,29 @@ type sequentialIDSource struct {
 	mu      sync.Mutex
 	runSeq  int
 	stepSeq int
+}
+
+// uuidIDSource creates globally unique UUIDv4 run and step IDs. It has no
+// process-local state, so independent processes can safely share a durable
+// store. FixedIDSource remains available for deterministic tests.
+type uuidIDSource struct{}
+
+// NewUUIDIDSource returns a concurrency-safe, process-independent ID source.
+func NewUUIDIDSource() IDSource { return uuidIDSource{} }
+
+func (uuidIDSource) NewRunID() RunID   { return RunID(newUUIDv4()) }
+func (uuidIDSource) NewStepID() StepID { return StepID(newUUIDv4()) }
+
+func newUUIDv4() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failures are catastrophic for a production identity. A
+		// panic is preferable to silently emitting a collision-prone fallback.
+		panic("lebro: cannot generate runtime UUID: " + err.Error())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func (s *sequentialIDSource) NewRunID() RunID {

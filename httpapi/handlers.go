@@ -99,12 +99,13 @@ func (s *Server) handleWorkflowRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
-	if s.config.Store == nil {
+	threads, _, ok := s.threadStore()
+	if !ok {
 		writeError(w, r, ErrorCodeNotFound)
 		return
 	}
 
-	record, err := s.config.Store.Threads().GetThread(r.Context(), lebro.ThreadID(r.PathValue("id")))
+	record, err := threads.GetThread(r.Context(), lebro.ThreadID(r.PathValue("id")))
 	if err != nil {
 		writeRunError(w, r, err)
 		return
@@ -121,7 +122,8 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
-	if s.config.Store == nil {
+	_, messages, ok := s.threadStore()
+	if !ok {
 		writeError(w, r, ErrorCodeNotFound)
 		return
 	}
@@ -136,7 +138,7 @@ func (s *Server) handleListMessages(w http.ResponseWriter, r *http.Request) {
 		page.Limit = limit
 	}
 
-	result, err := s.config.Store.Messages().ListMessages(r.Context(), lebro.ThreadID(r.PathValue("id")), page)
+	result, err := messages.ListMessages(r.Context(), lebro.ThreadID(r.PathValue("id")), page)
 	if err != nil {
 		if errors.Is(err, lebro.ErrInvalidPage) {
 			writeError(w, r, ErrorCodeInvalidRequest)
@@ -211,7 +213,7 @@ func (s *Server) threadIDFromQuery(w http.ResponseWriter, r *http.Request) (lebr
 	if raw == "" {
 		return "", true
 	}
-	if s.config.Store == nil {
+	if _, _, ok := s.threadStore(); !ok {
 		writeError(w, r, ErrorCodeInvalidRequest)
 		return "", false
 	}

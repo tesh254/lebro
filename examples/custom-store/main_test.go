@@ -2,14 +2,13 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"os"
 	"strings"
 	"testing"
 )
 
-func TestRunProducesSuccessfulTranscript(t *testing.T) {
+func TestCustomStorePersistsAndReloadsThread(t *testing.T) {
 	var output bytes.Buffer
 	if err := run(&output); err != nil {
 		t.Fatal(err)
@@ -18,17 +17,17 @@ func TestRunProducesSuccessfulTranscript(t *testing.T) {
 	if !strings.Contains(content, "status: succeeded") {
 		t.Fatalf("output missing succeeded status: %q", content)
 	}
-	if !strings.Contains(content, "run_id: ") {
-		t.Fatalf("output missing run id: %q", content)
+	if !strings.Contains(content, "thread support-42 holds 4 persisted messages") {
+		t.Fatalf("output missing persisted thread: %q", content)
 	}
-	if !strings.Contains(content, "assistant: The temperature in Nairobi is 24.5C.") {
-		t.Fatalf("output missing final assistant text: %q", content)
+	if !strings.Contains(content, "(saw 2 prior messages)") || !strings.Contains(content, "(saw 4 prior messages)") {
+		t.Fatalf("output missing reloaded history counts: %q", content)
 	}
-	if !strings.Contains(content, "tool[") {
-		t.Fatalf("output missing tool result: %q", content)
+	if !strings.Contains(content, "adapter-owned keys:") || !strings.Contains(content, "thread:support-42") {
+		t.Fatalf("output missing adapter-owned layout: %q", content)
 	}
-	if !strings.Contains(content, "exhausted: failed") {
-		t.Fatalf("output missing step-limit failure: %q", content)
+	if !strings.Contains(content, `capability check: lebro: storage adapter does not support capability "transcript"`) {
+		t.Fatalf("output missing typed capability error: %q", content)
 	}
 }
 
@@ -55,13 +54,4 @@ func TestExampleMain(t *testing.T) {
 	if !strings.Contains(output.String(), "status: succeeded") {
 		t.Fatalf("main output = %q", output.String())
 	}
-}
-
-func TestMustPanicsOnError(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("must did not panic")
-		}
-	}()
-	must(errors.New("boom"))
 }

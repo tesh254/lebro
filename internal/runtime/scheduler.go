@@ -39,12 +39,16 @@ func (m WorkflowMap) ResolveWorkflow(id WorkflowID) (*LinearWorkflow, bool) {
 // a long outage does not write an unbounded history; it defaults to 100 when
 // zero. A negative MaxCatchUp disables missed-occurrence recording entirely.
 type SchedulerConfig struct {
-	Store      Store
-	Resolver   WorkflowResolver
-	Clock      Clock
-	IDSource   IDSource
-	Interval   time.Duration
-	MaxCatchUp int
+	Store Store
+	// RuntimeStore is the capability-based alternative to Store. Exactly one
+	// may be supplied. Schedules require both WorkflowState and Schedules;
+	// Transactions remains optional and uses the documented sequential fallback.
+	RuntimeStore RuntimeStore
+	Resolver     WorkflowResolver
+	Clock        Clock
+	IDSource     IDSource
+	Interval     time.Duration
+	MaxCatchUp   int
 }
 
 // Scheduler fires durable schedules whose next fire time has arrived, reusing
@@ -60,6 +64,7 @@ type SchedulerConfig struct {
 // after a process restart with no extra registration.
 type Scheduler struct {
 	store      Store
+	storeCaps  StoreCapabilities
 	resolver   WorkflowResolver
 	clock      Clock
 	idSource   IDSource
@@ -80,7 +85,31 @@ const defaultMaxCatchUp = 100
 // NewScheduler validates the configuration and returns a scheduler ready to
 // tick. It requires a non-nil Store and Resolver.
 func NewScheduler(config SchedulerConfig) (*Scheduler, error) {
-	if config.Store == nil || isNilInterface(config.Store) {
+	store := config.Store
+	var caps StoreCapabilities
+	if config.RuntimeStore != nil && !isNilInterface(config.RuntimeStore) {
+		if store != nil && !isNilInterface(store) {
+			return nil, errors.New("lebro: scheduler store and runtime store are mutually exclusive")
+		}
+		bridged, err := bridgeRuntimeStore(config.RuntimeStore)
+		if err != nil {
+			return nil, err
+		}
+		store, caps = bridged, config.RuntimeStore.Capabilities()
+		if err := requireCapability(caps, StoreCapabilitySchedules, "scheduler"); err != nil {
+			return nil, err
+		}
+		if err := requireCapability(caps, StoreCapabilityWorkflowState, "scheduler"); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		caps, err = storeCapabilitiesOf(store)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if store == nil || isNilInterface(store) {
 		return nil, errors.New("lebro: scheduler requires a store")
 	}
 	if config.Resolver == nil || isNilInterface(config.Resolver) {
@@ -92,7 +121,7 @@ func NewScheduler(config SchedulerConfig) (*Scheduler, error) {
 	}
 	idSource := config.IDSource
 	if idSource == nil || isNilInterface(idSource) {
-		idSource = &sequentialIDSource{}
+		idSource = NewUUIDIDSource()
 	}
 	interval := config.Interval
 	if interval <= 0 {
@@ -103,7 +132,8 @@ func NewScheduler(config SchedulerConfig) (*Scheduler, error) {
 		maxCatchUp = defaultMaxCatchUp
 	}
 	return &Scheduler{
-		store:      config.Store,
+		store:      store,
+		storeCaps:  caps,
 		resolver:   config.Resolver,
 		clock:      clock,
 		idSource:   idSource,
@@ -313,6 +343,9 @@ func (s *Scheduler) fireWakeup(ctx context.Context, now time.Time, schedule Sche
 // run result. A persistence failure can leave the run Suspended; keeping its
 // schedule due lets the next tick retry using the same fenced wake token.
 func (s *Scheduler) wakeupRunTerminal(ctx context.Context, runID RunID) (bool, error) {
+	if err := requireCapability(s.storeCaps, StoreCapabilityWorkflowState, "durable workflow wakeup"); err != nil {
+		return false, err
+	}
 	run, err := s.store.WorkflowRuns().GetWorkflowRun(ctx, runID)
 	if err != nil {
 		return false, err
@@ -336,7 +369,7 @@ func (s *Scheduler) runWorkflow(ctx context.Context, schedule ScheduleRecord, wo
 		defer s.clearInflight(schedule.ID)
 	}
 
-	input := WorkflowRunInput{Input: append(json.RawMessage(nil), schedule.Input...)}
+	input := WorkflowRunInput{Input: append(json.RawMessage(nil), schedule.Input...), Scope: RuntimeScope{Namespace: schedule.Namespace, OwnerID: schedule.OwnerID}}
 	if len(schedule.Metadata) > 0 {
 		meta := map[string]string{}
 		if err := json.Unmarshal(schedule.Metadata, &meta); err == nil {
@@ -408,6 +441,10 @@ func (s *Scheduler) advanceCleared(ctx context.Context, schedule ScheduleRecord,
 // advanced without its history entries, or history entries without the advance,
 // and a retry cannot duplicate the missed records.
 func (s *Scheduler) persist(ctx context.Context, schedule ScheduleRecord, exec ScheduleExecutionRecord, missed []ScheduleExecutionRecord, result *TickResult) error {
+	exec.Namespace, exec.OwnerID = schedule.Namespace, schedule.OwnerID
+	for i := range missed {
+		missed[i].Namespace, missed[i].OwnerID = schedule.Namespace, schedule.OwnerID
+	}
 	err := s.store.Transaction(ctx, func(txCtx context.Context, repos Repositories) error {
 		for _, m := range missed {
 			if err := repos.ScheduleExecutions().SaveScheduleExecution(txCtx, m); err != nil {
