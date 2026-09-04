@@ -42,28 +42,6 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{state: newMemoryState()}
 }
 
-var (
-	_ RuntimeStore       = (*MemoryStore)(nil)
-	_ TranscriptStore    = (*MemoryStore)(nil)
-	_ WorkingMemoryStore = (*MemoryStore)(nil)
-	_ WorkflowStateStore = (*MemoryStore)(nil)
-	_ ScheduleStore      = (*MemoryStore)(nil)
-	_ ObservabilityStore = (*MemoryStore)(nil)
-	_ TransactionalStore = (*MemoryStore)(nil)
-)
-
-// Capabilities reports full support: MemoryStore implements every repository
-// capability and transactional writes.
-func (s *MemoryStore) Capabilities() StoreCapabilities { return AllStoreCapabilities() }
-
-// InTransaction implements TransactionalStore by running fn against the
-// store's transaction boundary.
-func (s *MemoryStore) InTransaction(ctx context.Context, fn func(context.Context, RuntimeStore) error) error {
-	return s.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
-		return fn(ctx, newRuntimeStoreView(s.Capabilities(), repos))
-	})
-}
-
 func newMemoryState() memoryState {
 	return memoryState{
 		threads:       map[ThreadID]ThreadRecord{},
@@ -684,12 +662,6 @@ func listWorkflowRuns(ctx context.Context, s memoryState, filter WorkflowRunFilt
 		if filter.Status != "" && run.Status != filter.Status {
 			continue
 		}
-		if filter.Namespace != "" && run.Namespace != filter.Namespace {
-			continue
-		}
-		if filter.OwnerID != "" && run.OwnerID != filter.OwnerID {
-			continue
-		}
 		filtered = append(filtered, run)
 	}
 	return paginate(filtered, p, cloneWorkflowRunRecord)
@@ -801,12 +773,6 @@ func listSchedules(ctx context.Context, s memoryState, filter ScheduleFilter, p 
 // returned as due work.
 func scheduleMatchesFilter(schedule ScheduleRecord, filter ScheduleFilter) bool {
 	if filter.WorkflowID != "" && schedule.WorkflowID != filter.WorkflowID {
-		return false
-	}
-	if filter.Namespace != "" && schedule.Namespace != filter.Namespace {
-		return false
-	}
-	if filter.OwnerID != "" && schedule.OwnerID != filter.OwnerID {
 		return false
 	}
 	if filter.DueBy != nil {

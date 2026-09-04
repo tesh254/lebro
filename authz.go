@@ -14,14 +14,6 @@ func IdentityFromContext(ctx context.Context) (Identity, bool) {
 	return runtime.IdentityFromContext(ctx)
 }
 
-func WithRuntimeScope(ctx context.Context, scope RuntimeScope) context.Context {
-	return runtime.WithRuntimeScope(ctx, scope)
-}
-
-func RuntimeScopeFromContext(ctx context.Context) (RuntimeScope, bool) {
-	return runtime.RuntimeScopeFromContext(ctx)
-}
-
 func Allow() Decision             { return runtime.Allow() }
 func Deny(reason string) Decision { return runtime.Deny(reason) }
 

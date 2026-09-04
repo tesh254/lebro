@@ -107,25 +107,3 @@ func TestMemoryVectorStorePassesContract(t *testing.T) {
 		return lebro.NewMemoryVectorStore()
 	})
 }
-
-func TestMemoryStorePassesRuntimeStoreContract(t *testing.T) {
-	testkit.RuntimeStoreContractSuite(t, func(t *testing.T) lebro.RuntimeStore {
-		t.Helper()
-		return lebro.NewMemoryStore()
-	})
-}
-
-func TestSQLiteStorePassesRuntimeStoreContract(t *testing.T) {
-	testkit.RuntimeStoreContractSuite(t, func(t *testing.T) lebro.RuntimeStore {
-		t.Helper()
-		store, err := lebro.NewSQLiteStore(t.TempDir() + "/runtime-contract.db")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = store.Close() })
-		if err := store.Migrate(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		return store
-	})
-}

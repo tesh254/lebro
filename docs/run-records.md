@@ -34,13 +34,12 @@ tool executions repeat the provider's `tool_call_id`; events keep their
 in-memory sequence numbers, so an in-memory `RunRecorder` trace and the
 durable stream interleave consistently for a single run.
 
-Run IDs must be unique among concurrent agents sharing one store. Agents,
-workflows, schedulers, and networks default to a concurrency-safe UUIDv4
-`IDSource`, so independent processes do not share a deterministic counter.
-Use `NewFixedIDSource` for deterministic tests, or provide an application
-`IDSource` when it already owns run identifiers. Caller-supplied IDs are
-preserved as opaque non-control strings; a durable workflow rejects an ID that
-is already present before execution.
+Run IDs must be unique among concurrent agents sharing one store. Independently
+constructed agents default to per-agent sequential sources that both start at
+`agent-run-0001` (this mirrors nested-run correlation elsewhere); when such
+agents share a store, inject a shared `IDSource` into every agent, or accept
+that observability appends are idempotent — a duplicate `(run_id, id)` is
+skipped, never fatal, and the first writer wins.
 
 ## Redaction and privacy defaults
 

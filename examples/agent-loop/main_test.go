@@ -18,7 +18,7 @@ func TestRunProducesSuccessfulTranscript(t *testing.T) {
 	if !strings.Contains(content, "status: succeeded") {
 		t.Fatalf("output missing succeeded status: %q", content)
 	}
-	if !strings.Contains(content, "run_id: ") {
+	if !strings.Contains(content, "run_id: agent-run-") {
 		t.Fatalf("output missing run id: %q", content)
 	}
 	if !strings.Contains(content, "assistant: The temperature in Nairobi is 24.5C.") {

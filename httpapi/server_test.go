@@ -33,23 +33,6 @@ func TestHealthReportsExposedCounts(t *testing.T) {
 	}
 }
 
-func TestThreadRoutesAcceptTranscriptRuntimeStore(t *testing.T) {
-	store := lebro.NewMemoryStore()
-	now := time.Now().UTC()
-	if err := store.Threads().CreateThread(context.Background(), lebro.ThreadRecord{ID: "runtime-thread", Namespace: "org-a", OwnerID: "user-a", CreatedAt: now, UpdatedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	server := httpapi.NewServer(httpapi.ServerConfig{RuntimeStore: store})
-	recorder := doJSON(t, server.Handler(), http.MethodGet, "/threads/runtime-thread", nil)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body)
-	}
-	thread := decodeBody[httpapi.ThreadResponse](t, recorder)
-	if thread.Namespace != "org-a" || thread.OwnerID != "user-a" {
-		t.Fatalf("thread scope = (%q, %q)", thread.Namespace, thread.OwnerID)
-	}
-}
-
 func TestAgentRunReturnsTerminalAssistantMessage(t *testing.T) {
 	model := &scriptedModel{responses: []lebro.ModelResponse{textResponse("hello from the agent")}}
 	server := httpapi.NewServer(httpapi.ServerConfig{})

@@ -83,20 +83,6 @@ func NewMemoryProcessor(store Store, config *MemoryProcessorConfig) (*MemoryProc
 	return newMemoryProcessor(store, config, defaultClock{})
 }
 
-// NewRuntimeMemoryProcessor attaches working-memory processing to an
-// application-owned RuntimeStore. It requires WorkingMemory and preserves the
-// RuntimeStore transactional/sequential write semantics.
-func NewRuntimeMemoryProcessor(store RuntimeStore, config *MemoryProcessorConfig) (*MemoryProcessor, error) {
-	bridged, err := bridgeRuntimeStore(store)
-	if err != nil {
-		return nil, err
-	}
-	if err := requireCapability(store.Capabilities(), StoreCapabilityWorkingMemory, "memory processor"); err != nil {
-		return nil, err
-	}
-	return newMemoryProcessor(bridged, config, defaultClock{})
-}
-
 func newMemoryProcessor(store Store, config *MemoryProcessorConfig, clock Clock) (*MemoryProcessor, error) {
 	if store == nil {
 		return nil, errors.New("lebro: memory processor store is required")

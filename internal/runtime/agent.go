@@ -243,14 +243,6 @@ type AgentConfig struct {
 	// leave no messages, so the thread's message sequence stays valid. When
 	// nil, agent behavior is unchanged.
 	Store Store
-	// RuntimeStore optionally binds agent runs to a capability-based storage
-	// adapter the application owns, without Lebro's schema, migrations, or
-	// full built-in Store. Exactly one of Store and RuntimeStore may be set.
-	// Required capabilities are validated up front: a Memory configuration
-	// needs the working-memory capability, and a run with a ThreadID needs the
-	// transcript capability, with failures reported as a *StoreCapabilityError
-	// before any model call. See RuntimeStore for the contract.
-	RuntimeStore RuntimeStore
 	// Policy optionally authorizes the run at start and every model-requested
 	// tool call against the caller Identity carried on the run context (see
 	// WithIdentity). A denied run or tool call fails with an
@@ -284,7 +276,6 @@ type Agent struct {
 	clock                Clock
 	idSource             IDSource
 	store                Store
-	storeCaps            StoreCapabilities
 	policy               Policy
 	processors           ProcessorPipeline
 	instructionsResolver InstructionsResolver
@@ -350,35 +341,11 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	}
 	idSource := config.IDSource
 	if idSource == nil {
-		idSource = NewUUIDIDSource()
-	}
-	store := config.Store
-	var storeCaps StoreCapabilities
-	if config.RuntimeStore != nil && !isNilInterface(config.RuntimeStore) {
-		if store != nil && !isNilInterface(store) {
-			return nil, errors.New("lebro: agent store and runtime store are mutually exclusive")
-		}
-		bridged, err := bridgeRuntimeStore(config.RuntimeStore)
-		if err != nil {
-			return nil, err
-		}
-		store = bridged
-		// bridgeRuntimeStore validated the advertisement, so Capabilities is
-		// available and consistent on both bridge variants.
-		storeCaps = store.(RuntimeStore).Capabilities()
-	} else {
-		caps, err := storeCapabilitiesOf(store)
-		if err != nil {
-			return nil, err
-		}
-		storeCaps = caps
+		idSource = &sequentialIDSource{}
 	}
 	processors := config.Processors
 	if config.Memory != nil {
-		if err := requireCapability(storeCaps, StoreCapabilityWorkingMemory, "memory processor"); err != nil {
-			return nil, err
-		}
-		memory, err := newMemoryProcessor(store, config.Memory, clock)
+		memory, err := newMemoryProcessor(config.Store, config.Memory, clock)
 		if err != nil {
 			return nil, err
 		}
@@ -401,8 +368,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		listener:             config.Listener,
 		clock:                clock,
 		idSource:             idSource,
-		store:                store,
-		storeCaps:            storeCaps,
+		store:                config.Store,
 		policy:               config.Policy,
 		processors:           processors,
 		instructionsResolver: config.InstructionsResolver,
@@ -433,12 +399,9 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if a == nil {
 		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
 	}
-	if err := validateSuppliedRunID(input.RunID); err != nil {
-		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: err}
-	}
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
-		runID := a.runID(input.RunID)
+		runID := a.idSource.NewRunID()
 		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
 		if journal != nil {
 			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
@@ -451,7 +414,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	runCtx, cancel := a.applyDeadline(ctx)
 	defer cancel()
 
-	runID := a.runID(input.RunID)
+	runID := a.idSource.NewRunID()
 	// The journal is nil unless a Store is configured; it captures attempts,
 	// tool executions, and events so they persist with (or without) the
 	// transcript. The pre-loop cancellation path creates and flushes its own
@@ -690,9 +653,6 @@ func (a *Agent) runDelegated(ctx context.Context, input RunInput, maxSteps int, 
 // goroutine resources even when the caller abandons the stream before
 // draining; it is safe to call after Wait returns.
 type StreamRun struct {
-	// RunID is available as soon as RunStream returns so a caller can create a
-	// matching durable control-plane record before consuming deltas.
-	RunID    RunID
 	Deltas   <-chan StreamDelta
 	done     chan streamOutcome
 	finished chan struct{}
@@ -763,13 +723,10 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	if a == nil {
 		return nil, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
 	}
-	if err := validateSuppliedRunID(input.RunID); err != nil {
-		return nil, &AgentError{Kind: AgentErrorProviderFailure, Err: err}
-	}
 
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
-		runID := a.runID(input.RunID)
+		runID := a.idSource.NewRunID()
 		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
 		if journal != nil {
 			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
@@ -786,7 +743,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		deadlineCancel()
 	}
 
-	runID := a.runID(input.RunID)
+	runID := a.idSource.NewRunID()
 	// See Run: the journal is nil unless a Store is configured.
 	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
 	if journal != nil {
@@ -854,7 +811,6 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	finished := make(chan struct{})
 
 	run := &StreamRun{
-		RunID:    runID,
 		Deltas:   deltas,
 		done:     done,
 		finished: finished,
@@ -886,13 +842,6 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	})
 
 	return run, nil
-}
-
-func (a *Agent) runID(supplied RunID) RunID {
-	if supplied != "" {
-		return supplied
-	}
-	return a.idSource.NewRunID()
 }
 
 // runStreamOutcome carries the final result of a streaming run. It is sent
@@ -1710,14 +1659,10 @@ func cloneToolDefinitions(definitions []ToolDefinition) []ToolDefinition {
 // from the store and prepends it to input.Messages. When the store is nil or
 // ThreadID is empty, no persistence is configured and the input is unchanged.
 // A missing thread (ErrNotFound) is treated as an empty history so the first
-// run against a new thread starts cleanly. A store without the transcript
-// capability fails with a *StoreCapabilityError before the run starts.
+// run against a new thread starts cleanly.
 func (a *Agent) loadPriorMessages(ctx context.Context, input *RunInput) (int, error) {
 	if a.store == nil || input.ThreadID == "" {
 		return 0, nil
-	}
-	if err := requireCapability(a.storeCaps, StoreCapabilityTranscript, "thread persistence"); err != nil {
-		return 0, err
 	}
 	page, err := a.store.Messages().ListMessages(ctx, input.ThreadID, PageRequest{Limit: int(^uint(0) >> 1)})
 	if err != nil {
@@ -1780,11 +1725,6 @@ func (a *Agent) persistRunRecords(ctx context.Context, threadID ThreadID, runID 
 	if a.store == nil || isNilInterface(a.store) {
 		return nil
 	}
-	if threadID != "" {
-		if err := requireCapability(a.storeCaps, StoreCapabilityTranscript, "thread persistence"); err != nil {
-			return err
-		}
-	}
 	records := a.newMessageRecords(threadID, runID, transcript, loadedCount, memoryRecalled, annotations)
 	for i := len(records) - 1; threadID != "" && i >= 0; i-- {
 		if records[i].Message.Role == RoleAssistant {
@@ -1803,11 +1743,8 @@ func (a *Agent) persistRunRecords(ctx context.Context, threadID ThreadID, runID 
 		err := a.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
 			if threadID != "" {
 				if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
-					scope, _ := RuntimeScopeFromContext(ctx)
 					if err := repos.Threads().CreateThread(ctx, ThreadRecord{
 						ID:        threadID,
-						Namespace: scope.Namespace,
-						OwnerID:   scope.OwnerID,
 						CreatedAt: now,
 						UpdatedAt: now,
 					}); err != nil {
