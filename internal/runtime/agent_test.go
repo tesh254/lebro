@@ -120,7 +120,7 @@ func TestAgentCompletesTextOnlyRequest(t *testing.T) {
 	if result.Messages[2].Role != RoleAssistant || result.Messages[2].Content != "hello back" {
 		t.Fatalf("assistant message = %#v", result.Messages[2])
 	}
-	if !strings.HasPrefix(string(result.ID), "agent-run-") {
+	if result.ID == "" {
 		t.Fatalf("run ID = %q", result.ID)
 	}
 	if len(model.calls) != 1 {

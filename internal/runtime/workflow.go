@@ -506,8 +506,13 @@ func (e *StepPanicError) Error() string {
 // retry. Steps absent from the map keep their configured policy (which may be
 // no retry when the definition omits Retry).
 type WorkflowRunInput struct {
-	Input          json.RawMessage
-	ThreadID       ThreadID
+	Input    json.RawMessage
+	ThreadID ThreadID
+	// RunID optionally supplies a durable run identity created by the caller.
+	// It must be a valid opaque runtime ID and must not already name a stored
+	// workflow run.
+	RunID          RunID
+	Scope          RuntimeScope
 	Metadata       map[string]string
 	RetryOverrides map[StepID]RetryPolicy
 }
@@ -667,6 +672,12 @@ type LinearWorkflowConfig struct {
 	Clock          Clock
 	IDSource       IDSource
 	Store          Store
+	// RuntimeStore optionally binds durable workflow state to an
+	// application-owned capability-based adapter. Exactly one of Store and
+	// RuntimeStore may be set. Durable workflows accept sequential fallback
+	// when Transactions is absent; a failed coupled write can therefore leave
+	// earlier writes in place (see TransactionalStore).
+	RuntimeStore RuntimeStore
 	// Policy optionally authorizes the workflow run at start against the caller
 	// Identity carried on the run context (see WithIdentity). A denied run fails
 	// with a WorkflowErrorUnauthorized wrapping a *PolicyDenial, recorded in the
@@ -687,7 +698,9 @@ type LinearWorkflow struct {
 	clock      Clock
 	idSource   IDSource
 	store      Store
+	storeCaps  StoreCapabilities
 	policy     Policy
+	claims     runIDClaims
 }
 
 // NewLinearWorkflow validates the configuration, compiles step schemas once,
@@ -718,13 +731,36 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		compiledSteps = append(compiledSteps, compiled)
 	}
 
+	store := config.Store
+	var storeCaps StoreCapabilities
+	if config.RuntimeStore != nil && !isNilInterface(config.RuntimeStore) {
+		if store != nil && !isNilInterface(store) {
+			return nil, errors.New("lebro: workflow store and runtime store are mutually exclusive")
+		}
+		bridged, err := bridgeRuntimeStore(config.RuntimeStore)
+		if err != nil {
+			return nil, err
+		}
+		store = bridged
+		storeCaps = config.RuntimeStore.Capabilities()
+		if err := requireCapability(storeCaps, StoreCapabilityWorkflowState, "durable workflow persistence"); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		storeCaps, err = storeCapabilitiesOf(store)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	clock := config.Clock
 	if clock == nil || isNilInterface(clock) {
 		clock = defaultClock{}
 	}
 	idSource := config.IDSource
 	if idSource == nil || isNilInterface(idSource) {
-		idSource = &sequentialIDSource{}
+		idSource = NewUUIDIDSource()
 	}
 
 	definition := WorkflowDefinition{
@@ -740,7 +776,8 @@ func NewLinearWorkflow(config LinearWorkflowConfig) (*LinearWorkflow, error) {
 		listener:   config.Listener,
 		clock:      clock,
 		idSource:   idSource,
-		store:      config.Store,
+		store:      store,
+		storeCaps:  storeCaps,
 		policy:     config.Policy,
 	}, nil
 }
@@ -858,9 +895,31 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	if w == nil {
 		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: errors.New("lebro: workflow is nil")}
 	}
+	if err := validateSuppliedRunID(input.RunID); err != nil {
+		return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: err}
+	}
+	runID := w.runID(input.RunID)
+	if input.RunID != "" {
+		if !w.claims.Claim(runID) {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrRunIDAlreadyExists}
+		}
+		defer w.claims.Release(runID)
+	}
+	if input.RunID != "" && w.store != nil && !isNilInterface(w.store) {
+		if err := ctx.Err(); err != nil {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err}
+		}
+		if _, err := w.store.WorkflowRuns().GetWorkflowRun(ctx, runID); err == nil {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrRunIDAlreadyExists}
+		} else if !errors.Is(err, ErrNotFound) {
+			if ctx.Err() != nil {
+				return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorCancelled, Err: ctx.Err()}
+			}
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: check supplied workflow run ID: %w", err)}
+		}
+	}
 	emitter := newRunEmitter(ctx, w.listener, w.clock, w.idSource)
 	if err := ctx.Err(); err != nil {
-		runID := w.idSource.NewRunID()
 		metadata := cloneMetadata(input.Metadata)
 		anchor := w.newAnchor(runID, input, metadata)
 		emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
@@ -868,12 +927,10 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 		return w.cancelled(runID, metadata, nil, nil, 0, "", err)
 	}
 
-	runID := w.idSource.NewRunID()
 	metadata := cloneMetadata(input.Metadata)
 	current := cloneRawMessage(input.Input)
 	completedOutputs := make([]json.RawMessage, 0, len(w.steps))
 	anchor := w.newAnchor(runID, input, metadata)
-
 	if derr := authorize(ctx, w.policy, ActionWorkflowRun, Resource{Kind: ResourceKindWorkflow, ID: string(w.definition.ID)}); derr != nil {
 		authErr := &WorkflowError{Kind: WorkflowErrorUnauthorized, Err: derr}
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, authErr)
@@ -901,6 +958,13 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 
 	frames := []stepFrame{{steps: w.steps, index: 0}}
 	return w.executeFrames(ctx, anchor, emitter, runID, metadata, current, completedOutputs, frames, nil, nil, nil, 0, input.RetryOverrides, input.ThreadID)
+}
+
+func (w *LinearWorkflow) runID(supplied RunID) RunID {
+	if supplied != "" {
+		return supplied
+	}
+	return w.idSource.NewRunID()
 }
 
 // stepFrame is one level of the execution stack. The top frame holds the
@@ -1428,7 +1492,7 @@ func (w *LinearWorkflow) Resume(ctx context.Context, input WorkflowResumeInput) 
 
 	anchor := runAnchor{
 		runID:     run.ID,
-		input:     WorkflowRunInput{Input: cloneRawMessage(run.Input), ThreadID: run.ThreadID, Metadata: mergedMetadata},
+		input:     WorkflowRunInput{Input: cloneRawMessage(run.Input), ThreadID: run.ThreadID, RunID: run.ID, Scope: RuntimeScope{Namespace: run.Namespace, OwnerID: run.OwnerID}, Metadata: mergedMetadata},
 		metadata:  mergedMetadata,
 		startedAt: run.StartedAt,
 	}
@@ -1492,7 +1556,7 @@ func (w *LinearWorkflow) resumeWake(ctx context.Context, runID RunID, token stri
 		return WorkflowRunResult{}, fmt.Errorf("lebro: cannot resolve resume frame for sleep step %q", envelope.StepID)
 	}
 	metadata := decodeMetadata(run.Metadata)
-	anchor := runAnchor{runID: run.ID, input: WorkflowRunInput{Input: cloneRawMessage(run.Input), ThreadID: run.ThreadID, Metadata: metadata}, metadata: metadata, startedAt: run.StartedAt}
+	anchor := runAnchor{runID: run.ID, input: WorkflowRunInput{Input: cloneRawMessage(run.Input), ThreadID: run.ThreadID, RunID: run.ID, Scope: RuntimeScope{Namespace: run.Namespace, OwnerID: run.OwnerID}, Metadata: metadata}, metadata: metadata, startedAt: run.StartedAt}
 	emitter := newRunEmitter(ctx, w.listener, w.clock, w.idSource)
 	resumePosition := envelope.Step + 1
 	var resumeStepID StepID
@@ -1683,7 +1747,7 @@ func (w *LinearWorkflow) persistSleep(ctx context.Context, anchor runAnchor, pat
 	snapshot := WorkflowSnapshotRecord{ID: fmt.Sprintf("%s-snapshot-%d", anchor.runID, position), RunID: anchor.runID, Sequence: workflowTerminalSnapshotSequence(position), SchemaVersion: workflowSnapshotSchemaVersion, State: state, CreatedAt: now}
 	updated := w.baseRunRecord(anchor)
 	updated.Status, updated.CurrentStep, updated.CurrentStepID, updated.StepOutputs, updated.Path, updated.UpdatedAt = RunStatusSuspended, position, stepID, cloneRawOutputs(completed), cloneStepIDs(path), now
-	wakeup := ScheduleRecord{ID: ScheduleID(fmt.Sprintf("%s-wake-%d", anchor.runID, position)), WorkflowID: w.definition.ID, Spec: "@once", WakeRunID: anchor.runID, WakeToken: token, NextFireAt: &at, CreatedAt: now, UpdatedAt: now}
+	wakeup := ScheduleRecord{ID: ScheduleID(fmt.Sprintf("%s-wake-%d", anchor.runID, position)), WorkflowID: w.definition.ID, Namespace: anchor.input.Scope.Namespace, OwnerID: anchor.input.Scope.OwnerID, Spec: "@once", WakeRunID: anchor.runID, WakeToken: token, NextFireAt: &at, CreatedAt: now, UpdatedAt: now}
 	return w.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
 		if err := repos.WorkflowSnapshots().SaveWorkflowSnapshot(ctx, snapshot); err != nil {
 			return err
@@ -1914,6 +1978,8 @@ func (w *LinearWorkflow) baseRunRecord(anchor runAnchor) WorkflowRunRecord {
 	if anchor.input.ThreadID != "" {
 		record.ThreadID = anchor.input.ThreadID
 	}
+	record.Namespace = anchor.input.Scope.Namespace
+	record.OwnerID = anchor.input.Scope.OwnerID
 	if len(anchor.input.Input) > 0 {
 		record.Input = cloneRawMessage(anchor.input.Input)
 	}

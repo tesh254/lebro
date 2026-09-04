@@ -6,6 +6,24 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Capability-based pluggable runtime storage through the new `RuntimeStore`
+  contract. Applications can attach an adapter over their own database, API,
+  event store, or document store and let Lebro read and write the runtime data
+  it needs without adopting Lebro's schema, migrations, or full built-in
+  `Store`. Advertisements (`StoreCapabilities`) must match the implemented
+  capability interfaces exactly and are validated at attach time; configured
+  features that need an unsupported capability fail early with a typed
+  `*StoreCapabilityError` (sentinel `ErrCapabilityMissing`) instead of
+  silently falling back. Reads and writes are explicit per capability —
+  `TranscriptStore` (thread records plus ordered messages),
+  `WorkingMemoryStore`, `WorkflowStateStore`, `ScheduleStore`,
+  `ObservabilityStore`, and optional `TransactionalStore` for atomic coupled
+  writes — over the existing neutral, versioned JSON record types. Adapters
+  without transactions get documented sequential fallback semantics (ordered
+  writes, no rollback, no `ErrConflict`). Built-in Memory, SQLite, and
+  Postgres stores implement the new contract unchanged and keep every existing
+  API. Agent runs attach adapters through the new `AgentConfig.RuntimeStore`
+  field; see `docs/custom-storage.md` and `examples/custom-store`.
 - First-class Google Vertex AI model adapter (`github.com/tesh254/lebro/vertexai`)
   for calling Vertex-hosted Gemini models through the stable v1 endpoint using
   Google Application Default Credentials. No API key is accepted or logged; the

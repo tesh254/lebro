@@ -3,13 +3,73 @@ package runtime_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/tesh254/lebro"
 	"github.com/tesh254/lebro/internal/testkit"
 )
+
+func TestPostgresStoreSchemaIsolation(t *testing.T) {
+	dsn := os.Getenv("LEBRO_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("skipping PostgreSQL schema isolation test: set LEBRO_POSTGRES_TEST_DSN to a disposable database DSN")
+	}
+	ctx := context.Background()
+	const firstSchema, secondSchema = "lebro_mad87_first", "lebro_mad87_second"
+	cleanup, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, schema := range []string{firstSchema, secondSchema} {
+		if _, err := cleanup.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, schema := range []string{firstSchema, secondSchema} {
+			_, _ = cleanup.ExecContext(context.Background(), fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema))
+		}
+		_ = cleanup.Close()
+	})
+	first, err := lebro.NewPostgresStore(dsn, lebro.PostgresStoreOptions{Schema: firstSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	second, err := lebro.NewPostgresStore(dsn, lebro.PostgresStoreOptions{Schema: secondSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	if err := first.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := first.Threads().CreateThread(ctx, lebro.ThreadRecord{ID: "same-id", Metadata: json.RawMessage(`{"schema":"first"}`), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Threads().CreateThread(ctx, lebro.ThreadRecord{ID: "same-id", Metadata: json.RawMessage(`{"schema":"second"}`), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	firstThread, err := first.Threads().GetThread(ctx, "same-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondThread, err := second.Threads().GetThread(ctx, "same-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstThread.Metadata) == string(secondThread.Metadata) {
+		t.Fatalf("schema stores collided: %s", firstThread.Metadata)
+	}
+}
 
 // TestPostgresStorePassesStorageContract runs the shared adapter-neutral
 // storage contract suite against a disposable PostgreSQL instance. Set
@@ -29,6 +89,25 @@ func TestPostgresStorePassesStorageContract(t *testing.T) {
 	defer func() { _ = cleanupDB.Close() }()
 
 	testkit.StorageContractSuite(t, func(t *testing.T) lebro.Store {
+		t.Helper()
+		ctx := context.Background()
+		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "working_memory_facts", "run_events", "model_attempts", "tool_executions", "schema_migrations"} {
+			if _, err := cleanupDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE", table)); err != nil {
+				t.Fatalf("drop %s: %v", table, err)
+			}
+		}
+		store, err := lebro.NewPostgresStore(dsn, lebro.PostgresStoreOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		if err := store.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return store
+	})
+
+	testkit.RuntimeStoreContractSuite(t, func(t *testing.T) lebro.RuntimeStore {
 		t.Helper()
 		ctx := context.Background()
 		for _, table := range []string{"schedule_executions", "schedules", "workflow_snapshots", "workflow_runs", "messages", "threads", "working_memory_facts", "run_events", "model_attempts", "tool_executions", "schema_migrations"} {

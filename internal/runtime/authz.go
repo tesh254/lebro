@@ -61,7 +61,27 @@ type Resource struct {
 	Kind       ResourceKind
 	ID         string
 	Tenant     string
+	OwnerID    string
 	Attributes map[string]string
+}
+
+type runtimeScopeContextKey struct{}
+
+// WithRuntimeScope supplies an application-verified persistence scope for
+// policy-guarded repository operations. Middleware normally sets it after
+// authenticating the request; PolicyStore rejects a write whose claimed record
+// scope differs from this value.
+func WithRuntimeScope(ctx context.Context, scope RuntimeScope) context.Context {
+	return context.WithValue(ctx, runtimeScopeContextKey{}, scope)
+}
+
+// RuntimeScopeFromContext returns the verified scope supplied by middleware.
+func RuntimeScopeFromContext(ctx context.Context) (RuntimeScope, bool) {
+	if ctx == nil {
+		return RuntimeScope{}, false
+	}
+	scope, ok := ctx.Value(runtimeScopeContextKey{}).(RuntimeScope)
+	return scope, ok
 }
 
 // Identity is the authenticated caller on whose behalf a run, tool call, or

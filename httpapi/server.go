@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -36,13 +37,20 @@ type ServerConfig struct {
 	// not-found and thread_id is rejected, because a thread cannot be resolved
 	// without storage.
 	Store lebro.Store
+	// RuntimeStore is the capability-based alternative for thread routes. It
+	// needs only the Transcript capability; it does not require a full legacy
+	// Store or Lebro-owned migrations. Store and RuntimeStore are mutually
+	// exclusive.
+	RuntimeStore lebro.RuntimeStore
 }
 
 // Server routes HTTP requests to explicitly registered lebro agents and
 // workflows. Only registered primitives are reachable. The zero value is not
 // usable; construct one with NewServer.
 type Server struct {
-	config ServerConfig
+	config     ServerConfig
+	transcript lebro.TranscriptStore
+	configErr  error
 
 	mu        sync.RWMutex
 	agents    map[string]*lebro.Agent
@@ -58,6 +66,15 @@ type Server struct {
 // has no agents and no workflows until ExposeAgent or ExposeWorkflow is called;
 // until then only the health, list, and OpenAPI routes return content.
 func NewServer(config ServerConfig) *Server {
+	server, _ := NewServerE(config)
+	return server
+}
+
+// NewServerE is the error-returning constructor for callers that want to fail
+// startup when a RuntimeStore does not provide a usable transcript capability.
+// NewServer remains available for source compatibility; its Handler returns a
+// configuration failure rather than silently treating a bad adapter as absent.
+func NewServerE(config ServerConfig) (*Server, error) {
 	if config.Title == "" {
 		config.Title = "lebro"
 	}
@@ -67,11 +84,49 @@ func NewServer(config ServerConfig) *Server {
 	if config.Redactor == nil {
 		config.Redactor = DefaultRedactor
 	}
-	return &Server{
+	server := &Server{
 		config:    config,
 		agents:    make(map[string]*lebro.Agent),
 		workflows: make(map[string]*lebro.LinearWorkflow),
 	}
+	if config.Store != nil && config.RuntimeStore != nil {
+		server.configErr = errors.New("lebro/httpapi: store and runtime store are mutually exclusive")
+	} else if config.RuntimeStore != nil {
+		if !config.RuntimeStore.Capabilities().Transcript {
+			server.configErr = &lebro.StoreCapabilityError{Capability: lebro.StoreCapabilityTranscript, Feature: "http thread routes", Reason: "the attached storage adapter does not advertise it"}
+		} else if transcript, ok := config.RuntimeStore.(lebro.TranscriptStore); ok && !isNil(transcript) && !isNil(transcript.Threads()) && !isNil(transcript.Messages()) {
+			server.transcript = transcript
+		} else {
+			server.configErr = &lebro.StoreCapabilityError{Capability: lebro.StoreCapabilityTranscript, Feature: "http thread routes", Reason: "the adapter returned a nil transcript repository"}
+		}
+	}
+	return server, server.configErr
+}
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
+func (s *Server) threadStore() (lebro.ThreadRepository, lebro.MessageRepository, bool) {
+	if s.configErr != nil {
+		return nil, nil, false
+	}
+	if s.transcript != nil {
+		return s.transcript.Threads(), s.transcript.Messages(), true
+	}
+	if s.config.Store == nil {
+		return nil, nil, false
+	}
+	return s.config.Store.Threads(), s.config.Store.Messages(), true
 }
 
 // ExposeAgent makes an agent reachable at /agents/{id}/runs and
@@ -146,6 +201,20 @@ func (s *Server) handlerBuilt() bool { return s.handler != nil }
 // use.
 func (s *Server) Handler() http.Handler {
 	s.handlerOnce.Do(func() {
+		if s.configErr != nil {
+			var built http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, r, ErrorCodeInternal)
+			})
+			for i := len(s.config.Middleware) - 1; i >= 0; i-- {
+				if s.config.Middleware[i] != nil {
+					built = s.config.Middleware[i](built)
+				}
+			}
+			s.mu.Lock()
+			s.handler = built
+			s.mu.Unlock()
+			return
+		}
 		built := s.buildRouter()
 		s.mu.Lock()
 		s.handler = built
