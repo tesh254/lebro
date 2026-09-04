@@ -24,7 +24,6 @@ func TestPostgresStoreSchemaIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = cleanup.Close() }()
 	for _, schema := range []string{firstSchema, secondSchema} {
 		if _, err := cleanup.ExecContext(ctx, fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema)); err != nil {
 			t.Fatal(err)
@@ -34,6 +33,7 @@ func TestPostgresStoreSchemaIsolation(t *testing.T) {
 		for _, schema := range []string{firstSchema, secondSchema} {
 			_, _ = cleanup.ExecContext(context.Background(), fmt.Sprintf(`DROP SCHEMA IF EXISTS "%s" CASCADE`, schema))
 		}
+		_ = cleanup.Close()
 	})
 	first, err := lebro.NewPostgresStore(dsn, lebro.PostgresStoreOptions{Schema: firstSchema})
 	if err != nil {

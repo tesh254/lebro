@@ -25,8 +25,7 @@ import (
 // serialization failures and lock timeouts surface as ErrConflict so callers
 // may retry, matching the optimistic-conflict contract of the other adapters.
 type PostgresStore struct {
-	db     *sql.DB
-	schema string
+	db *sql.DB
 }
 
 // PostgresStoreOptions tunes connection-pool behavior. A zero value leaves
@@ -86,7 +85,7 @@ func NewPostgresStore(dsn string, opts PostgresStoreOptions) (*PostgresStore, er
 			return nil, fmt.Errorf("lebro: postgres: create schema %q: %w", opts.Schema, postgresError(err))
 		}
 	}
-	return &PostgresStore{db: db, schema: opts.Schema}, nil
+	return &PostgresStore{db: db}, nil
 }
 
 func validatePostgresSchema(schema string) error {

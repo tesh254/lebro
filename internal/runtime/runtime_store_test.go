@@ -69,6 +69,9 @@ func (s *transcriptOnlyStore) UpdateThread(_ context.Context, record ThreadRecor
 }
 
 func (s *transcriptOnlyStore) AppendMessages(_ context.Context, records []MessageRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, record := range records {
@@ -81,7 +84,9 @@ func (s *transcriptOnlyStore) AppendMessages(_ context.Context, records []Messag
 			}
 		}
 	}
-	s.messages[records[0].ThreadID] = append(s.messages[records[0].ThreadID], records...)
+	for _, record := range records {
+		s.messages[record.ThreadID] = append(s.messages[record.ThreadID], record)
+	}
 	return nil
 }
 

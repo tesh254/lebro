@@ -160,25 +160,41 @@ func (r *guardedWorkingMemoryRepository) UpsertWorkingMemoryFact(ctx context.Con
 	return r.inner.UpsertWorkingMemoryFact(ctx, v, e)
 }
 func (r *guardedWorkingMemoryRepository) GetWorkingMemoryFact(ctx context.Context, s WorkingMemoryScope, k string) (WorkingMemoryFact, error) {
-	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindWorkingMemory, ID: k, Tenant: s.Namespace}); err != nil {
+	scope, err := policyScope(ctx, RuntimeScope(s))
+	if err != nil {
+		return WorkingMemoryFact{}, err
+	}
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindWorkingMemory, ID: k, Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
 		return WorkingMemoryFact{}, err
 	}
 	return r.inner.GetWorkingMemoryFact(ctx, s, k)
 }
 func (r *guardedWorkingMemoryRepository) ListWorkingMemoryFacts(ctx context.Context, s WorkingMemoryScope, p PageRequest) (Page[WorkingMemoryFact], error) {
-	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindWorkingMemory, ID: s.OwnerID, Tenant: s.Namespace}); err != nil {
+	scope, err := policyScope(ctx, RuntimeScope(s))
+	if err != nil {
+		return Page[WorkingMemoryFact]{}, err
+	}
+	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindWorkingMemory, ID: scope.OwnerID, Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
 		return Page[WorkingMemoryFact]{}, err
 	}
 	return r.inner.ListWorkingMemoryFacts(ctx, s, p)
 }
 func (r *guardedWorkingMemoryRepository) DeleteWorkingMemoryFact(ctx context.Context, s WorkingMemoryScope, k string, e int64) error {
-	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: k, Tenant: s.Namespace}); err != nil {
+	scope, err := policyScope(ctx, RuntimeScope(s))
+	if err != nil {
+		return err
+	}
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: k, Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
 		return err
 	}
 	return r.inner.DeleteWorkingMemoryFact(ctx, s, k, e)
 }
 func (r *guardedWorkingMemoryRepository) ClearWorkingMemory(ctx context.Context, s WorkingMemoryScope) error {
-	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: s.OwnerID, Tenant: s.Namespace}); err != nil {
+	scope, err := policyScope(ctx, RuntimeScope(s))
+	if err != nil {
+		return err
+	}
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkingMemory, ID: scope.OwnerID, Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
 		return err
 	}
 	return r.inner.ClearWorkingMemory(ctx, s)
@@ -215,7 +231,8 @@ func (r *guardedThreadRepository) GetThread(ctx context.Context, id ThreadID) (T
 	}
 	scope, err := policyScope(ctx, RuntimeScope{Namespace: record.Namespace, OwnerID: record.OwnerID})
 	if err != nil {
-		return ThreadRecord{}, err
+		// Out-of-scope and absent threads intentionally have the same result.
+		return ThreadRecord{}, ErrNotFound
 	}
 	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindThread, ID: string(id), Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
 		return ThreadRecord{}, err
@@ -224,19 +241,19 @@ func (r *guardedThreadRepository) GetThread(ctx context.Context, id ThreadID) (T
 }
 
 func (r *guardedThreadRepository) UpdateThread(ctx context.Context, record ThreadRecord) error {
+	scope, err := policyScope(ctx, RuntimeScope{Namespace: record.Namespace, OwnerID: record.OwnerID})
+	if err != nil {
+		return err
+	}
+	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindThread, ID: string(record.ID), Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
+		return err
+	}
 	stored, err := r.inner.GetThread(ctx, record.ID)
 	if err != nil {
 		return err
 	}
 	if stored.Namespace != record.Namespace || stored.OwnerID != record.OwnerID {
 		return errors.New("lebro: thread scope is immutable")
-	}
-	scope, err := policyScope(ctx, RuntimeScope{Namespace: stored.Namespace, OwnerID: stored.OwnerID})
-	if err != nil {
-		return err
-	}
-	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindThread, ID: string(record.ID), Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
-		return err
 	}
 	return r.inner.UpdateThread(ctx, record)
 }
@@ -314,18 +331,18 @@ type guardedWorkflowRunRepository struct {
 }
 
 func (r *guardedWorkflowRunRepository) SaveWorkflowRun(ctx context.Context, record WorkflowRunRecord) error {
-	if stored, err := r.inner.GetWorkflowRun(ctx, record.ID); err == nil {
-		if stored.Namespace != record.Namespace || stored.OwnerID != record.OwnerID {
-			return errors.New("lebro: workflow run scope is immutable")
-		}
-	} else if !errors.Is(err, ErrNotFound) {
-		return err
-	}
 	scope, err := policyScope(ctx, RuntimeScope{Namespace: record.Namespace, OwnerID: record.OwnerID})
 	if err != nil {
 		return err
 	}
 	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindWorkflowRun, ID: string(record.ID), Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
+		return err
+	}
+	if stored, err := r.inner.GetWorkflowRun(ctx, record.ID); err == nil {
+		if stored.Namespace != record.Namespace || stored.OwnerID != record.OwnerID {
+			return errors.New("lebro: workflow run scope is immutable")
+		}
+	} else if !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	return r.inner.SaveWorkflowRun(ctx, record)
@@ -391,13 +408,6 @@ type guardedScheduleRepository struct {
 }
 
 func (r *guardedScheduleRepository) SaveSchedule(ctx context.Context, record ScheduleRecord) error {
-	if stored, err := r.inner.GetSchedule(ctx, record.ID); err == nil {
-		if stored.Namespace != record.Namespace || stored.OwnerID != record.OwnerID {
-			return errors.New("lebro: schedule scope is immutable")
-		}
-	} else if !errors.Is(err, ErrNotFound) {
-		return err
-	}
 	scope, err := policyScope(ctx, RuntimeScope{Namespace: record.Namespace, OwnerID: record.OwnerID})
 	if err != nil {
 		return err
@@ -405,10 +415,31 @@ func (r *guardedScheduleRepository) SaveSchedule(ctx context.Context, record Sch
 	if err := authorize(ctx, r.policy, ActionStorageWrite, Resource{Kind: ResourceKindSchedule, ID: string(record.ID), Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
 		return err
 	}
+	if stored, err := r.inner.GetSchedule(ctx, record.ID); err == nil {
+		if stored.Namespace != record.Namespace || stored.OwnerID != record.OwnerID {
+			return errors.New("lebro: schedule scope is immutable")
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
 	return r.inner.SaveSchedule(ctx, record)
 }
 
 func (r *guardedScheduleRepository) GetSchedule(ctx context.Context, id ScheduleID) (ScheduleRecord, error) {
+	if _, verified := RuntimeScopeFromContext(ctx); verified {
+		record, err := r.inner.GetSchedule(ctx, id)
+		if err != nil {
+			return ScheduleRecord{}, err
+		}
+		scope, err := policyScope(ctx, RuntimeScope{Namespace: record.Namespace, OwnerID: record.OwnerID})
+		if err != nil {
+			return ScheduleRecord{}, ErrNotFound
+		}
+		if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindSchedule, ID: string(id), Tenant: scope.Namespace, OwnerID: scope.OwnerID}); err != nil {
+			return ScheduleRecord{}, err
+		}
+		return record, nil
+	}
 	if err := authorize(ctx, r.policy, ActionStorageRead, Resource{Kind: ResourceKindSchedule, ID: string(id)}); err != nil {
 		return ScheduleRecord{}, err
 	}
@@ -458,6 +489,15 @@ func (r *guardedScheduleExecutionRepository) authorizeSchedule(ctx context.Conte
 func (r *guardedScheduleExecutionRepository) SaveScheduleExecution(ctx context.Context, record ScheduleExecutionRecord) error {
 	if err := r.authorizeSchedule(ctx, ActionStorageWrite, record.ScheduleID); err != nil {
 		return err
+	}
+	schedule, err := r.schedules.GetSchedule(ctx, record.ScheduleID)
+	if err != nil {
+		return err
+	}
+	if record.Namespace == "" && record.OwnerID == "" {
+		record.Namespace, record.OwnerID = schedule.Namespace, schedule.OwnerID
+	} else if record.Namespace != schedule.Namespace || record.OwnerID != schedule.OwnerID {
+		return errors.New("lebro: schedule execution scope must match its schedule")
 	}
 	return r.inner.SaveScheduleExecution(ctx, record)
 }

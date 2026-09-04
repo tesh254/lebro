@@ -3,6 +3,7 @@ package testkit
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -70,11 +71,11 @@ func runtimeStoreCaps(t *testing.T, rs runtime.RuntimeStore) runtime.StoreCapabi
 	ob, observabilityOK := rs.(runtime.ObservabilityStore)
 	_, transactionsOK := rs.(runtime.TransactionalStore)
 	for _, c := range []check{
-		{runtime.StoreCapabilityTranscript, transcriptOK && s.Threads() != nil && s.Messages() != nil},
-		{runtime.StoreCapabilityWorkingMemory, workingMemoryOK && w.WorkingMemory() != nil},
-		{runtime.StoreCapabilityWorkflowState, workflowStateOK && wf.WorkflowRuns() != nil && wf.WorkflowSnapshots() != nil},
-		{runtime.StoreCapabilitySchedules, schedulesOK && sc.Schedules() != nil && sc.ScheduleExecutions() != nil},
-		{runtime.StoreCapabilityObservability, observabilityOK && ob.RunEvents() != nil && ob.ModelAttempts() != nil && ob.ToolExecutions() != nil},
+		{runtime.StoreCapabilityTranscript, transcriptOK && !nilInterface(s.Threads()) && !nilInterface(s.Messages())},
+		{runtime.StoreCapabilityWorkingMemory, workingMemoryOK && !nilInterface(w.WorkingMemory())},
+		{runtime.StoreCapabilityWorkflowState, workflowStateOK && !nilInterface(wf.WorkflowRuns()) && !nilInterface(wf.WorkflowSnapshots())},
+		{runtime.StoreCapabilitySchedules, schedulesOK && !nilInterface(sc.Schedules()) && !nilInterface(sc.ScheduleExecutions())},
+		{runtime.StoreCapabilityObservability, observabilityOK && !nilInterface(ob.RunEvents()) && !nilInterface(ob.ModelAttempts()) && !nilInterface(ob.ToolExecutions())},
 		{runtime.StoreCapabilityTransactions, transactionsOK},
 	} {
 		if caps.Has(c.capability) != c.implemented {
@@ -82,6 +83,19 @@ func runtimeStoreCaps(t *testing.T, rs runtime.RuntimeStore) runtime.StoreCapabi
 		}
 	}
 	return caps
+}
+
+func nilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func runtimeStoreCapabilityAdvertisement(t *testing.T, newRuntimeStore RuntimeStoreFactory) {
@@ -442,31 +456,31 @@ func runtimeStoreTransactionSemantics(t *testing.T, newRuntimeStore RuntimeStore
 	}
 	ctx := context.Background()
 	now := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
-	write := func(view runtime.RuntimeStore, id string) error {
+	write := func(callCtx context.Context, view runtime.RuntimeStore, id string) error {
 		transcript := view.(runtime.TranscriptStore)
-		return transcript.Threads().CreateThread(ctx, runtime.ThreadRecord{ID: runtime.ThreadID(id), CreatedAt: now, UpdatedAt: now})
+		return transcript.Threads().CreateThread(callCtx, runtime.ThreadRecord{ID: runtime.ThreadID(id), CreatedAt: now, UpdatedAt: now})
 	}
-	read := func(view runtime.RuntimeStore, id string) bool {
-		_, err := view.(runtime.TranscriptStore).Threads().GetThread(ctx, runtime.ThreadID(id))
+	read := func(callCtx context.Context, view runtime.RuntimeStore, id string) bool {
+		_, err := view.(runtime.TranscriptStore).Threads().GetThread(callCtx, runtime.ThreadID(id))
 		return err == nil
 	}
 	if err := transactional.InTransaction(ctx, func(ctx context.Context, view runtime.RuntimeStore) error {
-		return write(view, "tx-commit-1")
+		return write(ctx, view, "tx-commit-1")
 	}); err != nil {
 		t.Fatalf("InTransaction commit: %v", err)
 	}
-	if !read(rs, "tx-commit-1") {
+	if !read(ctx, rs, "tx-commit-1") {
 		t.Fatal("committed transaction record is missing after InTransaction returns")
 	}
 	if err := transactional.InTransaction(ctx, func(ctx context.Context, view runtime.RuntimeStore) error {
-		if err := write(view, "tx-rollback-1"); err != nil {
+		if err := write(ctx, view, "tx-rollback-1"); err != nil {
 			return err
 		}
 		return errors.New("lebro: rollback requested by contract test")
 	}); err == nil {
 		t.Fatal("InTransaction accepted a failing callback")
 	}
-	if read(rs, "tx-rollback-1") {
+	if read(ctx, rs, "tx-rollback-1") {
 		t.Fatal("record written before rollback is visible after the transaction failed")
 	}
 }

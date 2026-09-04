@@ -352,7 +352,12 @@ type WorkingMemoryFact struct {
 }
 
 // WorkingMemoryScope selects facts owned by one user in one tenant.
-type WorkingMemoryScope = RuntimeScope
+// WorkingMemoryScope retains its original JSON field names for wire
+// compatibility. RuntimeScope is the reusable scope for new record types.
+type WorkingMemoryScope struct {
+	Namespace string
+	OwnerID   string
+}
 
 // WorkingMemoryRepository owns scoped fact CRUD. expectedVersion is zero for
 // create and otherwise must equal the stored version; conflicts return

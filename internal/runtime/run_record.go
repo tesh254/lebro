@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -196,8 +197,11 @@ func validateSuppliedRunID(id RunID) error {
 	if len(id) > 128 {
 		return ErrInvalidRunID
 	}
+	if strings.TrimSpace(string(id)) == "" {
+		return ErrInvalidRunID
+	}
 	for _, r := range id {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' {
+		if r < 0x20 || r == 0x7f {
 			return ErrInvalidRunID
 		}
 	}

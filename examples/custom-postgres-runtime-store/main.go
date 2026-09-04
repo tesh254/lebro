@@ -40,14 +40,29 @@ func organizationScope(organizationID, userID string) lebro.RuntimeScope {
 	return lebro.RuntimeScope{Namespace: organizationID, OwnerID: userID}
 }
 
-// In a real adapter, each accessor returns a repository backed by one
-// transaction-scoped *sql.Tx. Keeping the transaction boundary in the adapter
-// lets one agent transcript/working-memory update or one workflow snapshot
-// commit atomically. The adapter's Capabilities declares only what it provides.
-type postgresRuntimeStore struct{}
+// postgresRuntimeStore shows the complete capability shape. The repositories
+// below are deliberately injected: a production constructor supplies SQL
+// implementations that issue schema-qualified queries using one *sql.Tx per
+// InTransaction callback. Keeping those application repositories behind this
+// adapter lets Lebro validate the capability contract at startup.
+type postgresRuntimeStore struct {
+	threads   lebro.ThreadRepository
+	messages  lebro.MessageRepository
+	memory    lebro.WorkingMemoryRepository
+	runs      lebro.WorkflowRunRepository
+	snapshots lebro.WorkflowSnapshotRepository
+}
 
 func (postgresRuntimeStore) Capabilities() lebro.StoreCapabilities {
-	return lebro.StoreCapabilities{Transcript: true, WorkingMemory: true, WorkflowState: true, Transactions: true}
+	return lebro.StoreCapabilities{Transcript: true, WorkingMemory: true, WorkflowState: true}
+}
+
+func (s postgresRuntimeStore) Threads() lebro.ThreadRepository              { return s.threads }
+func (s postgresRuntimeStore) Messages() lebro.MessageRepository            { return s.messages }
+func (s postgresRuntimeStore) WorkingMemory() lebro.WorkingMemoryRepository { return s.memory }
+func (s postgresRuntimeStore) WorkflowRuns() lebro.WorkflowRunRepository    { return s.runs }
+func (s postgresRuntimeStore) WorkflowSnapshots() lebro.WorkflowSnapshotRepository {
+	return s.snapshots
 }
 
 func main() {

@@ -1803,8 +1803,11 @@ func (a *Agent) persistRunRecords(ctx context.Context, threadID ThreadID, runID 
 		err := a.store.Transaction(ctx, func(ctx context.Context, repos Repositories) error {
 			if threadID != "" {
 				if _, err := repos.Threads().GetThread(ctx, threadID); errors.Is(err, ErrNotFound) {
+					scope, _ := RuntimeScopeFromContext(ctx)
 					if err := repos.Threads().CreateThread(ctx, ThreadRecord{
 						ID:        threadID,
+						Namespace: scope.Namespace,
+						OwnerID:   scope.OwnerID,
 						CreatedAt: now,
 						UpdatedAt: now,
 					}); err != nil {

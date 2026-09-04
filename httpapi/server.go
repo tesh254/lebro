@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -65,6 +66,15 @@ type Server struct {
 // has no agents and no workflows until ExposeAgent or ExposeWorkflow is called;
 // until then only the health, list, and OpenAPI routes return content.
 func NewServer(config ServerConfig) *Server {
+	server, _ := NewServerE(config)
+	return server
+}
+
+// NewServerE is the error-returning constructor for callers that want to fail
+// startup when a RuntimeStore does not provide a usable transcript capability.
+// NewServer remains available for source compatibility; its Handler returns a
+// configuration failure rather than silently treating a bad adapter as absent.
+func NewServerE(config ServerConfig) (*Server, error) {
 	if config.Title == "" {
 		config.Title = "lebro"
 	}
@@ -83,14 +93,27 @@ func NewServer(config ServerConfig) *Server {
 		server.configErr = errors.New("lebro/httpapi: store and runtime store are mutually exclusive")
 	} else if config.RuntimeStore != nil {
 		if !config.RuntimeStore.Capabilities().Transcript {
-			server.configErr = errors.New("lebro/httpapi: runtime store lacks transcript capability")
-		} else if transcript, ok := config.RuntimeStore.(lebro.TranscriptStore); ok && transcript != nil {
+			server.configErr = &lebro.StoreCapabilityError{Capability: lebro.StoreCapabilityTranscript, Feature: "http thread routes", Reason: "the attached storage adapter does not advertise it"}
+		} else if transcript, ok := config.RuntimeStore.(lebro.TranscriptStore); ok && transcript != nil && !isNil(transcript.Threads()) && !isNil(transcript.Messages()) {
 			server.transcript = transcript
 		} else {
-			server.configErr = errors.New("lebro/httpapi: runtime store transcript capability is inconsistent")
+			server.configErr = &lebro.StoreCapabilityError{Capability: lebro.StoreCapabilityTranscript, Feature: "http thread routes", Reason: "the adapter returned a nil transcript repository"}
 		}
 	}
-	return server
+	return server, server.configErr
+}
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func (s *Server) threadStore() (lebro.ThreadRepository, lebro.MessageRepository, bool) {
@@ -178,6 +201,15 @@ func (s *Server) handlerBuilt() bool { return s.handler != nil }
 // use.
 func (s *Server) Handler() http.Handler {
 	s.handlerOnce.Do(func() {
+		if s.configErr != nil {
+			built := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, r, ErrorCodeInvalidRequest)
+			})
+			s.mu.Lock()
+			s.handler = built
+			s.mu.Unlock()
+			return
+		}
 		built := s.buildRouter()
 		s.mu.Lock()
 		s.handler = built

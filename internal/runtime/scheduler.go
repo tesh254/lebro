@@ -99,6 +99,9 @@ func NewScheduler(config SchedulerConfig) (*Scheduler, error) {
 		if err := requireCapability(caps, StoreCapabilitySchedules, "scheduler"); err != nil {
 			return nil, err
 		}
+		if err := requireCapability(caps, StoreCapabilityWorkflowState, "scheduler"); err != nil {
+			return nil, err
+		}
 	} else {
 		var err error
 		caps, err = storeCapabilitiesOf(store)

@@ -116,7 +116,7 @@ their selected command. Examples marked **external** need the named service.
 | SQLite storage | [SQLite](#file-backed-sqlite-storage) | [`storage-sqlite`](examples/storage-sqlite): `go run ./examples/storage-sqlite` |
 | Postgres storage | [Postgres](#postgresql-storage) | [`storage-postgres`](examples/storage-postgres): `go run ./examples/storage-postgres` |
 | Custom storage adapter (capability-based) | [Custom storage](docs/custom-storage.md) | [`custom-store`](examples/custom-store): `go run ./examples/custom-store` |
-| Custom PostgreSQL control-plane adapter | [Custom storage](docs/custom-storage.md) | [`custom-postgres-runtime-store`](examples/custom-postgres-runtime-store): application-owned migrations |
+| Custom PostgreSQL control-plane adapter | [Custom storage](docs/custom-storage.md) | [`custom-postgres-runtime-store`](examples/custom-postgres-runtime-store): `go run ./examples/custom-postgres-runtime-store` (application-owned migrations) |
 | Durable run timeline (attempts, tools, events) | [Run records](docs/run-records.md) | [`run-timeline`](examples/run-timeline): `go run ./examples/run-timeline` |
 | In-memory vector search | [Vector storage](#vector-storage) | [`vector-search`](examples/vector-search): `go run ./examples/vector-search` |
 | Qdrant vector search | [Vector storage](#vector-storage) | [`vector-qdrant`](examples/vector-qdrant): `go run ./examples/vector-qdrant` **external: Qdrant** |

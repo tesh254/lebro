@@ -201,7 +201,13 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if ctx == nil {
 		return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: errors.New("lebro: network context is nil")}
 	}
-	runID := n.idSource.NewRunID()
+	if err := validateSuppliedRunID(input.RunID); err != nil {
+		return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: err}
+	}
+	runID := input.RunID
+	if runID == "" {
+		runID = n.idSource.NewRunID()
+	}
 	emitter := newRunEmitter(ctx, n.listener, n.clock, n.idSource)
 	emitter.emit(runID, 0, "", RunEventStarted)
 	task, err := networkTask(input.Messages)
@@ -329,7 +335,8 @@ func (n *Network) save(ctx context.Context, id RunID, input RunInput, routes []N
 	} else if text := networkOutput(result); text != "" {
 		output, _ = json.Marshal(map[string]string{"output": text})
 	}
-	record := WorkflowRunRecord{ID: id, WorkflowID: n.definition.ID, ThreadID: input.ThreadID, Status: result.Status, Input: networkInputRecord(input), Output: output, StepOutputs: outputs, CurrentStep: len(routes), Metadata: metadataJSON(input.Metadata), StartedAt: now, UpdatedAt: now}
+	scope, _ := RuntimeScopeFromContext(ctx)
+	record := WorkflowRunRecord{ID: id, WorkflowID: n.definition.ID, ThreadID: input.ThreadID, Namespace: scope.Namespace, OwnerID: scope.OwnerID, Status: result.Status, Input: networkInputRecord(input), Output: output, StepOutputs: outputs, CurrentStep: len(routes), Metadata: metadataJSON(input.Metadata), StartedAt: now, UpdatedAt: now}
 	if result.Status == RunStatusSucceeded || result.Status == RunStatusFailed || result.Status == RunStatusCancelled {
 		record.FinishedAt = &now
 	}

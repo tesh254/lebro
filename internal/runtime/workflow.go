@@ -899,9 +899,10 @@ func (w *LinearWorkflow) Run(ctx context.Context, input WorkflowRunInput) (Workf
 	}
 	runID := w.runID(input.RunID)
 	if input.RunID != "" && w.store != nil && !isNilInterface(w.store) {
-		// Check before the cancellation path too: a cancelled caller must not
-		// turn a pre-created control-plane ID into a terminal replacement.
-		if _, err := w.store.WorkflowRuns().GetWorkflowRun(context.WithoutCancel(ctx), runID); err == nil {
+		if err := ctx.Err(); err != nil {
+			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorCancelled, Err: err}
+		}
+		if _, err := w.store.WorkflowRuns().GetWorkflowRun(ctx, runID); err == nil {
 			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: ErrRunIDAlreadyExists}
 		} else if !errors.Is(err, ErrNotFound) {
 			return WorkflowRunResult{}, &WorkflowError{Kind: WorkflowErrorStepFailed, Err: fmt.Errorf("lebro: check supplied workflow run ID: %w", err)}

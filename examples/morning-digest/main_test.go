@@ -17,6 +17,7 @@ func TestRunFiresOverdueDigestAfterRestart(t *testing.T) {
 		"schedule persisted at 2026-08-12T07:00:00Z; process exits",
 		"tick fired 1 schedule(s)",
 		"digest run ",
+		": succeeded",
 		"MORNING COMPETITOR BRIEF",
 		"news (industry news)",
 		"Rival added SSO on mid-tier plans",

@@ -99,7 +99,13 @@ func (b *runtimeStoreBridge) Transaction(ctx context.Context, fn func(context.Co
 			return fn(ctx, b.repositories(view))
 		})
 	}
-	return fn(ctx, b.repositories(b.rs))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := fn(ctx, b.repositories(b.rs)); err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // repositories builds the Repositories view over a RuntimeStore (the store

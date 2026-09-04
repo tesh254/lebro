@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,9 +25,10 @@ import (
 // A real adapter would map these onto an existing database, API, event store,
 // or document store instead.
 type ownStore struct {
-	mu     sync.Mutex
-	blobs  map[string][]byte
-	values map[string][]byte
+	mu           sync.Mutex
+	blobs        map[string][]byte
+	values       map[string][]byte
+	messageOrder map[lebro.ThreadID][]string
 }
 
 var (
@@ -36,7 +38,7 @@ var (
 )
 
 func newOwnStore() *ownStore {
-	return &ownStore{blobs: map[string][]byte{}, values: map[string][]byte{}}
+	return &ownStore{blobs: map[string][]byte{}, values: map[string][]byte{}, messageOrder: map[lebro.ThreadID][]string{}}
 }
 
 // Capabilities advertises exactly what the adapter supports. Lebro validates
@@ -51,7 +53,10 @@ func (s *ownStore) Capabilities() lebro.StoreCapabilities {
 func (s *ownStore) Threads() lebro.ThreadRepository   { return s }
 func (s *ownStore) Messages() lebro.MessageRepository { return s }
 
-func (s *ownStore) CreateThread(_ context.Context, record lebro.ThreadRecord) error {
+func (s *ownStore) CreateThread(ctx context.Context, record lebro.ThreadRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := "thread:" + string(record.ID)
@@ -66,7 +71,10 @@ func (s *ownStore) CreateThread(_ context.Context, record lebro.ThreadRecord) er
 	return nil
 }
 
-func (s *ownStore) GetThread(_ context.Context, id lebro.ThreadID) (lebro.ThreadRecord, error) {
+func (s *ownStore) GetThread(ctx context.Context, id lebro.ThreadID) (lebro.ThreadRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return lebro.ThreadRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	encoded, ok := s.blobs["thread:"+string(id)]
@@ -80,7 +88,10 @@ func (s *ownStore) GetThread(_ context.Context, id lebro.ThreadID) (lebro.Thread
 	return record, nil
 }
 
-func (s *ownStore) UpdateThread(_ context.Context, record lebro.ThreadRecord) error {
+func (s *ownStore) UpdateThread(ctx context.Context, record lebro.ThreadRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := "thread:" + string(record.ID)
@@ -95,7 +106,10 @@ func (s *ownStore) UpdateThread(_ context.Context, record lebro.ThreadRecord) er
 	return nil
 }
 
-func (s *ownStore) AppendMessages(_ context.Context, records []lebro.MessageRecord) error {
+func (s *ownStore) AppendMessages(ctx context.Context, records []lebro.MessageRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, record := range records {
@@ -108,11 +122,15 @@ func (s *ownStore) AppendMessages(_ context.Context, records []lebro.MessageReco
 			return err
 		}
 		s.blobs[key] = encoded
+		s.messageOrder[record.ThreadID] = append(s.messageOrder[record.ThreadID], key)
 	}
 	return nil
 }
 
-func (s *ownStore) UpdateMessages(_ context.Context, records []lebro.MessageRecord) error {
+func (s *ownStore) UpdateMessages(ctx context.Context, records []lebro.MessageRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, record := range records {
@@ -129,36 +147,46 @@ func (s *ownStore) UpdateMessages(_ context.Context, records []lebro.MessageReco
 	return nil
 }
 
-func (s *ownStore) DeleteMessages(_ context.Context, threadID lebro.ThreadID, ids []string) error {
+func (s *ownStore) DeleteMessages(ctx context.Context, threadID lebro.ThreadID, ids []string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, id := range ids {
 		delete(s.blobs, fmt.Sprintf("message:%s:%s", threadID, id))
 	}
+	order := s.messageOrder[threadID][:0]
+	for _, key := range s.messageOrder[threadID] {
+		if _, ok := s.blobs[key]; ok {
+			order = append(order, key)
+		}
+	}
+	s.messageOrder[threadID] = order
 	return nil
 }
 
-func (s *ownStore) ListMessages(_ context.Context, threadID lebro.ThreadID, page lebro.PageRequest) (lebro.Page[lebro.MessageRecord], error) {
+func (s *ownStore) ListMessages(ctx context.Context, threadID lebro.ThreadID, page lebro.PageRequest) (lebro.Page[lebro.MessageRecord], error) {
+	if err := ctx.Err(); err != nil {
+		return lebro.Page[lebro.MessageRecord]{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prefix := "message:" + string(threadID) + ":"
-	keys := make([]string, 0, len(s.blobs))
-	for key := range s.blobs {
-		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
-			keys = append(keys, key)
-		}
-	}
-	// Lexicographic key order keeps the transcript order stable: the runtime
-	// names message IDs so ordering by ID matches append order.
-	sort.Strings(keys)
+	keys := append([]string(nil), s.messageOrder[threadID]...)
 	start := 0
 	if page.Cursor != "" {
 		if _, err := fmt.Sscanf(page.Cursor, "%d", &start); err != nil || start < 0 {
 			return lebro.Page[lebro.MessageRecord]{}, lebro.ErrInvalidPage
 		}
 	}
+	if page.Limit < 0 {
+		return lebro.Page[lebro.MessageRecord]{}, lebro.ErrInvalidPage
+	}
+	if start > len(keys) {
+		return lebro.Page[lebro.MessageRecord]{Records: []lebro.MessageRecord{}}, nil
+	}
 	limit := page.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = len(keys)
 	}
 	end := min(start+limit, len(keys))
@@ -181,10 +209,13 @@ func (s *ownStore) ListMessages(_ context.Context, threadID lebro.ThreadID, page
 
 func (s *ownStore) WorkingMemory() lebro.WorkingMemoryRepository { return s }
 
-func (s *ownStore) UpsertWorkingMemoryFact(_ context.Context, fact lebro.WorkingMemoryFact, expectedVersion int64) (lebro.WorkingMemoryFact, error) {
+func (s *ownStore) UpsertWorkingMemoryFact(ctx context.Context, fact lebro.WorkingMemoryFact, expectedVersion int64) (lebro.WorkingMemoryFact, error) {
+	if err := ctx.Err(); err != nil {
+		return lebro.WorkingMemoryFact{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("fact:%s:%s:%s", fact.Namespace, fact.OwnerID, fact.Key)
+	key := factStorageKey(fact.Namespace, fact.OwnerID, fact.Key)
 	encoded, ok := s.blobs[key]
 	var stored lebro.WorkingMemoryFact
 	if ok {
@@ -211,16 +242,22 @@ func (s *ownStore) UpsertWorkingMemoryFact(_ context.Context, fact lebro.Working
 	return stored, nil
 }
 
-func (s *ownStore) GetWorkingMemoryFact(_ context.Context, scope lebro.WorkingMemoryScope, factKey string) (lebro.WorkingMemoryFact, error) {
+func (s *ownStore) GetWorkingMemoryFact(ctx context.Context, scope lebro.WorkingMemoryScope, factKey string) (lebro.WorkingMemoryFact, error) {
+	if err := ctx.Err(); err != nil {
+		return lebro.WorkingMemoryFact{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.loadFact(fmt.Sprintf("fact:%s:%s:%s", scope.Namespace, scope.OwnerID, factKey))
+	return s.loadFact(factStorageKey(scope.Namespace, scope.OwnerID, factKey))
 }
 
-func (s *ownStore) ListWorkingMemoryFacts(_ context.Context, scope lebro.WorkingMemoryScope, _ lebro.PageRequest) (lebro.Page[lebro.WorkingMemoryFact], error) {
+func (s *ownStore) ListWorkingMemoryFacts(ctx context.Context, scope lebro.WorkingMemoryScope, page lebro.PageRequest) (lebro.Page[lebro.WorkingMemoryFact], error) {
+	if err := ctx.Err(); err != nil {
+		return lebro.Page[lebro.WorkingMemoryFact]{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prefix := fmt.Sprintf("fact:%s:%s:", scope.Namespace, scope.OwnerID)
+	prefix := factPrefix(scope.Namespace, scope.OwnerID)
 	keys := make([]string, 0)
 	for key := range s.blobs {
 		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
@@ -228,21 +265,44 @@ func (s *ownStore) ListWorkingMemoryFacts(_ context.Context, scope lebro.Working
 		}
 	}
 	sort.Strings(keys)
-	records := make([]lebro.WorkingMemoryFact, 0, len(keys))
-	for _, key := range keys {
+	if page.Limit < 0 {
+		return lebro.Page[lebro.WorkingMemoryFact]{}, lebro.ErrInvalidPage
+	}
+	start := 0
+	if page.Cursor != "" {
+		if _, err := fmt.Sscanf(page.Cursor, "%d", &start); err != nil || start < 0 {
+			return lebro.Page[lebro.WorkingMemoryFact]{}, lebro.ErrInvalidPage
+		}
+	}
+	if start > len(keys) {
+		return lebro.Page[lebro.WorkingMemoryFact]{Records: []lebro.WorkingMemoryFact{}}, nil
+	}
+	end := len(keys)
+	if page.Limit > 0 && page.Limit < end-start {
+		end = start + page.Limit
+	}
+	records := make([]lebro.WorkingMemoryFact, 0, end-start)
+	for _, key := range keys[start:end] {
 		fact, err := s.loadFact(key)
 		if err != nil {
 			return lebro.Page[lebro.WorkingMemoryFact]{}, err
 		}
 		records = append(records, fact)
 	}
-	return lebro.Page[lebro.WorkingMemoryFact]{Records: records}, nil
+	result := lebro.Page[lebro.WorkingMemoryFact]{Records: records}
+	if end < len(keys) {
+		result.NextCursor = fmt.Sprintf("%d", end)
+	}
+	return result, nil
 }
 
-func (s *ownStore) DeleteWorkingMemoryFact(_ context.Context, scope lebro.WorkingMemoryScope, factKey string, expectedVersion int64) error {
+func (s *ownStore) DeleteWorkingMemoryFact(ctx context.Context, scope lebro.WorkingMemoryScope, factKey string, expectedVersion int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := fmt.Sprintf("fact:%s:%s:%s", scope.Namespace, scope.OwnerID, factKey)
+	key := factStorageKey(scope.Namespace, scope.OwnerID, factKey)
 	stored, err := s.loadFact(key)
 	if err != nil {
 		return err
@@ -254,16 +314,27 @@ func (s *ownStore) DeleteWorkingMemoryFact(_ context.Context, scope lebro.Workin
 	return nil
 }
 
-func (s *ownStore) ClearWorkingMemory(_ context.Context, scope lebro.WorkingMemoryScope) error {
+func (s *ownStore) ClearWorkingMemory(ctx context.Context, scope lebro.WorkingMemoryScope) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	prefix := fmt.Sprintf("fact:%s:%s:", scope.Namespace, scope.OwnerID)
+	prefix := factPrefix(scope.Namespace, scope.OwnerID)
 	for key := range s.blobs {
 		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
 			delete(s.blobs, key)
 		}
 	}
 	return nil
+}
+
+func factPart(value string) string { return base64.RawURLEncoding.EncodeToString([]byte(value)) }
+func factPrefix(namespace, owner string) string {
+	return "fact:" + factPart(namespace) + ":" + factPart(owner) + ":"
+}
+func factStorageKey(namespace, owner, key string) string {
+	return factPrefix(namespace, owner) + factPart(key)
 }
 
 func (s *ownStore) loadFact(key string) (lebro.WorkingMemoryFact, error) {

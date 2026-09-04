@@ -77,6 +77,9 @@ func WithRuntimeScope(ctx context.Context, scope RuntimeScope) context.Context {
 
 // RuntimeScopeFromContext returns the verified scope supplied by middleware.
 func RuntimeScopeFromContext(ctx context.Context) (RuntimeScope, bool) {
+	if ctx == nil {
+		return RuntimeScope{}, false
+	}
 	scope, ok := ctx.Value(runtimeScopeContextKey{}).(RuntimeScope)
 	return scope, ok
 }
