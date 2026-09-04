@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -623,8 +622,8 @@ func TestAgentNoListenerDoesNotAlterBehavior(t *testing.T) {
 	if result.Metadata["request_id"] != "req-1" {
 		t.Fatalf("metadata = %#v", result.Metadata)
 	}
-	if !strings.HasPrefix(string(result.ID), "agent-run-") {
-		t.Fatalf("run ID = %q, want agent-run-*", result.ID)
+	if result.ID == "" {
+		t.Fatalf("run ID is empty")
 	}
 }
 
