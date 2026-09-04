@@ -270,6 +270,12 @@ var sqliteSchemaMigrations = []string{
 	`ALTER TABLE model_attempts ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE tool_executions ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE tool_executions ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedule_executions ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedule_executions ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;
@@ -744,11 +750,13 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 	if err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, namespace, owner_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workflow_id     = excluded.workflow_id,
 			thread_id       = excluded.thread_id,
+			namespace       = excluded.namespace,
+			owner_id        = excluded.owner_id,
 			status          = excluded.status,
 			input           = excluded.input,
 			output          = excluded.output,
@@ -763,7 +771,7 @@ func (r *sqliteRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRunR
 			workflow_version= excluded.workflow_version,
 			path            = excluded.path,
 			fan_out         = excluded.fan_out`,
-		v.ID, v.WorkflowID, sqliteNullableString(string(v.ThreadID)), v.Status, sqliteJSON(v.Input), sqliteJSON(v.Output), sqliteJSON(v.Metadata), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), sqliteTime(v.UpdatedAt),
+		v.ID, v.WorkflowID, sqliteNullableString(string(v.ThreadID)), v.Namespace, v.OwnerID, v.Status, sqliteJSON(v.Input), sqliteJSON(v.Output), sqliteJSON(v.Metadata), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), sqliteTime(v.UpdatedAt),
 		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion, path, fanOut); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, sqliteError(err))
 	}
@@ -774,7 +782,7 @@ func (r *sqliteRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Work
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, namespace, owner_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs WHERE id = ?`, id)
 	record, err := scanWorkflowRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -794,7 +802,7 @@ func (r *sqliteRepositories) ListWorkflowRuns(ctx context.Context, filter Workfl
 		return Page[WorkflowRunRecord]{}, err
 	}
 	var (
-		query = `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs`
+		query = `SELECT id, workflow_id, thread_id, namespace, owner_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs`
 		args  []any
 		where []string
 	)
@@ -805,6 +813,14 @@ func (r *sqliteRepositories) ListWorkflowRuns(ctx context.Context, filter Workfl
 	if filter.Status != "" {
 		where = append(where, "status = ?")
 		args = append(args, filter.Status)
+	}
+	if filter.Namespace != "" {
+		where = append(where, "namespace = ?")
+		args = append(args, filter.Namespace)
+	}
+	if filter.OwnerID != "" {
+		where = append(where, "owner_id = ?")
+		args = append(args, filter.OwnerID)
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -896,10 +912,12 @@ func (r *sqliteRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord)
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: schedule: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, namespace, owner_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			workflow_id  = excluded.workflow_id,
+			namespace    = excluded.namespace,
+			owner_id     = excluded.owner_id,
 			spec         = excluded.spec,
 			paused       = excluded.paused,
 			concurrency  = excluded.concurrency,
@@ -911,7 +929,7 @@ func (r *sqliteRepositories) SaveSchedule(ctx context.Context, v ScheduleRecord)
 			wake_token   = excluded.wake_token,
 			created_at   = excluded.created_at,
 			updated_at   = excluded.updated_at`,
-		v.ID, v.WorkflowID, v.Spec, sqliteBool(v.Paused), string(v.Concurrency), sqliteJSON(v.Input), sqliteJSON(v.Metadata),
+		v.ID, v.WorkflowID, v.Namespace, v.OwnerID, v.Spec, sqliteBool(v.Paused), string(v.Concurrency), sqliteJSON(v.Input), sqliteJSON(v.Metadata),
 		sqliteNullableTime(v.NextFireAt), sqliteNullableTime(v.LastFireAt), v.WakeRunID, v.WakeToken, sqliteTime(v.CreatedAt), sqliteTime(v.UpdatedAt)); err != nil {
 		return fmt.Errorf("lebro: save schedule %q: %w", v.ID, sqliteError(err))
 	}
@@ -922,7 +940,7 @@ func (r *sqliteRepositories) GetSchedule(ctx context.Context, id ScheduleID) (Sc
 	if err := ctx.Err(); err != nil {
 		return ScheduleRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules WHERE id = ?`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, namespace, owner_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules WHERE id = ?`, id)
 	record, err := scanSchedule(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScheduleRecord{}, ErrNotFound
@@ -942,7 +960,7 @@ func (r *sqliteRepositories) ListSchedules(ctx context.Context, filter ScheduleF
 		return Page[ScheduleRecord]{}, err
 	}
 	var (
-		query = `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules`
+		query = `SELECT id, workflow_id, namespace, owner_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules`
 		args  []any
 		where []string
 	)
@@ -955,6 +973,14 @@ func (r *sqliteRepositories) ListSchedules(ctx context.Context, filter ScheduleF
 		// the cutoff. A NULL next_fire_at (unscheduled) never matches.
 		where = append(where, "paused = 0", "next_fire_at IS NOT NULL", "next_fire_at <= ?")
 		args = append(args, sqliteTime(*filter.DueBy))
+	}
+	if filter.Namespace != "" {
+		where = append(where, "namespace = ?")
+		args = append(args, filter.Namespace)
+	}
+	if filter.OwnerID != "" {
+		where = append(where, "owner_id = ?")
+		args = append(args, filter.OwnerID)
 	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
@@ -1022,8 +1048,8 @@ func (r *sqliteRepositories) SaveScheduleExecution(ctx context.Context, v Schedu
 	case !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("lebro: check schedule execution %q: %w", v.ID, sqliteError(err))
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(v.ID), v.ScheduleID, sqliteNullableString(string(v.RunID)), string(v.Status), sqliteTime(v.ScheduledFor), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), v.Error); err != nil {
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, namespace, owner_id, status, scheduled_for, started_at, finished_at, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(v.ID), v.ScheduleID, sqliteNullableString(string(v.RunID)), v.Namespace, v.OwnerID, string(v.Status), sqliteTime(v.ScheduledFor), sqliteTime(v.StartedAt), sqliteNullableTime(v.FinishedAt), v.Error); err != nil {
 		return fmt.Errorf("lebro: save schedule execution %q: %w", v.ID, sqliteError(err))
 	}
 	return nil
@@ -1040,7 +1066,7 @@ func (r *sqliteRepositories) ListScheduleExecutions(ctx context.Context, id Sche
 	if err != nil {
 		return Page[ScheduleExecutionRecord]{}, err
 	}
-	rows, err := r.q.QueryContext(ctx, `SELECT id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error FROM schedule_executions WHERE schedule_id = ? ORDER BY seq LIMIT ? OFFSET ?`, id, limit+1, offset)
+	rows, err := r.q.QueryContext(ctx, `SELECT id, schedule_id, run_id, namespace, owner_id, status, scheduled_for, started_at, finished_at, error FROM schedule_executions WHERE schedule_id = ? ORDER BY seq LIMIT ? OFFSET ?`, id, limit+1, offset)
 	if err != nil {
 		return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: list schedule executions for schedule %q: %w", id, sqliteError(err))
 	}
@@ -1178,7 +1204,7 @@ func scanWorkflowRun(row messagePageScanner) (WorkflowRunRecord, error) {
 	var stepOutputs, failure, path, fanOut sql.NullString
 	var finishedAt sql.NullString
 	var startedAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path, &fanOut); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Namespace, &record.OwnerID, &record.Status, &input, &output, &metadata, &startedAt, &finishedAt, &updatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path, &fanOut); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
@@ -1261,7 +1287,7 @@ func scanSchedule(row messagePageScanner) (ScheduleRecord, error) {
 	var nextFireAt, lastFireAt sql.NullString
 	var paused int
 	var createdAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.WakeRunID, &record.WakeToken, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Namespace, &record.OwnerID, &record.Spec, &paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.WakeRunID, &record.WakeToken, &createdAt, &updatedAt); err != nil {
 		return ScheduleRecord{}, err
 	}
 	record.Paused = paused != 0
@@ -1314,7 +1340,7 @@ func scanScheduleExecutionPage(rows *sql.Rows, offset, limit int) (Page[Schedule
 		var record ScheduleExecutionRecord
 		var runID, finishedAt sql.NullString
 		var status, scheduledFor, startedAt string
-		if err := rows.Scan(&record.ID, &record.ScheduleID, &runID, &status, &scheduledFor, &startedAt, &finishedAt, &record.Error); err != nil {
+		if err := rows.Scan(&record.ID, &record.ScheduleID, &runID, &record.Namespace, &record.OwnerID, &status, &scheduledFor, &startedAt, &finishedAt, &record.Error); err != nil {
 			return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: scan schedule execution: %w", sqliteError(err))
 		}
 		if runID.Valid {

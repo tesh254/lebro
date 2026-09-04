@@ -25,7 +25,8 @@ import (
 // serialization failures and lock timeouts surface as ErrConflict so callers
 // may retry, matching the optimistic-conflict contract of the other adapters.
 type PostgresStore struct {
-	db *sql.DB
+	db     *sql.DB
+	schema string
 }
 
 // PostgresStoreOptions tunes connection-pool behavior. A zero value leaves
@@ -36,6 +37,10 @@ type PostgresStoreOptions struct {
 	MaxOpenConns    int
 	MaxIdleConns    int
 	ConnMaxIdleTime time.Duration
+	// Schema optionally isolates all Lebro tables and schema_migrations in one
+	// PostgreSQL schema. It must be a simple PostgreSQL identifier. Empty keeps
+	// the server/database search_path behavior unchanged.
+	Schema string
 }
 
 // NewPostgresStore opens a PostgreSQL connection pool at dsn and returns a
@@ -46,9 +51,20 @@ type PostgresStoreOptions struct {
 // The pool is opened through the pgx stdlib adapter so the same database/sql
 // machinery powers both standalone and transaction-scoped repositories.
 func NewPostgresStore(dsn string, opts PostgresStoreOptions) (*PostgresStore, error) {
+	if err := validatePostgresSchema(opts.Schema); err != nil {
+		return nil, err
+	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("lebro: postgres: parse DSN %q: %w", dsn, err)
+	}
+	if opts.Schema != "" {
+		if cfg.RuntimeParams == nil {
+			cfg.RuntimeParams = make(map[string]string)
+		}
+		// This startup parameter is set on every pooled connection. Schema is
+		// validated before use, so no SQL identifier is interpolated here.
+		cfg.RuntimeParams["search_path"] = opts.Schema
 	}
 	db := stdlib.OpenDB(*cfg)
 	if opts.MaxOpenConns > 0 {
@@ -64,8 +80,33 @@ func NewPostgresStore(dsn string, opts PostgresStoreOptions) (*PostgresStore, er
 		_ = db.Close()
 		return nil, fmt.Errorf("lebro: postgres: connect to %q: %w", dsn, err)
 	}
-	return &PostgresStore{db: db}, nil
+	if opts.Schema != "" {
+		if _, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS ` + postgresIdentifier(opts.Schema)); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("lebro: postgres: create schema %q: %w", opts.Schema, postgresError(err))
+		}
+	}
+	return &PostgresStore{db: db, schema: opts.Schema}, nil
 }
+
+func validatePostgresSchema(schema string) error {
+	if schema == "" {
+		return nil
+	}
+	if len(schema) > 63 {
+		return errors.New("lebro: postgres schema must be a PostgreSQL identifier")
+	}
+	for i, r := range schema {
+		if r != '_' && (r < 'a' || r > 'z') && (i <= 0 || r < '0' || r > '9') {
+			return errors.New("lebro: postgres schema must be a PostgreSQL identifier")
+		}
+	}
+	return nil
+}
+
+// postgresIdentifier is safe only after validatePostgresSchema. Keeping it
+// narrow prevents the schema option from becoming a raw SQL interpolation API.
+func postgresIdentifier(identifier string) string { return `"` + identifier + `"` }
 
 // Close releases the underlying connection pool.
 func (s *PostgresStore) Close() error { return s.db.Close() }
@@ -255,6 +296,12 @@ var postgresSchemaMigrations = []string{
 	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE workflow_runs ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedule_executions ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE schedule_executions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -739,11 +786,13 @@ func (r *postgresRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRu
 	if err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO workflow_runs (id, workflow_id, thread_id, namespace, owner_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		ON CONFLICT (id) DO UPDATE SET
 			workflow_id      = EXCLUDED.workflow_id,
 			thread_id        = EXCLUDED.thread_id,
+			namespace        = EXCLUDED.namespace,
+			owner_id         = EXCLUDED.owner_id,
 			status           = EXCLUDED.status,
 			input            = EXCLUDED.input,
 			output           = EXCLUDED.output,
@@ -758,7 +807,7 @@ func (r *postgresRepositories) SaveWorkflowRun(ctx context.Context, v WorkflowRu
 			workflow_version = EXCLUDED.workflow_version,
 			path             = EXCLUDED.path,
 			fan_out          = EXCLUDED.fan_out`,
-		v.ID, v.WorkflowID, threadID, v.Status, postgresJSON(v.Input), postgresJSON(v.Output), postgresJSON(v.Metadata), v.StartedAt.UTC(), finishedAt, v.UpdatedAt.UTC(),
+		v.ID, v.WorkflowID, threadID, v.Namespace, v.OwnerID, v.Status, postgresJSON(v.Input), postgresJSON(v.Output), postgresJSON(v.Metadata), v.StartedAt.UTC(), finishedAt, v.UpdatedAt.UTC(),
 		v.CurrentStep, string(v.CurrentStepID), stepOutputs, failure, v.WorkflowVersion, path, fanOut); err != nil {
 		return fmt.Errorf("lebro: save workflow run %q: %w", v.ID, postgresError(err))
 	}
@@ -769,7 +818,7 @@ func (r *postgresRepositories) GetWorkflowRun(ctx context.Context, id RunID) (Wo
 	if err := ctx.Err(); err != nil {
 		return WorkflowRunRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs WHERE id = $1`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, thread_id, namespace, owner_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs WHERE id = $1`, id)
 	record, err := scanWorkflowRunPG(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkflowRunRecord{}, ErrNotFound
@@ -788,7 +837,7 @@ func (r *postgresRepositories) ListWorkflowRuns(ctx context.Context, filter Work
 	if err != nil {
 		return Page[WorkflowRunRecord]{}, err
 	}
-	query := `SELECT id, workflow_id, thread_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs`
+	query := `SELECT id, workflow_id, thread_id, namespace, owner_id, status, input, output, metadata, started_at, finished_at, updated_at, current_step, current_step_id, step_outputs, failure, workflow_version, path, fan_out FROM workflow_runs`
 	args := []any{}
 	param := 1
 	where := []string{}
@@ -800,6 +849,16 @@ func (r *postgresRepositories) ListWorkflowRuns(ctx context.Context, filter Work
 	if filter.Status != "" {
 		where = append(where, fmt.Sprintf("status = $%d", param))
 		args = append(args, filter.Status)
+		param++
+	}
+	if filter.Namespace != "" {
+		where = append(where, fmt.Sprintf("namespace = $%d", param))
+		args = append(args, filter.Namespace)
+		param++
+	}
+	if filter.OwnerID != "" {
+		where = append(where, fmt.Sprintf("owner_id = $%d", param))
+		args = append(args, filter.OwnerID)
 		param++
 	}
 	if len(where) > 0 {
@@ -889,10 +948,12 @@ func (r *postgresRepositories) SaveSchedule(ctx context.Context, v ScheduleRecor
 	if err := validateRecord(v); err != nil {
 		return fmt.Errorf("lebro: schedule: %w", err)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedules (id, workflow_id, namespace, owner_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (id) DO UPDATE SET
 			workflow_id  = EXCLUDED.workflow_id,
+			namespace    = EXCLUDED.namespace,
+			owner_id     = EXCLUDED.owner_id,
 			spec         = EXCLUDED.spec,
 			paused       = EXCLUDED.paused,
 			concurrency  = EXCLUDED.concurrency,
@@ -904,7 +965,7 @@ func (r *postgresRepositories) SaveSchedule(ctx context.Context, v ScheduleRecor
 			wake_token   = EXCLUDED.wake_token,
 			created_at   = EXCLUDED.created_at,
 			updated_at   = EXCLUDED.updated_at`,
-		v.ID, v.WorkflowID, v.Spec, v.Paused, string(v.Concurrency), postgresJSON(v.Input), postgresJSON(v.Metadata),
+		v.ID, v.WorkflowID, v.Namespace, v.OwnerID, v.Spec, v.Paused, string(v.Concurrency), postgresJSON(v.Input), postgresJSON(v.Metadata),
 		postgresNullableTime(v.NextFireAt), postgresNullableTime(v.LastFireAt), v.WakeRunID, v.WakeToken, v.CreatedAt.UTC(), v.UpdatedAt.UTC()); err != nil {
 		return fmt.Errorf("lebro: save schedule %q: %w", v.ID, postgresError(err))
 	}
@@ -915,7 +976,7 @@ func (r *postgresRepositories) GetSchedule(ctx context.Context, id ScheduleID) (
 	if err := ctx.Err(); err != nil {
 		return ScheduleRecord{}, err
 	}
-	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules WHERE id = $1`, id)
+	row := r.q.QueryRowContext(ctx, `SELECT id, workflow_id, namespace, owner_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules WHERE id = $1`, id)
 	record, err := scanSchedulePG(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScheduleRecord{}, ErrNotFound
@@ -934,7 +995,7 @@ func (r *postgresRepositories) ListSchedules(ctx context.Context, filter Schedul
 	if err != nil {
 		return Page[ScheduleRecord]{}, err
 	}
-	query := `SELECT id, workflow_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules`
+	query := `SELECT id, workflow_id, namespace, owner_id, spec, paused, concurrency, input, metadata, next_fire_at, last_fire_at, wake_run_id, wake_token, created_at, updated_at FROM schedules`
 	args := []any{}
 	param := 1
 	where := []string{}
@@ -946,6 +1007,16 @@ func (r *postgresRepositories) ListSchedules(ctx context.Context, filter Schedul
 	if filter.DueBy != nil {
 		where = append(where, "paused = FALSE", "next_fire_at IS NOT NULL", fmt.Sprintf("next_fire_at <= $%d", param))
 		args = append(args, filter.DueBy.UTC())
+		param++
+	}
+	if filter.Namespace != "" {
+		where = append(where, fmt.Sprintf("namespace = $%d", param))
+		args = append(args, filter.Namespace)
+		param++
+	}
+	if filter.OwnerID != "" {
+		where = append(where, fmt.Sprintf("owner_id = $%d", param))
+		args = append(args, filter.OwnerID)
 		param++
 	}
 	if len(where) > 0 {
@@ -1003,8 +1074,8 @@ func (r *postgresRepositories) SaveScheduleExecution(ctx context.Context, v Sche
 	if v.RunID != "" {
 		runID = string(v.RunID)
 	}
-	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		string(v.ID), v.ScheduleID, runID, string(v.Status), v.ScheduledFor.UTC(), v.StartedAt.UTC(), postgresNullableTime(v.FinishedAt), v.Error); err != nil {
+	if _, err := r.q.ExecContext(ctx, `INSERT INTO schedule_executions (id, schedule_id, run_id, namespace, owner_id, status, scheduled_for, started_at, finished_at, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		string(v.ID), v.ScheduleID, runID, v.Namespace, v.OwnerID, string(v.Status), v.ScheduledFor.UTC(), v.StartedAt.UTC(), postgresNullableTime(v.FinishedAt), v.Error); err != nil {
 		return fmt.Errorf("lebro: save schedule execution %q: %w", v.ID, postgresError(err))
 	}
 	return nil
@@ -1021,7 +1092,7 @@ func (r *postgresRepositories) ListScheduleExecutions(ctx context.Context, id Sc
 	if err != nil {
 		return Page[ScheduleExecutionRecord]{}, err
 	}
-	rows, err := r.q.QueryContext(ctx, `SELECT id, schedule_id, run_id, status, scheduled_for, started_at, finished_at, error FROM schedule_executions WHERE schedule_id = $1 ORDER BY seq LIMIT $2 OFFSET $3`, id, postgresFetchLimit(limit), offset)
+	rows, err := r.q.QueryContext(ctx, `SELECT id, schedule_id, run_id, namespace, owner_id, status, scheduled_for, started_at, finished_at, error FROM schedule_executions WHERE schedule_id = $1 ORDER BY seq LIMIT $2 OFFSET $3`, id, postgresFetchLimit(limit), offset)
 	if err != nil {
 		return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: list schedule executions for schedule %q: %w", id, postgresError(err))
 	}
@@ -1127,7 +1198,7 @@ func scanWorkflowRunPG(row messagePageScanner) (WorkflowRunRecord, error) {
 	var threadID sql.NullString
 	var input, output, metadata, stepOutputs, failure, path, fanOut sql.NullString
 	var finishedAt sql.NullTime
-	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Status, &input, &output, &metadata, &record.StartedAt, &finishedAt, &record.UpdatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path, &fanOut); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &threadID, &record.Namespace, &record.OwnerID, &record.Status, &input, &output, &metadata, &record.StartedAt, &finishedAt, &record.UpdatedAt, &record.CurrentStep, &record.CurrentStepID, &stepOutputs, &failure, &record.WorkflowVersion, &path, &fanOut); err != nil {
 		return WorkflowRunRecord{}, err
 	}
 	if threadID.Valid {
@@ -1195,7 +1266,7 @@ func scanSchedulePG(row messagePageScanner) (ScheduleRecord, error) {
 	var concurrency string
 	var input, metadata sql.NullString
 	var nextFireAt, lastFireAt sql.NullTime
-	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Spec, &record.Paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.WakeRunID, &record.WakeToken, &record.CreatedAt, &record.UpdatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.WorkflowID, &record.Namespace, &record.OwnerID, &record.Spec, &record.Paused, &concurrency, &input, &metadata, &nextFireAt, &lastFireAt, &record.WakeRunID, &record.WakeToken, &record.CreatedAt, &record.UpdatedAt); err != nil {
 		return ScheduleRecord{}, err
 	}
 	record.Concurrency = ConcurrencyPolicy(concurrency)
@@ -1240,7 +1311,7 @@ func scanScheduleExecutionPagePG(rows *sql.Rows, offset, limit int) (Page[Schedu
 		var runID sql.NullString
 		var status string
 		var finishedAt sql.NullTime
-		if err := rows.Scan(&record.ID, &record.ScheduleID, &runID, &status, &record.ScheduledFor, &record.StartedAt, &finishedAt, &record.Error); err != nil {
+		if err := rows.Scan(&record.ID, &record.ScheduleID, &runID, &record.Namespace, &record.OwnerID, &status, &record.ScheduledFor, &record.StartedAt, &finishedAt, &record.Error); err != nil {
 			return Page[ScheduleExecutionRecord]{}, fmt.Errorf("lebro: scan schedule execution: %w", postgresError(err))
 		}
 		if runID.Valid {

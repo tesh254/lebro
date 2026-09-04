@@ -179,7 +179,7 @@ func NewNetwork(config NetworkConfig) (*Network, error) {
 	}
 	ids := config.IDSource
 	if ids == nil {
-		ids = &sequentialIDSource{}
+		ids = NewUUIDIDSource()
 	}
 	return &Network{definition: config.Definition, router: config.Router, specialists: specialists, maxHops: maxHops, deadline: config.Deadline, policy: config.Policy, store: config.Store, clock: clock, idSource: ids, listener: config.Listener}, nil
 }

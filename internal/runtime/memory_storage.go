@@ -684,6 +684,12 @@ func listWorkflowRuns(ctx context.Context, s memoryState, filter WorkflowRunFilt
 		if filter.Status != "" && run.Status != filter.Status {
 			continue
 		}
+		if filter.Namespace != "" && run.Namespace != filter.Namespace {
+			continue
+		}
+		if filter.OwnerID != "" && run.OwnerID != filter.OwnerID {
+			continue
+		}
 		filtered = append(filtered, run)
 	}
 	return paginate(filtered, p, cloneWorkflowRunRecord)
@@ -795,6 +801,12 @@ func listSchedules(ctx context.Context, s memoryState, filter ScheduleFilter, p 
 // returned as due work.
 func scheduleMatchesFilter(schedule ScheduleRecord, filter ScheduleFilter) bool {
 	if filter.WorkflowID != "" && schedule.WorkflowID != filter.WorkflowID {
+		return false
+	}
+	if filter.Namespace != "" && schedule.Namespace != filter.Namespace {
+		return false
+	}
+	if filter.OwnerID != "" && schedule.OwnerID != filter.OwnerID {
 		return false
 	}
 	if filter.DueBy != nil {

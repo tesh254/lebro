@@ -153,6 +153,7 @@ type (
 	WorkflowSnapshotRecord      = runtime.WorkflowSnapshotRecord
 	WorkflowFailureData         = runtime.WorkflowFailureData
 	WorkflowRunFilter           = runtime.WorkflowRunFilter
+	RuntimeScope                = runtime.RuntimeScope
 	Metadata                    = runtime.Metadata
 	ObservabilityScope          = runtime.ObservabilityScope
 	ModelIdentityProvider       = runtime.ModelIdentityProvider
@@ -505,6 +506,8 @@ var (
 	ErrNotFound              = runtime.ErrNotFound
 	ErrConflict              = runtime.ErrConflict
 	ErrInvalidPage           = runtime.ErrInvalidPage
+	ErrInvalidRunID          = runtime.ErrInvalidRunID
+	ErrRunIDAlreadyExists    = runtime.ErrRunIDAlreadyExists
 	ErrCapabilityMissing     = runtime.ErrCapabilityMissing
 	ErrSchedulerRunning      = runtime.ErrSchedulerRunning
 	ErrProviderNotFound      = runtime.ErrProviderNotFound

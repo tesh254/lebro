@@ -36,13 +36,20 @@ type ServerConfig struct {
 	// not-found and thread_id is rejected, because a thread cannot be resolved
 	// without storage.
 	Store lebro.Store
+	// RuntimeStore is the capability-based alternative for thread routes. It
+	// needs only the Transcript capability; it does not require a full legacy
+	// Store or Lebro-owned migrations. Store and RuntimeStore are mutually
+	// exclusive.
+	RuntimeStore lebro.RuntimeStore
 }
 
 // Server routes HTTP requests to explicitly registered lebro agents and
 // workflows. Only registered primitives are reachable. The zero value is not
 // usable; construct one with NewServer.
 type Server struct {
-	config ServerConfig
+	config     ServerConfig
+	transcript lebro.TranscriptStore
+	configErr  error
 
 	mu        sync.RWMutex
 	agents    map[string]*lebro.Agent
@@ -67,11 +74,36 @@ func NewServer(config ServerConfig) *Server {
 	if config.Redactor == nil {
 		config.Redactor = DefaultRedactor
 	}
-	return &Server{
+	server := &Server{
 		config:    config,
 		agents:    make(map[string]*lebro.Agent),
 		workflows: make(map[string]*lebro.LinearWorkflow),
 	}
+	if config.Store != nil && config.RuntimeStore != nil {
+		server.configErr = errors.New("lebro/httpapi: store and runtime store are mutually exclusive")
+	} else if config.RuntimeStore != nil {
+		if !config.RuntimeStore.Capabilities().Transcript {
+			server.configErr = errors.New("lebro/httpapi: runtime store lacks transcript capability")
+		} else if transcript, ok := config.RuntimeStore.(lebro.TranscriptStore); ok && transcript != nil {
+			server.transcript = transcript
+		} else {
+			server.configErr = errors.New("lebro/httpapi: runtime store transcript capability is inconsistent")
+		}
+	}
+	return server
+}
+
+func (s *Server) threadStore() (lebro.ThreadRepository, lebro.MessageRepository, bool) {
+	if s.configErr != nil {
+		return nil, nil, false
+	}
+	if s.transcript != nil {
+		return s.transcript.Threads(), s.transcript.Messages(), true
+	}
+	if s.config.Store == nil {
+		return nil, nil, false
+	}
+	return s.config.Store.Threads(), s.config.Store.Messages(), true
 }
 
 // ExposeAgent makes an agent reachable at /agents/{id}/runs and

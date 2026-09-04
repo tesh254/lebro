@@ -350,7 +350,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 	}
 	idSource := config.IDSource
 	if idSource == nil {
-		idSource = &sequentialIDSource{}
+		idSource = NewUUIDIDSource()
 	}
 	store := config.Store
 	var storeCaps StoreCapabilities
@@ -433,9 +433,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if a == nil {
 		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
 	}
+	if err := validateSuppliedRunID(input.RunID); err != nil {
+		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: err}
+	}
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
-		runID := a.idSource.NewRunID()
+		runID := a.runID(input.RunID)
 		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
 		if journal != nil {
 			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
@@ -448,7 +451,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	runCtx, cancel := a.applyDeadline(ctx)
 	defer cancel()
 
-	runID := a.idSource.NewRunID()
+	runID := a.runID(input.RunID)
 	// The journal is nil unless a Store is configured; it captures attempts,
 	// tool executions, and events so they persist with (or without) the
 	// transcript. The pre-loop cancellation path creates and flushes its own
@@ -687,6 +690,9 @@ func (a *Agent) runDelegated(ctx context.Context, input RunInput, maxSteps int, 
 // goroutine resources even when the caller abandons the stream before
 // draining; it is safe to call after Wait returns.
 type StreamRun struct {
+	// RunID is available as soon as RunStream returns so a caller can create a
+	// matching durable control-plane record before consuming deltas.
+	RunID    RunID
 	Deltas   <-chan StreamDelta
 	done     chan streamOutcome
 	finished chan struct{}
@@ -757,10 +763,13 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	if a == nil {
 		return nil, &AgentError{Kind: AgentErrorProviderFailure, Err: errors.New("lebro: agent is nil")}
 	}
+	if err := validateSuppliedRunID(input.RunID); err != nil {
+		return nil, &AgentError{Kind: AgentErrorProviderFailure, Err: err}
+	}
 
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
-		runID := a.idSource.NewRunID()
+		runID := a.runID(input.RunID)
 		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
 		if journal != nil {
 			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
@@ -777,7 +786,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		deadlineCancel()
 	}
 
-	runID := a.idSource.NewRunID()
+	runID := a.runID(input.RunID)
 	// See Run: the journal is nil unless a Store is configured.
 	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
 	if journal != nil {
@@ -845,6 +854,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	finished := make(chan struct{})
 
 	run := &StreamRun{
+		RunID:    runID,
 		Deltas:   deltas,
 		done:     done,
 		finished: finished,
@@ -876,6 +886,13 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	})
 
 	return run, nil
+}
+
+func (a *Agent) runID(supplied RunID) RunID {
+	if supplied != "" {
+		return supplied
+	}
+	return a.idSource.NewRunID()
 }
 
 // runStreamOutcome carries the final result of a streaming run. It is sent

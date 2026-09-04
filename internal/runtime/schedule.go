@@ -61,6 +61,8 @@ const (
 type ScheduleRecord struct {
 	ID          ScheduleID        `json:"id"`
 	WorkflowID  WorkflowID        `json:"workflow_id"`
+	Namespace   string            `json:"namespace,omitempty"`
+	OwnerID     string            `json:"owner_id,omitempty"`
 	Spec        string            `json:"spec"`
 	Paused      bool              `json:"paused,omitempty"`
 	Concurrency ConcurrencyPolicy `json:"concurrency,omitempty"`
@@ -86,6 +88,8 @@ type ScheduleExecutionRecord struct {
 	ID           ScheduleExecutionID `json:"id"`
 	ScheduleID   ScheduleID          `json:"schedule_id"`
 	RunID        RunID               `json:"run_id,omitempty"`
+	Namespace    string              `json:"namespace,omitempty"`
+	OwnerID      string              `json:"owner_id,omitempty"`
 	Status       ScheduleExecStatus  `json:"status"`
 	ScheduledFor time.Time           `json:"scheduled_for"`
 	StartedAt    time.Time           `json:"started_at"`
@@ -100,6 +104,8 @@ type ScheduleExecutionRecord struct {
 type ScheduleFilter struct {
 	WorkflowID WorkflowID
 	DueBy      *time.Time
+	Namespace  string
+	OwnerID    string
 }
 
 // ScheduleRepository owns durable schedule definitions.

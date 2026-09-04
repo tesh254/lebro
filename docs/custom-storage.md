@@ -124,11 +124,43 @@ is a legitimate adapter — the contract says what it costs.
   records must not alias stored state), and idempotent observability appends
   (a repeated `(run_id, id)` pair is skipped, never duplicated).
 
-The shared contract suite lives in `internal/testkit`
-(`RuntimeStoreContractSuite`) and covers capability advertisement,
-round-trips, pagination, cancellation, scope isolation, idempotency, and
-transaction semantics. Run it against your adapter in your own tests by
-importing the internal suite pattern it documents.
+The public `storetest` package exposes `RuntimeStoreContractSuite` for
+external adapters. It covers capability advertisement, round-trips,
+pagination, cancellation, tenant isolation, idempotent observability writes,
+and transaction commit/rollback semantics:
+
+```go
+storetest.RuntimeStoreContractSuite(t, func(t *testing.T) lebro.RuntimeStore {
+    return newControlPlaneStore(t) // run your application's migrations here
+})
+```
+
+## Scope and authorization
+
+`RuntimeScope{Namespace, OwnerID}` is the reusable tenant boundary used by
+workflow runs, schedules, schedule executions, working memory, and durable
+observability records. An organization commonly maps to `Namespace` and a user
+or service principal maps to `OwnerID`. Empty fields preserve the existing
+single-tenant behavior.
+
+When using `PolicyStore`, have authenticated middleware attach the verified
+scope with `lebro.WithRuntimeScope`. The guard rejects writes whose claimed
+record scope differs from that value. Repository list filters accept the same
+namespace/owner fields; do not use a client-supplied record namespace as an
+authorization decision.
+
+## PostgreSQL control-plane adapter shape
+
+See [`examples/custom-postgres-runtime-store`](../examples/custom-postgres-runtime-store).
+The application runs its own schema-qualified migrations and maps its own
+organization and user IDs to `RuntimeScope`; the adapter exposes only the
+Lebro capabilities it needs. A transaction callback receives transaction-
+scoped repositories, while an adapter without transactions keeps the documented
+sequential-write fallback.
+
+Lebro intentionally does **not** own organizations, users, credentials, agent
+definitions, workflow versions, uploaded files, deployments, queues, or
+billing. Those are application control-plane concerns.
 
 ## End-to-end example
 

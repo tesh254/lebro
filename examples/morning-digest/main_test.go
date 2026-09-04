@@ -16,7 +16,7 @@ func TestRunFiresOverdueDigestAfterRestart(t *testing.T) {
 	for _, want := range []string{
 		"schedule persisted at 2026-08-12T07:00:00Z; process exits",
 		"tick fired 1 schedule(s)",
-		"digest run agent-run-0001: succeeded",
+		"digest run ",
 		"MORNING COMPETITOR BRIEF",
 		"news (industry news)",
 		"Rival added SSO on mid-tier plans",
