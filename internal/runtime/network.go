@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -135,8 +134,7 @@ type Network struct {
 	clock       Clock
 	idSource    IDSource
 	listener    RunListener
-	claimsMu    sync.Mutex
-	activeIDs   map[RunID]struct{}
+	claims      runIDClaims
 }
 
 var _ Workflow = (*Network)(nil)
@@ -184,7 +182,7 @@ func NewNetwork(config NetworkConfig) (*Network, error) {
 	if ids == nil {
 		ids = NewUUIDIDSource()
 	}
-	return &Network{definition: config.Definition, router: config.Router, specialists: specialists, maxHops: maxHops, deadline: config.Deadline, policy: config.Policy, store: config.Store, clock: clock, idSource: ids, listener: config.Listener, activeIDs: make(map[RunID]struct{})}, nil
+	return &Network{definition: config.Definition, router: config.Router, specialists: specialists, maxHops: maxHops, deadline: config.Deadline, policy: config.Policy, store: config.Store, clock: clock, idSource: ids, listener: config.Listener}, nil
 }
 
 func (n *Network) Definition() WorkflowDefinition {
@@ -211,10 +209,10 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	if runID == "" {
 		runID = n.idSource.NewRunID()
 	} else {
-		if !n.claimRunID(runID) {
+		if !n.claims.Claim(runID) {
 			return RunResult{}, &NetworkError{Kind: NetworkErrorPersistFailed, Err: ErrRunIDAlreadyExists}
 		}
-		defer n.releaseRunID(runID)
+		defer n.claims.Release(runID)
 		if err := ctx.Err(); err != nil {
 			return RunResult{}, &NetworkError{Kind: NetworkErrorInvalidInput, Err: err}
 		}
@@ -294,22 +292,6 @@ func (n *Network) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		current = RunInput{Messages: []Message{{Role: RoleUser, Content: networkHandoffPrompt(task, child)}}, ThreadID: input.ThreadID, Metadata: input.Metadata, Reasoning: input.Reasoning, Memory: input.Memory}
 	}
 	return n.fail(runCtx, emitter, runID, input, routes, n.maxHops, NetworkErrorHopLimit, fmt.Errorf("lebro: network reached max hops %d", n.maxHops))
-}
-
-func (n *Network) claimRunID(id RunID) bool {
-	n.claimsMu.Lock()
-	defer n.claimsMu.Unlock()
-	if _, exists := n.activeIDs[id]; exists {
-		return false
-	}
-	n.activeIDs[id] = struct{}{}
-	return true
-}
-
-func (n *Network) releaseRunID(id RunID) {
-	n.claimsMu.Lock()
-	delete(n.activeIDs, id)
-	n.claimsMu.Unlock()
 }
 
 func (n *Network) candidates(visited map[ToolID]struct{}) []RoutingCandidate {

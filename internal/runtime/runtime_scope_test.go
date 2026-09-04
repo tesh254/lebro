@@ -57,6 +57,39 @@ func TestWorkflowSuppliedRunIDCannotReplaceStoredRun(t *testing.T) {
 	}
 }
 
+type cancelDuringWorkflowRunLookup struct {
+	WorkflowRunRepository
+	cancel context.CancelFunc
+}
+
+func (r cancelDuringWorkflowRunLookup) GetWorkflowRun(context.Context, RunID) (WorkflowRunRecord, error) {
+	r.cancel()
+	return WorkflowRunRecord{}, errors.New("lookup interrupted")
+}
+
+type cancelDuringWorkflowRunLookupStore struct {
+	Store
+	runs WorkflowRunRepository
+}
+
+func (s cancelDuringWorkflowRunLookupStore) WorkflowRuns() WorkflowRunRepository { return s.runs }
+
+func TestWorkflowSuppliedRunIDCancellationDuringExistenceCheck(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	base := NewMemoryStore()
+	store := cancelDuringWorkflowRunLookupStore{Store: base, runs: cancelDuringWorkflowRunLookup{WorkflowRunRepository: base.WorkflowRuns(), cancel: cancel}}
+	wf, err := NewLinearWorkflow(LinearWorkflowConfig{Definition: WorkflowDefinition{ID: "flow"}, Store: store, Steps: []Step{{Definition: StepDefinition{ID: "one"}, Handler: StepHandlerFunc(func(_ context.Context, input json.RawMessage) (json.RawMessage, error) { return input, nil })}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = wf.Run(ctx, WorkflowRunInput{RunID: "control_plane_run", Input: json.RawMessage(`{}`)})
+	var workflowErr *WorkflowError
+	if !errors.As(err, &workflowErr) || workflowErr.Kind != WorkflowErrorCancelled {
+		t.Fatalf("Run() error = %#v, want WorkflowErrorCancelled", err)
+	}
+}
+
 func TestRunStreamExposesStableRunIDImmediately(t *testing.T) {
 	agent, err := NewAgent(AgentConfig{Definition: AgentDefinition{ID: "agent"}, Model: echoModel{}})
 	if err != nil {
