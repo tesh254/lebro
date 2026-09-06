@@ -935,6 +935,10 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 			return lebro.StreamDelta{}, context.Canceled
 		default:
 		}
+		if callerErr := r.callerContext.Err(); callerErr != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, callerErr
+		}
 		if delta, ok := r.popPending(); ok {
 			if delta.IsTerminal() {
 				r.markTerminal()
@@ -944,12 +948,12 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 		r.setWatchdog(true)
 		scanned := r.scanner.Scan()
 		r.setWatchdog(false)
+		if callerErr := r.callerContext.Err(); callerErr != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, callerErr
+		}
 		if !scanned {
 			err := r.scanner.Err()
-			if callerErr := r.callerContext.Err(); callerErr != nil {
-				r.markTerminal()
-				return lebro.StreamDelta{}, callerErr
-			}
 			if r.idleTimedOut() {
 				r.markTerminal()
 				return lebro.StreamDelta{}, r.model.timeoutError("stream idle timeout exceeded", err)

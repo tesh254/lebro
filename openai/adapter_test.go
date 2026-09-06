@@ -998,6 +998,36 @@ func TestStreamPreservesCallerCancellationOverIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestStreamPreservesCallerCancellationOverBufferedData(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	newReader := func(scanner *bufio.Scanner, pending []lebro.StreamDelta) *sseStreamReader {
+		return &sseStreamReader{
+			callerContext: ctx,
+			scanner:       scanner,
+			watchdogDone:  make(chan struct{}),
+			pending:       pending,
+		}
+	}
+
+	t.Run("pending delta", func(t *testing.T) {
+		reader := newReader(bufio.NewScanner(strings.NewReader("")), []lebro.StreamDelta{{Text: "buffered"}})
+		_, err := reader.Next()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("SSE bytes", func(t *testing.T) {
+		reader := newReader(bufio.NewScanner(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"buffered\"}}]}\n\n")), nil)
+		_, err := reader.Next()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	})
+}
+
 func TestStreamTimesOutWaitingForResponseHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
