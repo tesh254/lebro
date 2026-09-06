@@ -913,7 +913,7 @@ func TestStreamUsesIdleTimeoutInsteadOfTotalDeadline(t *testing.T) {
 		flusher := w.(http.Flusher)
 		flusher.Flush()
 		for _, text := range []string{"a", "b", "c", "d"} {
-			time.Sleep(15 * time.Millisecond)
+			time.Sleep(60 * time.Millisecond)
 			_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"`+text+`"}}]}`+"\n\n")
 			flusher.Flush()
 		}
@@ -921,7 +921,7 @@ func TestStreamUsesIdleTimeoutInsteadOfTotalDeadline(t *testing.T) {
 		flusher.Flush()
 	}))
 	defer server.Close()
-	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 30 * time.Millisecond})
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 200 * time.Millisecond})
 
 	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
 	if err != nil {
@@ -987,18 +987,22 @@ func TestStreamTimesOutWaitingForResponseHeaders(t *testing.T) {
 }
 
 func TestStreamPausesIdleTimeoutBetweenNextCalls(t *testing.T) {
+	releaseSecond := make(chan struct{})
+	secondWritten := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"first"}}]}`+"\n\n")
 		flusher.Flush()
-		time.Sleep(45 * time.Millisecond)
+		<-releaseSecond
 		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"second"}}]}`+"\n\n")
+		flusher.Flush()
+		close(secondWritten)
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		flusher.Flush()
 	}))
 	defer server.Close()
-	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 20 * time.Millisecond})
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 100 * time.Millisecond})
 
 	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
 	if err != nil {
@@ -1011,7 +1015,9 @@ func TestStreamPausesIdleTimeoutBetweenNextCalls(t *testing.T) {
 	}
 	// Simulate a slow stream processor. The stream must only measure time while
 	// Next is blocked reading the provider, not consumer processing time.
-	time.Sleep(35 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
+	close(releaseSecond)
+	<-secondWritten
 	second, err := reader.Next()
 	if err != nil || second.Text != "second" {
 		t.Fatalf("second delta = %#v, %v", second, err)

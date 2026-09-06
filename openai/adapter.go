@@ -1182,6 +1182,9 @@ func (r *sseStreamReader) watchIdle() {
 						case <-timer.C:
 						default:
 						}
+						r.expireIdle()
+						r.stopWatchdog()
+						return
 					}
 				}
 				timerC = nil
@@ -1194,15 +1197,19 @@ func (r *sseStreamReader) watchIdle() {
 			}
 			timerC = timer.C
 		case <-timerC:
-			r.mu.Lock()
-			r.idleExpired = true
-			r.mu.Unlock()
+			r.expireIdle()
 			r.stopWatchdog()
-			r.cancel()
-			_ = r.body.Close()
 			return
 		}
 	}
+}
+
+func (r *sseStreamReader) expireIdle() {
+	r.mu.Lock()
+	r.idleExpired = true
+	r.mu.Unlock()
+	r.cancel()
+	_ = r.body.Close()
 }
 
 func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {
