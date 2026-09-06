@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -46,8 +47,11 @@ func TestNewAppliesDefaults(t *testing.T) {
 	if model.baseURL != defaultBaseURL {
 		t.Fatalf("baseURL = %q, want %q", model.baseURL, defaultBaseURL)
 	}
-	if model.client == nil || model.client.Timeout != defaultTimeout {
-		t.Fatalf("client timeout = %v, want %v", model.client.Timeout, defaultTimeout)
+	if model.client == nil || model.client.Timeout != 0 {
+		t.Fatalf("client timeout = %v, want 0", model.client.Timeout)
+	}
+	if model.timeout != defaultTimeout {
+		t.Fatalf("model timeout = %v, want %v", model.timeout, defaultTimeout)
 	}
 	if model.userAgent != defaultUserAgent {
 		t.Fatalf("userAgent = %q, want %q", model.userAgent, defaultUserAgent)
@@ -901,6 +905,220 @@ func TestGenerateTranslatesMidStreamTimeout(t *testing.T) {
 	var modelErr *lebro.ModelError
 	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorTimeout {
 		t.Fatalf("error = %v, want timeout", err)
+	}
+}
+
+func TestStreamUsesIdleTimeoutInsteadOfTotalDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		flusher.Flush()
+		for _, text := range []string{"a", "b", "c", "d"} {
+			time.Sleep(60 * time.Millisecond)
+			_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"`+text+`"}}]}`+"\n\n")
+			flusher.Flush()
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 200 * time.Millisecond})
+
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	var text strings.Builder
+	for {
+		delta, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		text.WriteString(delta.Text)
+	}
+	if got := text.String(); got != "abcd" {
+		t.Fatalf("stream text = %q, want abcd", got)
+	}
+}
+
+func TestStreamTimesOutWhenIdle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+		}
+	}))
+	defer server.Close()
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 20 * time.Millisecond})
+
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	_, err = reader.Next()
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorTimeout {
+		t.Fatalf("error = %v, want timeout model error", err)
+	}
+}
+
+func TestStreamPreservesCallerCancellationOverIdleTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelCalled := false
+	reader := &sseStreamReader{
+		callerContext: ctx,
+		cancel:        func() { cancelCalled = true },
+		body:          io.NopCloser(strings.NewReader("")),
+		scanner:       bufio.NewScanner(strings.NewReader("")),
+		watchdogDone:  make(chan struct{}),
+	}
+
+	if reader.expireIdle() {
+		t.Fatal("expireIdle() = true, want false after caller cancellation")
+	}
+	if reader.idleTimedOut() {
+		t.Fatal("idleTimedOut() = true, want false after caller cancellation")
+	}
+	if cancelCalled {
+		t.Fatal("idle timeout cancellation ran after caller cancellation")
+	}
+
+	reader.idleExpired = true // Simulate the watchdog observing the simultaneous idle expiry.
+	_, err := reader.Next()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestStreamPreservesCallerCancellationOverBufferedData(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	newReader := func(scanner *bufio.Scanner, pending []lebro.StreamDelta) *sseStreamReader {
+		return &sseStreamReader{
+			callerContext: ctx,
+			scanner:       scanner,
+			watchdogDone:  make(chan struct{}),
+			pending:       pending,
+		}
+	}
+
+	t.Run("pending delta", func(t *testing.T) {
+		reader := newReader(bufio.NewScanner(strings.NewReader("")), []lebro.StreamDelta{{Text: "buffered"}})
+		_, err := reader.Next()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("SSE bytes", func(t *testing.T) {
+		reader := newReader(bufio.NewScanner(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"buffered\"}}]}\n\n")), nil)
+		_, err := reader.Next()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+func TestStreamTimesOutWaitingForResponseHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(time.Second):
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 20 * time.Millisecond})
+
+	_, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorTimeout {
+		t.Fatalf("error = %v, want timeout model error", err)
+	}
+}
+
+func TestStreamPausesIdleTimeoutBetweenNextCalls(t *testing.T) {
+	releaseSecond := make(chan struct{})
+	secondWritten := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"first"}}]}`+"\n\n")
+		flusher.Flush()
+		<-releaseSecond
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"second"}}]}`+"\n\n")
+		flusher.Flush()
+		close(secondWritten)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 100 * time.Millisecond})
+
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	first, err := reader.Next()
+	if err != nil || first.Text != "first" {
+		t.Fatalf("first delta = %#v, %v", first, err)
+	}
+	// Simulate a slow stream processor. The stream must only measure time while
+	// Next is blocked reading the provider, not consumer processing time.
+	time.Sleep(300 * time.Millisecond)
+	close(releaseSecond)
+	<-secondWritten
+	second, err := reader.Next()
+	if err != nil || second.Text != "second" {
+		t.Fatalf("second delta = %#v, %v", second, err)
+	}
+}
+
+func TestStreamHonorsCallerDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: time.Second})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	reader, err := model.Stream(ctx, lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	_, err = reader.Next()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestGenerateStillHonorsTotalTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer server.Close()
+	model := newAdapter(t, server, Config{APIKey: "k", Model: "gpt-4o", Timeout: 20 * time.Millisecond})
+
+	_, err := model.Generate(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	var modelErr *lebro.ModelError
+	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorTimeout {
+		t.Fatalf("error = %v, want timeout model error", err)
 	}
 }
 

@@ -372,6 +372,7 @@ const (
 	AgentErrorInvalidToolOutput       = runtime.AgentErrorInvalidToolOutput
 	AgentErrorToolFailure             = runtime.AgentErrorToolFailure
 	AgentErrorProviderFailure         = runtime.AgentErrorProviderFailure
+	AgentErrorTimeout                 = runtime.AgentErrorTimeout
 	AgentErrorStepLimitExhausted      = runtime.AgentErrorStepLimitExhausted
 	AgentErrorCancelled               = runtime.AgentErrorCancelled
 	AgentErrorInvalidStructuredOutput = runtime.AgentErrorInvalidStructuredOutput
@@ -531,6 +532,7 @@ var (
 	ErrAgentInvalidToolOutput       = runtime.ErrAgentInvalidToolOutput
 	ErrAgentToolFailure             = runtime.ErrAgentToolFailure
 	ErrAgentProviderFailure         = runtime.ErrAgentProviderFailure
+	ErrAgentTimeout                 = runtime.ErrAgentTimeout
 	ErrAgentStepLimitExhausted      = runtime.ErrAgentStepLimitExhausted
 	ErrAgentCancelled               = runtime.ErrAgentCancelled
 	ErrAgentInvalidStructuredOutput = runtime.ErrAgentInvalidStructuredOutput

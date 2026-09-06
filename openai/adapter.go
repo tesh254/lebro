@@ -37,10 +37,12 @@ type Config struct {
 	APIKey string
 	// Model is the default model id used when a request omits ModelRequest.Model.
 	Model string
-	// HTTPClient issues requests. If nil a client with Timeout is used.
+	// HTTPClient issues requests. If it sets Timeout, that end-to-end deadline
+	// also applies to streams and takes precedence over the idle timeout below.
 	HTTPClient *http.Client
-	// Timeout caps each request when no earlier deadline is set on the context.
-	// A zero value uses defaultTimeout when HTTPClient is also nil.
+	// Timeout caps non-streaming requests and is the maximum period a stream may
+	// remain idle. A zero value uses defaultTimeout when HTTPClient is also nil.
+	// Stream lifetime is otherwise controlled by the caller's context deadline.
 	Timeout time.Duration
 	// UserAgent overrides the default User-Agent header.
 	UserAgent string
@@ -86,13 +88,15 @@ func New(config Config) (*Model, error) {
 		return nil, fmt.Errorf("lebro: base URL %q must be absolute", baseURL)
 	}
 
+	timeout := config.Timeout
 	client := config.HTTPClient
 	if client == nil {
-		timeout := config.Timeout
 		if timeout == 0 {
 			timeout = defaultTimeout
 		}
-		client = &http.Client{Timeout: timeout}
+		// An http.Client timeout is an end-to-end deadline, including SSE body
+		// reads. Keep it unset so active streams are bounded only by inactivity.
+		client = &http.Client{}
 	}
 
 	userAgent := config.UserAgent
@@ -105,7 +109,7 @@ func New(config Config) (*Model, error) {
 		apiKey:           config.APIKey,
 		model:            config.Model,
 		client:           client,
-		timeout:          config.Timeout,
+		timeout:          timeout,
 		userAgent:        userAgent,
 		organization:     config.Organization,
 		includeReasoning: config.IncludeReasoning,
@@ -729,7 +733,9 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		return nil, err
 	}
 
-	reqCtx, cancel := m.requestContext(ctx)
+	// Streaming uses an inactivity watchdog instead of requestContext's total
+	// deadline. The caller's context deadline remains an absolute ceiling.
+	reqCtx, cancel := context.WithCancel(ctx)
 
 	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, m.baseURL+chatCompletions, bytes.NewReader(body))
 	if err != nil {
@@ -745,7 +751,44 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		httpReq.Header.Set("OpenAI-Organization", m.organization)
 	}
 
-	resp, err := m.client.Do(httpReq)
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	resultCh := make(chan result)
+	go func() {
+		resp, err := m.client.Do(httpReq)
+		select {
+		case resultCh <- result{resp: resp, err: err}:
+		case <-reqCtx.Done():
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+		}
+	}()
+
+	var response result
+	if m.timeout > 0 {
+		timer := time.NewTimer(m.timeout)
+		defer timer.Stop()
+		select {
+		case response = <-resultCh:
+		case <-timer.C:
+			cancel()
+			return nil, m.timeoutError("stream response header timeout exceeded", context.DeadlineExceeded)
+		case <-ctx.Done():
+			cancel()
+			return nil, m.classifyTransportError(ctx, ctx.Err())
+		}
+	} else {
+		select {
+		case response = <-resultCh:
+		case <-ctx.Done():
+			cancel()
+			return nil, m.classifyTransportError(ctx, ctx.Err())
+		}
+	}
+	resp, err := response.resp, response.err
 	if err != nil {
 		cancel()
 		return nil, m.classifyTransportError(reqCtx, err)
@@ -758,7 +801,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		return nil, classified
 	}
 
-	reader := newSSEStreamReader(resp, cancel, m, request.OutputSchema)
+	reader := newSSEStreamReader(resp, ctx, cancel, m, request.OutputSchema)
 	return reader, nil
 }
 
@@ -821,18 +864,24 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 // and are then emitted as complete ToolCall deltas ahead of it, mirroring how
 // the runtime consumes complete calls.
 type sseStreamReader struct {
-	model        *Model
-	resp         *http.Response
-	body         io.ReadCloser
-	scanner      *bufio.Scanner
-	cancel       context.CancelFunc
-	closed       chan struct{}
-	once         sync.Once
-	mu           sync.Mutex
-	terminal     bool
-	id           string
-	modelName    string
-	outputSchema *lebro.ModelOutputSchema
+	model           *Model
+	resp            *http.Response
+	body            io.ReadCloser
+	scanner         *bufio.Scanner
+	callerContext   context.Context
+	cancel          context.CancelFunc
+	closed          chan struct{}
+	once            sync.Once
+	mu              sync.Mutex
+	idleTimeout     time.Duration
+	watchdogControl chan bool
+	watchdogDone    chan struct{}
+	watchdogOnce    sync.Once
+	idleExpired     bool
+	terminal        bool
+	id              string
+	modelName       string
+	outputSchema    *lebro.ModelOutputSchema
 
 	textBuf      strings.Builder
 	usage        lebro.ModelUsage
@@ -850,19 +899,25 @@ type streamToolBuilder struct {
 	args strings.Builder
 }
 
-func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *Model, outputSchema *lebro.ModelOutputSchema) *sseStreamReader {
+func newSSEStreamReader(resp *http.Response, callerContext context.Context, cancel context.CancelFunc, model *Model, outputSchema *lebro.ModelOutputSchema) *sseStreamReader {
 	body := resp.Body
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	return &sseStreamReader{
-		model:        model,
-		resp:         resp,
-		body:         body,
-		scanner:      scanner,
-		cancel:       cancel,
-		closed:       make(chan struct{}),
-		outputSchema: outputSchema,
+	reader := &sseStreamReader{
+		model:           model,
+		resp:            resp,
+		body:            body,
+		scanner:         scanner,
+		callerContext:   callerContext,
+		cancel:          cancel,
+		closed:          make(chan struct{}),
+		idleTimeout:     model.timeout,
+		watchdogControl: make(chan bool),
+		watchdogDone:    make(chan struct{}),
+		outputSchema:    outputSchema,
 	}
+	go reader.watchIdle()
+	return reader
 }
 
 func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
@@ -880,14 +935,29 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 			return lebro.StreamDelta{}, context.Canceled
 		default:
 		}
+		if callerErr := r.callerContext.Err(); callerErr != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, callerErr
+		}
 		if delta, ok := r.popPending(); ok {
 			if delta.IsTerminal() {
 				r.markTerminal()
 			}
 			return delta, nil
 		}
-		if !r.scanner.Scan() {
+		r.setWatchdog(true)
+		scanned := r.scanner.Scan()
+		r.setWatchdog(false)
+		if callerErr := r.callerContext.Err(); callerErr != nil {
+			r.markTerminal()
+			return lebro.StreamDelta{}, callerErr
+		}
+		if !scanned {
 			err := r.scanner.Err()
+			if r.idleTimedOut() {
+				r.markTerminal()
+				return lebro.StreamDelta{}, r.model.timeoutError("stream idle timeout exceeded", err)
+			}
 			if err == nil {
 				r.markTerminal()
 				return lebro.StreamDelta{FinishReason: lebro.FinishReasonUnspecified}, nil
@@ -1062,6 +1132,7 @@ func (r *sseStreamReader) completeToolCalls() ([]lebro.ModelToolCall, error) {
 func (r *sseStreamReader) Close() error {
 	r.once.Do(func() {
 		close(r.closed)
+		r.stopWatchdog()
 		r.cancel()
 		_ = r.body.Close()
 	})
@@ -1072,6 +1143,93 @@ func (r *sseStreamReader) markTerminal() {
 	r.mu.Lock()
 	r.terminal = true
 	r.mu.Unlock()
+	r.stopWatchdog()
+}
+
+func (r *sseStreamReader) setWatchdog(active bool) {
+	if r.idleTimeout <= 0 {
+		return
+	}
+	select {
+	case <-r.watchdogDone:
+	case r.watchdogControl <- active:
+	}
+}
+
+func (r *sseStreamReader) stopWatchdog() {
+	r.watchdogOnce.Do(func() { close(r.watchdogDone) })
+}
+
+func (r *sseStreamReader) idleTimedOut() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.idleExpired
+}
+
+func (r *sseStreamReader) watchIdle() {
+	if r.idleTimeout <= 0 {
+		return
+	}
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	for {
+		select {
+		case <-r.watchdogDone:
+			if timer != nil {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}
+			return
+		case active := <-r.watchdogControl:
+			if !active {
+				if timer != nil {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+						if !r.expireIdle() {
+							r.stopWatchdog()
+							return
+						}
+						r.stopWatchdog()
+						return
+					}
+				}
+				timerC = nil
+				continue
+			}
+			if timer == nil {
+				timer = time.NewTimer(r.idleTimeout)
+			} else {
+				timer.Reset(r.idleTimeout)
+			}
+			timerC = timer.C
+		case <-timerC:
+			if !r.expireIdle() {
+				r.stopWatchdog()
+				return
+			}
+			r.stopWatchdog()
+			return
+		}
+	}
+}
+
+func (r *sseStreamReader) expireIdle() bool {
+	if r.callerContext.Err() != nil {
+		return false
+	}
+	r.mu.Lock()
+	r.idleExpired = true
+	r.mu.Unlock()
+	r.cancel()
+	_ = r.body.Close()
+	return true
 }
 
 func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {

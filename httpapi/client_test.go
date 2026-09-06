@@ -85,6 +85,7 @@ func TestClientErrorCodeMapsToSentinel(t *testing.T) {
 		{httpapi.ErrorCodeToolFailure, http.StatusInternalServerError, lebro.ErrAgentToolFailure},
 		{httpapi.ErrorCodeStepFailure, http.StatusInternalServerError, lebro.ErrWorkflowStepFailure},
 		{httpapi.ErrorCodeProviderFailure, http.StatusBadGateway, lebro.ErrAgentProviderFailure},
+		{httpapi.ErrorCodeTimeout, http.StatusGatewayTimeout, lebro.ErrAgentTimeout},
 		{httpapi.ErrorCodeStepLimitExhausted, http.StatusBadGateway, lebro.ErrAgentStepLimitExhausted},
 		{httpapi.ErrorCodeCancelled, 499, lebro.ErrAgentCancelled},
 		{httpapi.ErrorCodeMethodNotAllowed, http.StatusMethodNotAllowed, nil},

@@ -64,7 +64,9 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	return m.response(request, result)
 }
 
-// Stream uses the backend's native streamGenerateContent endpoint.
+// Stream uses the backend's native streamGenerateContent endpoint. It adds no
+// adapter-level total-request timeout; the caller context and the configured
+// genai client remain the sole timeout authorities.
 func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.StreamReader, error) {
 	model, contents, config, err := m.params(request)
 	if err != nil {

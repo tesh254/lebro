@@ -818,6 +818,40 @@ func TestAgentRunStreamProviderFailure(t *testing.T) {
 	}
 }
 
+func TestAgentRunStreamTimeoutPreservesPartialText(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel([]StreamDelta{
+		{Text: "almost complete"},
+		{Err: &ModelError{Kind: ModelErrorTimeout, Provider: "fixture", Message: "stream idle timeout exceeded"}},
+	})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+
+	result, runErr := run.Drain()
+	if !errors.Is(runErr, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", runErr)
+	}
+	var agentErr *AgentError
+	if !errors.As(runErr, &agentErr) || agentErr.Kind != AgentErrorTimeout {
+		t.Fatalf("error = %v, want AgentErrorTimeout", runErr)
+	}
+	if result.Status != RunStatusFailed || len(result.Messages) != 2 || result.Messages[1].Content != "almost complete" {
+		t.Fatalf("result = %#v, want failed result with partial assistant text", result)
+	}
+}
+
 func TestAgentRunStreamTimeoutCancellation(t *testing.T) {
 	t.Parallel()
 

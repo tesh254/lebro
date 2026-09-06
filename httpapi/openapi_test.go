@@ -551,7 +551,7 @@ func TestOpenAPIDocumentsErrorResponses(t *testing.T) {
 	document := generateDocument(t, server)
 
 	operation := document.Paths["/agents/{id}/runs"]["post"]
-	for _, status := range []string{"400", "404", "500", "502", "499"} {
+	for _, status := range []string{"400", "404", "500", "502", "504", "499"} {
 		if _, ok := operation.Responses[status]; !ok {
 			t.Errorf("agent run does not document a %s response; documented = %v", status, responseStatuses(operation))
 		}
