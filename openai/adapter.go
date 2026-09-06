@@ -801,7 +801,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		return nil, classified
 	}
 
-	reader := newSSEStreamReader(resp, cancel, m, request.OutputSchema)
+	reader := newSSEStreamReader(resp, ctx, cancel, m, request.OutputSchema)
 	return reader, nil
 }
 
@@ -868,6 +868,7 @@ type sseStreamReader struct {
 	resp            *http.Response
 	body            io.ReadCloser
 	scanner         *bufio.Scanner
+	callerContext   context.Context
 	cancel          context.CancelFunc
 	closed          chan struct{}
 	once            sync.Once
@@ -898,7 +899,7 @@ type streamToolBuilder struct {
 	args strings.Builder
 }
 
-func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *Model, outputSchema *lebro.ModelOutputSchema) *sseStreamReader {
+func newSSEStreamReader(resp *http.Response, callerContext context.Context, cancel context.CancelFunc, model *Model, outputSchema *lebro.ModelOutputSchema) *sseStreamReader {
 	body := resp.Body
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -907,6 +908,7 @@ func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *M
 		resp:            resp,
 		body:            body,
 		scanner:         scanner,
+		callerContext:   callerContext,
 		cancel:          cancel,
 		closed:          make(chan struct{}),
 		idleTimeout:     model.timeout,
@@ -944,6 +946,10 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 		r.setWatchdog(false)
 		if !scanned {
 			err := r.scanner.Err()
+			if callerErr := r.callerContext.Err(); callerErr != nil {
+				r.markTerminal()
+				return lebro.StreamDelta{}, callerErr
+			}
 			if r.idleTimedOut() {
 				r.markTerminal()
 				return lebro.StreamDelta{}, r.model.timeoutError("stream idle timeout exceeded", err)
@@ -1182,7 +1188,10 @@ func (r *sseStreamReader) watchIdle() {
 						case <-timer.C:
 						default:
 						}
-						r.expireIdle()
+						if !r.expireIdle() {
+							r.stopWatchdog()
+							return
+						}
 						r.stopWatchdog()
 						return
 					}
@@ -1197,19 +1206,26 @@ func (r *sseStreamReader) watchIdle() {
 			}
 			timerC = timer.C
 		case <-timerC:
-			r.expireIdle()
+			if !r.expireIdle() {
+				r.stopWatchdog()
+				return
+			}
 			r.stopWatchdog()
 			return
 		}
 	}
 }
 
-func (r *sseStreamReader) expireIdle() {
+func (r *sseStreamReader) expireIdle() bool {
+	if r.callerContext.Err() != nil {
+		return false
+	}
 	r.mu.Lock()
 	r.idleExpired = true
 	r.mu.Unlock()
 	r.cancel()
 	_ = r.body.Close()
+	return true
 }
 
 func (r *sseStreamReader) classifyStreamError(errBody *chatError) error {

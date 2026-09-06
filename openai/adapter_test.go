@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -965,6 +966,35 @@ func TestStreamTimesOutWhenIdle(t *testing.T) {
 	var modelErr *lebro.ModelError
 	if !errors.As(err, &modelErr) || modelErr.Kind != lebro.ModelErrorTimeout {
 		t.Fatalf("error = %v, want timeout model error", err)
+	}
+}
+
+func TestStreamPreservesCallerCancellationOverIdleTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelCalled := false
+	reader := &sseStreamReader{
+		callerContext: ctx,
+		cancel:        func() { cancelCalled = true },
+		body:          io.NopCloser(strings.NewReader("")),
+		scanner:       bufio.NewScanner(strings.NewReader("")),
+		watchdogDone:  make(chan struct{}),
+	}
+
+	if reader.expireIdle() {
+		t.Fatal("expireIdle() = true, want false after caller cancellation")
+	}
+	if reader.idleTimedOut() {
+		t.Fatal("idleTimedOut() = true, want false after caller cancellation")
+	}
+	if cancelCalled {
+		t.Fatal("idle timeout cancellation ran after caller cancellation")
+	}
+
+	reader.idleExpired = true // Simulate the watchdog observing the simultaneous idle expiry.
+	_, err := reader.Next()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
 
