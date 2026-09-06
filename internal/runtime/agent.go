@@ -32,6 +32,9 @@ const (
 	// wrapped error preserves the original [*ModelError] so callers can use
 	// errors.As to inspect the normalized kind.
 	AgentErrorProviderFailure AgentErrorKind = "provider_failure"
+	// AgentErrorTimeout means a model call exceeded its provider or stream idle
+	// timeout. The wrapped error preserves the underlying *ModelError.
+	AgentErrorTimeout AgentErrorKind = "timeout"
 	// AgentErrorStepLimitExhausted means the loop consumed MaxSteps without the
 	// model producing a terminal response.
 	AgentErrorStepLimitExhausted AgentErrorKind = "step_limit_exhausted"
@@ -68,6 +71,8 @@ var (
 	ErrAgentToolFailure = errors.New("lebro: agent tool failure")
 	// ErrAgentProviderFailure matches model adapter failures.
 	ErrAgentProviderFailure = errors.New("lebro: agent provider failure")
+	// ErrAgentTimeout matches model calls that timed out.
+	ErrAgentTimeout = errors.New("lebro: agent model timeout")
 	// ErrAgentStepLimitExhausted matches runs that consumed every permitted
 	// step without reaching a terminal response.
 	ErrAgentStepLimitExhausted = errors.New("lebro: agent step limit exhausted")
@@ -147,6 +152,8 @@ func agentErrorSentinel(kind AgentErrorKind) error {
 		return ErrAgentToolFailure
 	case AgentErrorProviderFailure:
 		return ErrAgentProviderFailure
+	case AgentErrorTimeout:
+		return ErrAgentTimeout
 	case AgentErrorStepLimitExhausted:
 		return ErrAgentStepLimitExhausted
 	case AgentErrorCancelled:
@@ -553,7 +560,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			}
 			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
-			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: err}
+			agentErr := modelAgentError(step, err)
 			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
 			return result, agentErr
 		}
@@ -972,6 +979,9 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		allAttempts = append(allAttempts, attempts...)
 		p.journal.finishModelCall(response.Usage, response.FinishReason, streamErr)
 		if streamErr != nil {
+			if hasPartialStreamResponse(response) {
+				transcript = append(transcript, cloneMessage(response.Message))
+			}
 			cause := streamErr
 			if cancelledErr := p.ctx.Err(); processorCancelled(streamErr) || cancelledErr != nil {
 				cause = preferContextError(streamErr, cancelledErr)
@@ -980,7 +990,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, cause, allAttempts), err: a.cancelledError(step, cause)}
 				return
 			}
-			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: cause}
+			agentErr := modelAgentError(step, cause)
 			var processorErr *ProcessorError
 			if errors.As(cause, &processorErr) {
 				agentErr = processorAgentError(step, cause)
@@ -1194,32 +1204,51 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	var structuredOutput ModelStructuredOutput
 	var finishReason FinishReason
 	var usage ModelUsage
+	partialResponse := func() ModelResponse {
+		finish := finishReason
+		if finish == "" {
+			finish = FinishReasonUnspecified
+		}
+		message := Message{
+			Role:             RoleAssistant,
+			Content:          contentBuilder.String(),
+			Reasoning:        reasoning,
+			StructuredOutput: structuredOutput,
+		}
+		if len(toolCalls) > 0 {
+			encoded, err := NewModelToolCalls(toolCalls...)
+			if err == nil {
+				message.ToolCalls = encoded
+			}
+		}
+		return ModelResponse{Message: message, Usage: usage, FinishReason: finish}
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return ModelResponse{}, attempts, err
+			return partialResponse(), attempts, err
 		}
 		delta, derr := reader.Next()
 		if errors.Is(derr, io.EOF) {
 			if err := ctx.Err(); err != nil {
-				return ModelResponse{}, attempts, err
+				return partialResponse(), attempts, err
 			}
 			break
 		}
 		if derr != nil {
-			return ModelResponse{}, attempts, derr
+			return partialResponse(), attempts, derr
 		}
 		if err := delta.Validate(); err != nil {
-			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			return partialResponse(), attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Usage: delta.Usage, Delta: delta})
 		if processorErr != nil {
-			return ModelResponse{}, attempts, processorErr
+			return partialResponse(), attempts, processorErr
 		}
 		delta = *decision.Delta
 		emitter.emitDelta(runID, step, stepID, delta)
 		if !sendDelta(ctx, deltas, delta) {
-			return ModelResponse{}, attempts, context.Canceled
+			return partialResponse(), attempts, context.Canceled
 		}
 		if delta.Text != "" {
 			contentBuilder.WriteString(delta.Text)
@@ -1227,7 +1256,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		var reasoningErr error
 		reasoning, reasoningErr = appendReasoning(reasoning, delta.Reasoning)
 		if reasoningErr != nil {
-			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr}
+			return partialResponse(), attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr}
 		}
 		if delta.ToolCall != nil {
 			toolCalls = append(toolCalls, cloneToolCallValue(*delta.ToolCall))
@@ -1242,34 +1271,33 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			usage = delta.Usage
 		}
 		if delta.Err != nil {
-			return ModelResponse{}, attempts, delta.Err
+			return partialResponse(), attempts, delta.Err
 		}
 	}
 
-	if finishReason == "" {
-		finishReason = FinishReasonUnspecified
-	}
-
-	message := Message{
-		Role:             RoleAssistant,
-		Content:          contentBuilder.String(),
-		Reasoning:        reasoning,
-		StructuredOutput: structuredOutput,
-	}
+	response := partialResponse()
 	if len(toolCalls) > 0 {
 		encoded, err := NewModelToolCalls(toolCalls...)
 		if err != nil {
-			return ModelResponse{}, attempts, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
+			return response, attempts, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
 		}
-		message.ToolCalls = encoded
-	}
-
-	response := ModelResponse{
-		Message:      message,
-		Usage:        usage,
-		FinishReason: finishReason,
+		response.Message.ToolCalls = encoded
 	}
 	return response, attempts, nil
+}
+
+func hasPartialStreamResponse(response ModelResponse) bool {
+	return response.Message.Content != "" || !response.Message.Reasoning.IsZero() ||
+		len(response.Message.ToolCalls.Values()) > 0 || response.Message.StructuredOutput != ""
+}
+
+func modelAgentError(step int, err error) *AgentError {
+	kind := AgentErrorProviderFailure
+	var modelErr *ModelError
+	if (errors.As(err, &modelErr) && modelErr.Kind == ModelErrorTimeout) || errors.Is(err, ErrModelTimeout) {
+		kind = AgentErrorTimeout
+	}
+	return &AgentError{Kind: kind, Step: step, Err: err}
 }
 
 // appendReasoning preserves streamed text order and retains every opaque

@@ -495,6 +495,7 @@ func TestMAD17AgentLoopPublicContract(t *testing.T) {
 		AgentErrorInvalidToolOutput:    "invalid_tool_output",
 		AgentErrorToolFailure:          "tool_failure",
 		AgentErrorProviderFailure:      "provider_failure",
+		AgentErrorTimeout:              "timeout",
 		AgentErrorStepLimitExhausted:   "step_limit_exhausted",
 		AgentErrorCancelled:            "cancelled",
 		AgentErrorResolver:             "resolver",
@@ -510,7 +511,7 @@ func TestMAD17AgentLoopPublicContract(t *testing.T) {
 
 	sentinels := []error{
 		ErrAgentUnknownTool, ErrAgentInvalidToolArguments, ErrAgentInvalidToolOutput,
-		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentStepLimitExhausted, ErrAgentCancelled,
+		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentTimeout, ErrAgentStepLimitExhausted, ErrAgentCancelled,
 		ErrAgentResolver,
 	}
 	for _, sentinel := range sentinels {
