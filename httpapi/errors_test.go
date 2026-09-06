@@ -43,6 +43,13 @@ func TestRuntimeFailuresMapToTypedErrors(t *testing.T) {
 			wantStatus: http.StatusBadGateway,
 			wantCode:   httpapi.ErrorCodeProviderFailure,
 		},
+		"timeout": {
+			agent: func(t *testing.T) *lebro.Agent {
+				return newAgent(t, "assistant", failingModel{kind: lebro.ModelErrorTimeout})
+			},
+			wantStatus: http.StatusGatewayTimeout,
+			wantCode:   httpapi.ErrorCodeTimeout,
+		},
 		"step limit exhausted": {
 			agent: func(t *testing.T) *lebro.Agent {
 				// A model that only ever requests tools never terminates, so

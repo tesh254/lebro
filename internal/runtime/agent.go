@@ -552,7 +552,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		allAttempts = append(allAttempts, attempts...)
 		journal.finishModelCall(response.Usage, response.FinishReason, err)
 		if err != nil {
-			if cancelledErr := runCtx.Err(); errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || cancelledErr != nil {
+			if cancelledErr := runCtx.Err(); cancelledErr != nil || (!isModelTimeout(err) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))) {
 				cause := preferContextError(err, cancelledErr)
 				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
@@ -1204,7 +1204,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	var structuredOutput ModelStructuredOutput
 	var finishReason FinishReason
 	var usage ModelUsage
-	partialResponse := func() ModelResponse {
+	partialResponse := func() (ModelResponse, error) {
 		finish := finishReason
 		if finish == "" {
 			finish = FinishReasonUnspecified
@@ -1217,38 +1217,49 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		if len(toolCalls) > 0 {
 			encoded, err := NewModelToolCalls(toolCalls...)
-			if err == nil {
-				message.ToolCalls = encoded
+			if err != nil {
+				return ModelResponse{Message: message, Usage: usage, FinishReason: finish}, fmt.Errorf("lebro: aggregate partial stream tool calls: %w", err)
 			}
+			message.ToolCalls = encoded
 		}
-		return ModelResponse{Message: message, Usage: usage, FinishReason: finish}
+		return ModelResponse{Message: message, Usage: usage, FinishReason: finish}, nil
+	}
+	partialFailure := func(streamErr error) (ModelResponse, error) {
+		response, partialErr := partialResponse()
+		return response, errors.Join(streamErr, partialErr)
 	}
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return partialResponse(), attempts, err
+			response, streamErr := partialFailure(err)
+			return response, attempts, streamErr
 		}
 		delta, derr := reader.Next()
 		if errors.Is(derr, io.EOF) {
 			if err := ctx.Err(); err != nil {
-				return partialResponse(), attempts, err
+				response, streamErr := partialFailure(err)
+				return response, attempts, streamErr
 			}
 			break
 		}
 		if derr != nil {
-			return partialResponse(), attempts, derr
+			response, streamErr := partialFailure(derr)
+			return response, attempts, streamErr
 		}
 		if err := delta.Validate(); err != nil {
-			return partialResponse(), attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err})
+			return response, attempts, streamErr
 		}
 		decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Usage: delta.Usage, Delta: delta})
 		if processorErr != nil {
-			return partialResponse(), attempts, processorErr
+			response, streamErr := partialFailure(processorErr)
+			return response, attempts, streamErr
 		}
 		delta = *decision.Delta
 		emitter.emitDelta(runID, step, stepID, delta)
 		if !sendDelta(ctx, deltas, delta) {
-			return partialResponse(), attempts, context.Canceled
+			response, streamErr := partialFailure(context.Canceled)
+			return response, attempts, streamErr
 		}
 		if delta.Text != "" {
 			contentBuilder.WriteString(delta.Text)
@@ -1256,7 +1267,8 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		var reasoningErr error
 		reasoning, reasoningErr = appendReasoning(reasoning, delta.Reasoning)
 		if reasoningErr != nil {
-			return partialResponse(), attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr}
+			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr})
+			return response, attempts, streamErr
 		}
 		if delta.ToolCall != nil {
 			toolCalls = append(toolCalls, cloneToolCallValue(*delta.ToolCall))
@@ -1271,17 +1283,14 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			usage = delta.Usage
 		}
 		if delta.Err != nil {
-			return partialResponse(), attempts, delta.Err
+			response, streamErr := partialFailure(delta.Err)
+			return response, attempts, streamErr
 		}
 	}
 
-	response := partialResponse()
-	if len(toolCalls) > 0 {
-		encoded, err := NewModelToolCalls(toolCalls...)
-		if err != nil {
-			return response, attempts, fmt.Errorf("lebro: aggregate stream tool calls: %w", err)
-		}
-		response.Message.ToolCalls = encoded
+	response, err := partialResponse()
+	if err != nil {
+		return response, attempts, err
 	}
 	return response, attempts, nil
 }
@@ -1293,11 +1302,15 @@ func hasPartialStreamResponse(response ModelResponse) bool {
 
 func modelAgentError(step int, err error) *AgentError {
 	kind := AgentErrorProviderFailure
-	var modelErr *ModelError
-	if (errors.As(err, &modelErr) && modelErr.Kind == ModelErrorTimeout) || errors.Is(err, ErrModelTimeout) {
+	if isModelTimeout(err) {
 		kind = AgentErrorTimeout
 	}
 	return &AgentError{Kind: kind, Step: step, Err: err}
+}
+
+func isModelTimeout(err error) bool {
+	var modelErr *ModelError
+	return (errors.As(err, &modelErr) && modelErr.Kind == ModelErrorTimeout) || errors.Is(err, ErrModelTimeout)
 }
 
 // appendReasoning preserves streamed text order and retains every opaque

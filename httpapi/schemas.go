@@ -304,6 +304,7 @@ var componentSchemas = map[string]json.RawMessage{
 					"tool_failure",
 					"step_failure",
 					"provider_failure",
+					"timeout",
 					"step_limit_exhausted",
 					"cancelled",
 					"method_not_allowed",

@@ -76,7 +76,10 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	return m.response(request, response)
 }
 
-// Stream delivers native Messages API text chunks and complete tool calls.
+// Stream delivers native Messages API text chunks and complete tool calls. It
+// deliberately passes the caller context directly to the SDK: this adapter
+// adds no total-request timeout, so stream lifetime is controlled by the
+// caller context and any timeout configured on the supplied HTTP client.
 func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.StreamReader, error) {
 	params, err := m.params(request)
 	if err != nil {

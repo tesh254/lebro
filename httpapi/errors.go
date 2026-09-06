@@ -37,6 +37,8 @@ const (
 	ErrorCodeStepFailure ErrorCode = "step_failure"
 	// ErrorCodeProviderFailure means the model adapter failed.
 	ErrorCodeProviderFailure ErrorCode = "provider_failure"
+	// ErrorCodeTimeout means the model provider or stream idle timeout elapsed.
+	ErrorCodeTimeout ErrorCode = "timeout"
 	// ErrorCodeStepLimitExhausted means the agent loop consumed its step budget
 	// without the model producing a terminal response.
 	ErrorCodeStepLimitExhausted ErrorCode = "step_limit_exhausted"
@@ -67,6 +69,7 @@ var publicMessage = map[ErrorCode]string{
 	ErrorCodeToolFailure:        "a tool failed during the run",
 	ErrorCodeStepFailure:        "a workflow step failed during the run",
 	ErrorCodeProviderFailure:    "the model provider failed",
+	ErrorCodeTimeout:            "the model provider timed out",
 	ErrorCodeStepLimitExhausted: "the run reached its step limit without completing",
 	ErrorCodeCancelled:          "the run was cancelled",
 	ErrorCodeMethodNotAllowed:   "the method is not allowed for this route",
@@ -84,6 +87,7 @@ var statusForCode = map[ErrorCode]int{
 	ErrorCodeToolFailure:        http.StatusInternalServerError,
 	ErrorCodeStepFailure:        http.StatusInternalServerError,
 	ErrorCodeProviderFailure:    http.StatusBadGateway,
+	ErrorCodeTimeout:            http.StatusGatewayTimeout,
 	ErrorCodeStepLimitExhausted: http.StatusBadGateway,
 	ErrorCodeCancelled:          statusClientClosedRequest,
 	ErrorCodeMethodNotAllowed:   http.StatusMethodNotAllowed,
@@ -103,6 +107,8 @@ func classify(err error) ErrorCode {
 	}
 
 	switch {
+	case errors.Is(err, lebro.ErrAgentTimeout):
+		return ErrorCodeTimeout
 	case errors.Is(err, context.Canceled),
 		errors.Is(err, context.DeadlineExceeded),
 		errors.Is(err, lebro.ErrAgentCancelled),

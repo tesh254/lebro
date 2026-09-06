@@ -413,6 +413,29 @@ func TestAgentFailsOnProviderFailure(t *testing.T) {
 	}
 }
 
+func TestAgentClassifiesModelTimeoutBeforeWrappedDeadline(t *testing.T) {
+	t.Parallel()
+
+	timeoutErr := &ModelError{Kind: ModelErrorTimeout, Provider: "fixture", Message: "request timed out", Err: context.DeadlineExceeded}
+	model := newScriptedModel(scriptedResponse{err: timeoutErr})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "agent", Model: "fixture-model"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = agent.Run(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hello"}}})
+	if !errors.Is(err, ErrAgentTimeout) {
+		t.Fatalf("error = %v, want ErrAgentTimeout", err)
+	}
+	var agentErr *AgentError
+	if !errors.As(err, &agentErr) || agentErr.Kind != AgentErrorTimeout {
+		t.Fatalf("error = %v, want AgentErrorTimeout", err)
+	}
+}
+
 func TestAgentFailsOnInvalidModelResponse(t *testing.T) {
 	t.Parallel()
 
@@ -959,7 +982,7 @@ func TestAgentSentinelErrorsAreDistinct(t *testing.T) {
 	t.Parallel()
 	sentinels := []error{
 		ErrAgentUnknownTool, ErrAgentInvalidToolArguments, ErrAgentInvalidToolOutput,
-		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentStepLimitExhausted, ErrAgentCancelled, ErrAgentResolver,
+		ErrAgentToolFailure, ErrAgentProviderFailure, ErrAgentTimeout, ErrAgentStepLimitExhausted, ErrAgentCancelled, ErrAgentResolver,
 	}
 	for i, a := range sentinels {
 		for j, b := range sentinels {

@@ -56,6 +56,7 @@ var sentinelForCode = map[ErrorCode]error{
 	ErrorCodeToolFailure:        lebro.ErrAgentToolFailure,
 	ErrorCodeStepFailure:        lebro.ErrWorkflowStepFailure,
 	ErrorCodeProviderFailure:    lebro.ErrAgentProviderFailure,
+	ErrorCodeTimeout:            lebro.ErrAgentTimeout,
 	ErrorCodeStepLimitExhausted: lebro.ErrAgentStepLimitExhausted,
 	ErrorCodeCancelled:          lebro.ErrAgentCancelled,
 

@@ -751,7 +751,44 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		httpReq.Header.Set("OpenAI-Organization", m.organization)
 	}
 
-	resp, err := m.client.Do(httpReq)
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	resultCh := make(chan result)
+	go func() {
+		resp, err := m.client.Do(httpReq)
+		select {
+		case resultCh <- result{resp: resp, err: err}:
+		case <-reqCtx.Done():
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+		}
+	}()
+
+	var response result
+	if m.timeout > 0 {
+		timer := time.NewTimer(m.timeout)
+		defer timer.Stop()
+		select {
+		case response = <-resultCh:
+		case <-timer.C:
+			cancel()
+			return nil, m.timeoutError("stream response header timeout exceeded", context.DeadlineExceeded)
+		case <-ctx.Done():
+			cancel()
+			return nil, m.classifyTransportError(ctx, ctx.Err())
+		}
+	} else {
+		select {
+		case response = <-resultCh:
+		case <-ctx.Done():
+			cancel()
+			return nil, m.classifyTransportError(ctx, ctx.Err())
+		}
+	}
+	resp, err := response.resp, response.err
 	if err != nil {
 		cancel()
 		return nil, m.classifyTransportError(reqCtx, err)
@@ -827,23 +864,23 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 // and are then emitted as complete ToolCall deltas ahead of it, mirroring how
 // the runtime consumes complete calls.
 type sseStreamReader struct {
-	model        *Model
-	resp         *http.Response
-	body         io.ReadCloser
-	scanner      *bufio.Scanner
-	cancel       context.CancelFunc
-	closed       chan struct{}
-	once         sync.Once
-	mu           sync.Mutex
-	idleTimeout  time.Duration
-	activity     chan struct{}
-	watchdogDone chan struct{}
-	watchdogOnce sync.Once
-	idleExpired  bool
-	terminal     bool
-	id           string
-	modelName    string
-	outputSchema *lebro.ModelOutputSchema
+	model           *Model
+	resp            *http.Response
+	body            io.ReadCloser
+	scanner         *bufio.Scanner
+	cancel          context.CancelFunc
+	closed          chan struct{}
+	once            sync.Once
+	mu              sync.Mutex
+	idleTimeout     time.Duration
+	watchdogControl chan bool
+	watchdogDone    chan struct{}
+	watchdogOnce    sync.Once
+	idleExpired     bool
+	terminal        bool
+	id              string
+	modelName       string
+	outputSchema    *lebro.ModelOutputSchema
 
 	textBuf      strings.Builder
 	usage        lebro.ModelUsage
@@ -866,16 +903,16 @@ func newSSEStreamReader(resp *http.Response, cancel context.CancelFunc, model *M
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	reader := &sseStreamReader{
-		model:        model,
-		resp:         resp,
-		body:         body,
-		scanner:      scanner,
-		cancel:       cancel,
-		closed:       make(chan struct{}),
-		idleTimeout:  model.timeout,
-		activity:     make(chan struct{}, 1),
-		watchdogDone: make(chan struct{}),
-		outputSchema: outputSchema,
+		model:           model,
+		resp:            resp,
+		body:            body,
+		scanner:         scanner,
+		cancel:          cancel,
+		closed:          make(chan struct{}),
+		idleTimeout:     model.timeout,
+		watchdogControl: make(chan bool),
+		watchdogDone:    make(chan struct{}),
+		outputSchema:    outputSchema,
 	}
 	go reader.watchIdle()
 	return reader
@@ -902,7 +939,10 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 			}
 			return delta, nil
 		}
-		if !r.scanner.Scan() {
+		r.setWatchdog(true)
+		scanned := r.scanner.Scan()
+		r.setWatchdog(false)
+		if !scanned {
 			err := r.scanner.Err()
 			if r.idleTimedOut() {
 				r.markTerminal()
@@ -924,9 +964,6 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 			return lebro.StreamDelta{}, r.model.transportError("stream read failed", err)
 		}
 		line := r.scanner.Text()
-		// Any received SSE wire line proves the connection is still making
-		// progress, including provider heartbeat comments.
-		r.resetWatchdog()
 		if line == "" || strings.HasPrefix(line, ":") {
 			continue
 		}
@@ -1099,13 +1136,13 @@ func (r *sseStreamReader) markTerminal() {
 	r.stopWatchdog()
 }
 
-func (r *sseStreamReader) resetWatchdog() {
+func (r *sseStreamReader) setWatchdog(active bool) {
 	if r.idleTimeout <= 0 {
 		return
 	}
 	select {
-	case r.activity <- struct{}{}:
-	default:
+	case <-r.watchdogDone:
+	case r.watchdogControl <- active:
 	}
 }
 
@@ -1123,24 +1160,44 @@ func (r *sseStreamReader) watchIdle() {
 	if r.idleTimeout <= 0 {
 		return
 	}
-	timer := time.NewTimer(r.idleTimeout)
-	defer timer.Stop()
+	var timer *time.Timer
+	var timerC <-chan time.Time
 	for {
 		select {
 		case <-r.watchdogDone:
-			return
-		case <-r.activity:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
+			if timer != nil {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
 			}
-			timer.Reset(r.idleTimeout)
-		case <-timer.C:
+			return
+		case active := <-r.watchdogControl:
+			if !active {
+				if timer != nil {
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+				}
+				timerC = nil
+				continue
+			}
+			if timer == nil {
+				timer = time.NewTimer(r.idleTimeout)
+			} else {
+				timer.Reset(r.idleTimeout)
+			}
+			timerC = timer.C
+		case <-timerC:
 			r.mu.Lock()
 			r.idleExpired = true
 			r.mu.Unlock()
+			r.stopWatchdog()
 			r.cancel()
 			_ = r.body.Close()
 			return
