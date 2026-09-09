@@ -282,6 +282,65 @@ model name, unlike the deterministic examples:
 OPENROUTER_API_KEY=... OPENROUTER_MODEL=... go run ./examples/reasoning
 ```
 
+### Message content parts and attachments
+
+A user message can carry ordered content parts instead of a single string.
+Text, image, and document (PDF) parts are provider-neutral; every adapter maps
+them to its provider's native format and preserves their order. When
+`ContentParts` is set, `Content` must stay empty, and only user messages may
+carry parts. Binary parts carry a MIME type and base64-encoded bytes; document
+parts also carry a filename and currently support `application/pdf` only.
+
+```go
+image, err := lebro.NewImagePart("image/png", base64.StdEncoding.EncodeToString(pngBytes))
+if err != nil { return err }
+
+pdf, err := lebro.NewDocumentPart("report.pdf", lebro.DocumentMimeTypePDF, base64.StdEncoding.EncodeToString(pdfBytes))
+if err != nil { return err }
+
+parts, err := lebro.NewMessageContentParts(
+	lebro.MessageContentPart{Type: lebro.ContentPartText, Text: "What does this chart show?"},
+	image,
+	pdf,
+)
+if err != nil { return err }
+
+result, err := agent.Run(ctx, lebro.RunInput{
+	ThreadID: "attachments-42",
+	Messages: []lebro.Message{{Role: lebro.RoleUser, ContentParts: parts}},
+})
+```
+
+Text file attachments are sent as ordinary text wrapped in an XML attachment
+element that identifies the span as user-provided attachment data. The wrapper
+does not grant its contents instruction priority — models should treat the
+wrapped text as data, not as prompts. The helper accepts already-decoded UTF-8
+text (file reading and character-encoding conversion stay with the caller) and
+rejects input that cannot be represented as valid XML:
+
+```go
+attachment, err := lebro.NewTextAttachmentPart("notes.md", "text/markdown", notesUTF8Text)
+if err != nil { return err }
+
+parts, err := lebro.NewMessageContentParts(attachment)
+```
+
+Persisted transcripts keep every part, payload, and ordering byte-faithfully,
+and older text-only records replay unchanged. Endpoint limitations:
+
+| Adapter | Text | Image | PDF |
+| --- | --- | --- | --- |
+| `openai` | `text` block | `image_url` with a `data:` URL | native `file` block with filename and base64 file data |
+| `anthropic` | `text` block | base64 `image` source (`image/jpeg`, `image/png`, `image/gif`, `image/webp`) | base64 `document` source; filename becomes the block title |
+| `gemini` / `vertexai` | text part | `inlineData` blob | `inlineData` blob with `application/pdf` |
+
+An adapter never drops a part, replaces an image or PDF with a placeholder or
+extracted text, or silently switches endpoints. A part its endpoint cannot
+represent fails the request with a normalized `*lebro.ModelError` naming the
+part. Gemini has no filename field, so document filenames exist only on the
+neutral part; Anthropic image media types are validated locally. Part streams
+are unchanged: generated responses stay text, tool calls, and structured JSON.
+
 ## Model-provider adapters
 
 The optional `github.com/tesh254/lebro/openai` package implements `lebro.Model`
