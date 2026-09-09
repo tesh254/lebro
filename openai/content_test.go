@@ -24,13 +24,19 @@ func TestGenerateMapsMessageContentParts(t *testing.T) {
 		{
 			name: "text and image",
 			message: lebro.Message{Role: lebro.RoleUser, ContentParts: partsFixture(t,
-				lebro.MessageContentPart{Type: lebro.ContentPartText, Text: "what is in this picture?"},
+				// The wire body is produced by the request's top-level JSON
+				// encoder, which HTML-escapes <, >, & — the same behavior as
+				// the legacy text-only path. Pin the exact encoding so any
+				// wire-escaping change is detected, while the parsed block
+				// comparison below proves the decoded text is untouched.
+				lebro.MessageContentPart{Type: lebro.ContentPartText, Text: `see <attachment> & "notes"`},
 				lebro.MessageContentPart{Type: lebro.ContentPartImage, MimeType: "image/png", Data: imageData},
 			)},
 			want: []map[string]any{
-				{"type": "text", "text": "what is in this picture?"},
+				{"type": "text", "text": `see <attachment> & "notes"`},
 				{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64," + imageData}},
 			},
+			wantRaw: `see \u003cattachment\u003e \u0026 \"notes\"`,
 		},
 		{
 			name: "text image and pdf",
@@ -78,10 +84,10 @@ func TestGenerateMapsMessageContentParts(t *testing.T) {
 				got, _ := content[i].(map[string]any)
 				assertDeepEqual(t, got, block)
 			}
-			// Base64 payloads must travel byte-faithfully: no HTML escaping of
-			// the embedded data URL characters.
+			// The raw wire body must match the pinned encoding exactly, so
+			// any change to how part text travels is caught.
 			if test.wantRaw != "" && !strings.Contains(string(observed.raw), test.wantRaw) {
-				t.Fatalf("payload data missing from raw body: %s", observed.raw)
+				t.Fatalf("expected raw payload missing from body: %s", observed.raw)
 			}
 		})
 	}

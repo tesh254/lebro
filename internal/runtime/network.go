@@ -389,6 +389,14 @@ func (n *Network) applyDeadline(ctx context.Context) (context.Context, context.C
 }
 
 func networkTask(messages []Message) (string, error) {
+	// Message invariants (including content/content-parts mutual exclusion)
+	// are enforced here so ambiguous or malformed input fails at the network
+	// boundary instead of being silently routed.
+	for i, message := range messages {
+		if err := message.Validate(); err != nil {
+			return "", fmt.Errorf("lebro: network input message %d: %w", i, err)
+		}
+	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != RoleUser {
 			continue
@@ -398,7 +406,9 @@ func networkTask(messages []Message) (string, error) {
 		}
 		// A multipart user message carries its text in ordered parts; the
 		// routing task uses that text while specialists receive the full
-		// message, parts included.
+		// message, parts included. A multipart message without text parts is
+		// the user's actual latest turn: fail rather than silently routing an
+		// older task to the wrong specialist.
 		if parts := messages[i].ContentParts.Values(); len(parts) > 0 {
 			var texts []string
 			for _, part := range parts {
@@ -409,6 +419,7 @@ func networkTask(messages []Message) (string, error) {
 			if len(texts) > 0 {
 				return strings.Join(texts, "\n"), nil
 			}
+			return "", errors.New("lebro: network requires a non-empty user message")
 		}
 	}
 	return "", errors.New("lebro: network requires a non-empty user message")

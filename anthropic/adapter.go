@@ -193,12 +193,16 @@ func anthropicUserBlocks(message lebro.Message) ([]claude.ContentBlockParamUnion
 		case lebro.ContentPartText:
 			blocks = append(blocks, claude.NewTextBlock(part.Text))
 		case lebro.ContentPartImage:
-			if _, ok := anthropicUserImageMediaTypes[part.MimeType]; !ok {
+			// Media types are case-insensitive; Anthropic's documented set is
+			// lowercase, so normalize for the capability check and the wire
+			// value while the error reports what the caller sent.
+			mediaType := strings.ToLower(part.MimeType)
+			if _, ok := anthropicUserImageMediaTypes[mediaType]; !ok {
 				return nil, fmt.Errorf("lebro: Anthropic image content part %d media type %q is not supported; use image/jpeg, image/png, image/gif, or image/webp", i, part.MimeType)
 			}
 			blocks = append(blocks, claude.NewImageBlock(claude.Base64ImageSourceParam{
 				Data:      part.Data,
-				MediaType: claude.Base64ImageSourceMediaType(part.MimeType),
+				MediaType: claude.Base64ImageSourceMediaType(mediaType),
 			}))
 		case lebro.ContentPartDocument:
 			blocks = append(blocks, claude.ContentBlockParamUnion{OfDocument: &claude.DocumentBlockParam{

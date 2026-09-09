@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -36,8 +37,16 @@ type MessageContentPart struct {
 	Data     string          `json:"data,omitempty"`
 }
 
-// Validate checks the invariants every provider adapter can rely on.
+// Validate checks the invariants every provider adapter can rely on. String
+// fields must be valid UTF-8 so canonical encoding cannot silently corrupt
+// them, media types must be well-formed, and binary payloads must be clean,
+// non-empty standard base64.
 func (p MessageContentPart) Validate() error {
+	for _, field := range [...]struct{ name, value string }{{"text", p.Text}, {"mime type", p.MimeType}, {"filename", p.Filename}} {
+		if !utf8.ValidString(field.value) {
+			return fmt.Errorf("lebro: content part %s is not valid UTF-8", field.name)
+		}
+	}
 	switch p.Type {
 	case ContentPartText:
 		if p.Text == "" {
@@ -47,8 +56,10 @@ func (p MessageContentPart) Validate() error {
 			return errors.New("lebro: text content part must not carry binary fields")
 		}
 	case ContentPartImage:
-		if !strings.HasPrefix(p.MimeType, "image/") {
-			return fmt.Errorf("lebro: image content part requires an image/* media type, got %q", p.MimeType)
+		// Media types are case-insensitive; the image family check accepts any
+		// case and adapters normalize where their provider requires it.
+		if !validMIMETypeSyntax(p.MimeType) || !strings.HasPrefix(strings.ToLower(p.MimeType), "image/") {
+			return fmt.Errorf("lebro: image content part requires a valid image/* media type, got %q", p.MimeType)
 		}
 		if p.Filename != "" || p.Text != "" {
 			return errors.New("lebro: image content part must not carry text or filename fields")
@@ -57,7 +68,7 @@ func (p MessageContentPart) Validate() error {
 			return errors.New("lebro: image content part requires non-empty valid base64 data")
 		}
 	case ContentPartDocument:
-		if p.MimeType != DocumentMimeTypePDF {
+		if !validMIMETypeSyntax(p.MimeType) || !strings.EqualFold(p.MimeType, DocumentMimeTypePDF) {
 			return fmt.Errorf("lebro: document content parts support only %s, got %q", DocumentMimeTypePDF, p.MimeType)
 		}
 		if p.Filename == "" {
@@ -75,13 +86,47 @@ func (p MessageContentPart) Validate() error {
 	return nil
 }
 
-// validBase64 reports whether data is non-empty standard base64.
+// validMIMETypeSyntax reports whether value is a type/subtype pair whose sides
+// are non-empty RFC 2045 tokens. Parameters are rejected: a part carries
+// exactly one media type.
+func validMIMETypeSyntax(value string) bool {
+	typeName, subtype, ok := strings.Cut(value, "/")
+	if !ok || subtype == "" || strings.Contains(subtype, "/") {
+		return false
+	}
+	return isMIMEToken(typeName) && isMIMEToken(subtype)
+}
+
+// isMIMEToken reports whether value is a non-empty RFC 2045 token.
+func isMIMEToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$&-^_.+", r):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validBase64 reports whether data is clean standard base64 — no ignored
+// whitespace — whose decoded payload is non-empty, so adapters never transmit
+// an empty image or document.
 func validBase64(data string) bool {
 	if data == "" {
 		return false
 	}
-	_, err := base64.StdEncoding.DecodeString(data)
-	return err == nil
+	for _, r := range data {
+		if unicode.IsSpace(r) {
+			return false
+		}
+	}
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	return err == nil && len(decoded) > 0
 }
 
 // MessageContentParts is an immutable, canonical encoding of ordered content

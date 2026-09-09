@@ -46,6 +46,15 @@ func TestParamsMapsMessageContentParts(t *testing.T) {
 				{"type": "document", "title": "report.pdf", "source": map[string]any{"type": "base64", "media_type": "application/pdf", "data": pdfData}},
 			},
 		},
+		{
+			name: "mixed-case image media type normalizes to the documented lowercase set",
+			message: lebro.Message{Role: lebro.RoleUser, ContentParts: partsFixture(t,
+				lebro.MessageContentPart{Type: lebro.ContentPartImage, MimeType: "image/PNG", Data: imageData},
+			)},
+			want: []map[string]any{
+				{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": imageData}},
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

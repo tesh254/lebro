@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +106,35 @@ func TestNetworkTaskFallsBackToTextParts(t *testing.T) {
 	}
 	if _, err := networkTask([]Message{{Role: RoleUser, ContentParts: partsForTest(MessageContentPart{Type: ContentPartImage, MimeType: "image/png", Data: "aW1hZ2UtYnl0ZXM="})}}); err == nil {
 		t.Fatal("image-only parts must not yield a task")
+	}
+}
+
+// Ambiguous input must fail with the documented mutual-exclusion error at the
+// network boundary instead of being silently routed.
+func TestNetworkTaskRejectsAmbiguousMessage(t *testing.T) {
+	parts, err := NewMessageContentParts(MessageContentPart{Type: ContentPartText, Text: "attached"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = networkTask([]Message{{Role: RoleUser, Content: "text", ContentParts: parts}})
+	if err == nil || !strings.Contains(err.Error(), "both content and content parts") {
+		t.Fatalf("error = %v, want mutual-exclusion error", err)
+	}
+}
+
+// A newest multipart user message without text parts is the actual latest
+// turn: routing must fail rather than silently reuse an older user task.
+func TestNetworkTaskDoesNotFallBackPastMultipartMessage(t *testing.T) {
+	parts, err := NewMessageContentParts(MessageContentPart{Type: ContentPartImage, MimeType: "image/png", Data: "aW1hZ2UtYnl0ZXM="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = networkTask([]Message{
+		{Role: RoleUser, Content: "older task"},
+		{Role: RoleAssistant, Content: "older answer"},
+		{Role: RoleUser, ContentParts: parts},
+	})
+	if err == nil || !strings.Contains(err.Error(), "non-empty user message") {
+		t.Fatalf("error = %v, want non-empty user message error", err)
 	}
 }

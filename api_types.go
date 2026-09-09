@@ -315,6 +315,7 @@ const (
 	ContentPartText     = runtime.ContentPartText
 	ContentPartImage    = runtime.ContentPartImage
 	ContentPartDocument = runtime.ContentPartDocument
+	DocumentMimeTypePDF = runtime.DocumentMimeTypePDF
 
 	ReasoningOff     = runtime.ReasoningOff
 	ReasoningMinimal = runtime.ReasoningMinimal

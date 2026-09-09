@@ -35,15 +35,27 @@ func TestContentPartValidate(t *testing.T) {
 		{name: "empty text", part: MessageContentPart{Type: ContentPartText}, wantErr: true},
 		{name: "text with data", part: MessageContentPart{Type: ContentPartText, Text: "hello", Data: testImageData}, wantErr: true},
 		{name: "text with mime", part: MessageContentPart{Type: ContentPartText, Text: "hello", MimeType: "text/plain"}, wantErr: true},
+		{name: "text invalid utf8", part: MessageContentPart{Type: ContentPartText, Text: "bad\xff bytes"}, wantErr: true},
+		{name: "image invalid utf8 mime", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/\xffpng", Data: testImageData}, wantErr: true},
 		{name: "image without mime", part: MessageContentPart{Type: ContentPartImage, Data: testImageData}, wantErr: true},
 		{name: "image non-image mime", part: MessageContentPart{Type: ContentPartImage, MimeType: "application/pdf", Data: testImageData}, wantErr: true},
+		{name: "image empty subtype", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/", Data: testImageData}, wantErr: true},
+		{name: "image mime with parameters", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/png;level=1", Data: testImageData}, wantErr: true},
+		{name: "image mime with space in subtype", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/pn g", Data: testImageData}, wantErr: true},
+		{name: "image mime invalid token char", part: MessageContentPart{Type: ContentPartImage, MimeType: `image/pn"g`, Data: testImageData}, wantErr: true},
+		{name: "image uppercase subtype", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/PNG", Data: testImageData}},
+		{name: "image uppercase family", part: MessageContentPart{Type: ContentPartImage, MimeType: "Image/png", Data: testImageData}},
 		{name: "image without data", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/png"}, wantErr: true},
 		{name: "image invalid base64", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/png", Data: testMalformedData}, wantErr: true},
+		{name: "image whitespace-only base64", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/png", Data: "\n"}, wantErr: true},
+		{name: "image base64 with trailing newline", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/png", Data: testImageData + "\n"}, wantErr: true},
 		{name: "image with filename", part: MessageContentPart{Type: ContentPartImage, MimeType: "image/png", Filename: "pic.png", Data: testImageData}, wantErr: true},
 		{name: "document non-pdf", part: MessageContentPart{Type: ContentPartDocument, Filename: "doc.docx", MimeType: "application/msword", Data: testPDFData}, wantErr: true},
+		{name: "document pdf uppercase", part: MessageContentPart{Type: ContentPartDocument, Filename: "report.pdf", MimeType: "Application/PDF", Data: testPDFData}},
 		{name: "document without filename", part: MessageContentPart{Type: ContentPartDocument, MimeType: DocumentMimeTypePDF, Data: testPDFData}, wantErr: true},
 		{name: "document without data", part: MessageContentPart{Type: ContentPartDocument, Filename: "report.pdf", MimeType: DocumentMimeTypePDF}, wantErr: true},
 		{name: "document invalid base64", part: MessageContentPart{Type: ContentPartDocument, Filename: "report.pdf", MimeType: DocumentMimeTypePDF, Data: testMalformedData}, wantErr: true},
+		{name: "document invalid utf8 filename", part: MessageContentPart{Type: ContentPartDocument, Filename: "report\xff.pdf", MimeType: DocumentMimeTypePDF, Data: testPDFData}, wantErr: true},
 		{name: "document with text", part: MessageContentPart{Type: ContentPartDocument, Filename: "report.pdf", MimeType: DocumentMimeTypePDF, Data: testPDFData, Text: "extra"}, wantErr: true},
 	}
 	for _, tt := range tests {
@@ -262,6 +274,7 @@ func TestNewTextAttachmentPartRejectsUnrepresentableText(t *testing.T) {
 		{name: "vertical tab", filename: "notes.md", mimeType: "text/plain", text: "bad\x0bform"},
 		{name: "control char in filename", filename: "bad\x07bell.md", mimeType: "text/plain", text: "ok"},
 		{name: "U+FFFE in text", filename: "notes.md", mimeType: "text/plain", text: "bad￾"},
+		{name: "invalid utf8 in text", filename: "notes.md", mimeType: "text/plain", text: string([]byte{0xff, 0xfe, 'a', 'b'})},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
