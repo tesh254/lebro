@@ -567,12 +567,23 @@ func (m *Model) mapMessage(message lebro.Message) (chatMessage, error) {
 		return chatMessage{}, errors.New("lebro: assistant structured output is not representable in a chat-completions request")
 	}
 	// Assistant turns that only request tool calls carry a null content on the
-	// wire; every other non-empty text becomes a JSON string.
+	// wire; every other non-empty text becomes a JSON string, and multipart
+	// messages become an ordered content-block array.
 	content := json.RawMessage(`null`)
 	if message.Content != "" {
 		encoded, err := json.Marshal(message.Content)
 		if err != nil {
 			return chatMessage{}, fmt.Errorf("lebro: encode message content: %w", err)
+		}
+		content = encoded
+	} else if parts := message.ContentParts.Values(); len(parts) > 0 {
+		blocks, err := chatContentBlocks(parts)
+		if err != nil {
+			return chatMessage{}, err
+		}
+		encoded, err := json.Marshal(blocks)
+		if err != nil {
+			return chatMessage{}, fmt.Errorf("lebro: encode message content parts: %w", err)
 		}
 		content = encoded
 	}
@@ -595,6 +606,37 @@ func (m *Model) mapMessage(message lebro.Message) (chatMessage, error) {
 		return chatMessage{}, errors.New("lebro: only tool messages may carry a tool call id")
 	}
 	return out, nil
+}
+
+// chatContentBlocks maps ordered content parts onto chat-completions content
+// blocks, preserving order. Images become data URLs; documents become native
+// file blocks carrying their filename and base64 file data (the Responses API
+// input_file shape is deliberately not used here). Unknown part kinds fail the
+// request instead of silently dropping content.
+func chatContentBlocks(parts []lebro.MessageContentPart) ([]map[string]any, error) {
+	blocks := make([]map[string]any, 0, len(parts))
+	for i, part := range parts {
+		switch part.Type {
+		case lebro.ContentPartText:
+			blocks = append(blocks, map[string]any{"type": "text", "text": part.Text})
+		case lebro.ContentPartImage:
+			blocks = append(blocks, map[string]any{
+				"type":      "image_url",
+				"image_url": map[string]any{"url": "data:" + part.MimeType + ";base64," + part.Data},
+			})
+		case lebro.ContentPartDocument:
+			blocks = append(blocks, map[string]any{
+				"type": "file",
+				"file": map[string]any{
+					"filename":  part.Filename,
+					"file_data": "data:" + part.MimeType + ";base64," + part.Data,
+				},
+			})
+		default:
+			return nil, fmt.Errorf("lebro: message content part %d has unsupported type %q", i, part.Type)
+		}
+	}
+	return blocks, nil
 }
 
 // openAIReasoningDetails replays only the OpenRouter-compatible opaque format.

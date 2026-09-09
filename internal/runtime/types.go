@@ -36,10 +36,13 @@ const (
 
 // Message is the provider-neutral representation of a conversation message.
 // Assistant tool requests use ToolCalls; tool results use ToolCallID. Name is
-// the optional author name and is not a tool-call representation.
+// the optional author name and is not a tool-call representation. A user
+// message carries multipart input through ContentParts — ordered text, image,
+// and document (PDF) parts — in which case Content must stay empty.
 type Message struct {
 	Role             Role                  `json:"role"`
 	Content          string                `json:"content"`
+	ContentParts     MessageContentParts   `json:"content_parts,omitempty,omitzero"`
 	Name             string                `json:"name,omitempty"`
 	ToolCallID       string                `json:"tool_call_id,omitempty"`
 	ToolCalls        ModelToolCalls        `json:"tool_calls,omitempty,omitzero"`
@@ -79,6 +82,14 @@ func (m Message) Validate() error {
 		}
 		if err := m.Reasoning.Validate(); err != nil {
 			return err
+		}
+	}
+	if !m.ContentParts.IsZero() {
+		if m.Content != "" {
+			return errors.New("lebro: message cannot contain both content and content parts")
+		}
+		if m.Role != RoleUser {
+			return errors.New("lebro: only user messages can contain content parts")
 		}
 	}
 

@@ -6,6 +6,21 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Native image and PDF message parts. A user `Message` can carry ordered
+  `ContentParts` — text, image, and document (PDF) parts built with
+  `NewTextPart`, `NewImagePart`, `NewDocumentPart`, and
+  `NewMessageContentParts` — instead of a single content string. Every adapter
+  maps parts to its provider's native input (OpenAI `image_url` and `file`
+  blocks, Anthropic base64 `image` and `document` sources, Gemini and Vertex AI
+  `inlineData` blobs), preserves part order and payloads, and fails with a
+  normalized `*lebro.ModelError` rather than dropping a part its endpoint
+  cannot represent. `Content` and `ContentParts` are mutually exclusive, only
+  user messages may carry parts, and persisted transcripts keep every part
+  byte-faithfully while older text-only records replay unchanged. Text file
+  attachments travel as ordinary text wrapped in an XML attachment element via
+  `NewTextAttachmentPart`, which XML-escapes filenames and contents, rejects
+  input that cannot be represented as valid XML, and marks the span as
+  user-provided attachment data without granting it instruction priority.
 - Capability-based pluggable runtime storage through the new `RuntimeStore`
   contract. Applications can attach an adapter over their own database, API,
   event store, or document store and let Lebro read and write the runtime data

@@ -13,6 +13,9 @@ type (
 	ScheduleExecutionID         = runtime.ScheduleExecutionID
 	Role                        = runtime.Role
 	Message                     = runtime.Message
+	MessageContentPart          = runtime.MessageContentPart
+	MessageContentParts         = runtime.MessageContentParts
+	ContentPartKind             = runtime.ContentPartKind
 	AgentDefinition             = runtime.AgentDefinition
 	Agent                       = runtime.Agent
 	AgentConfig                 = runtime.AgentConfig
@@ -308,6 +311,10 @@ const (
 	RoleUser      = runtime.RoleUser
 	RoleAssistant = runtime.RoleAssistant
 	RoleTool      = runtime.RoleTool
+
+	ContentPartText     = runtime.ContentPartText
+	ContentPartImage    = runtime.ContentPartImage
+	ContentPartDocument = runtime.ContentPartDocument
 
 	ReasoningOff     = runtime.ReasoningOff
 	ReasoningMinimal = runtime.ReasoningMinimal

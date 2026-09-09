@@ -35,6 +35,7 @@ func StorageContractSuite(t *testing.T, newStore StoreFactory) {
 	t.Run("workflow run durable fields round-trip", func(t *testing.T) { storageContractWorkflowRunDurableFields(t, newStore) })
 	t.Run("workflow runs list and filter", func(t *testing.T) { storageContractWorkflowRunList(t, newStore) })
 	t.Run("thread namespace and owner round-trip", func(t *testing.T) { storageContractThreadNamespaceOwner(t, newStore) })
+	t.Run("message content parts round-trip", func(t *testing.T) { storageContractMessageContentParts(t, newStore) })
 	t.Run("observability records", func(t *testing.T) { storageContractObservability(t, newStore) })
 }
 
@@ -1095,5 +1096,78 @@ func storageContractObservability(t *testing.T, newStore StoreFactory) {
 	}
 	if string(again.Records[0].Metadata["app.customer_id"]) != `"acme"` {
 		t.Fatalf("returned records alias stored state: %#v", again.Records[0].Metadata)
+	}
+}
+
+// storageContractMessageContentParts proves ordered multipart messages —
+// XML-wrapped text, image, and PDF parts — survive persistence byte-faithfully
+// through every store adapter, and that legacy text-only records are
+// unaffected by the multipart representation.
+func storageContractMessageContentParts(t *testing.T, newStore StoreFactory) {
+	t.Helper()
+	ctx := context.Background()
+	store := newStore(t)
+	now := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+
+	text, err := runtime.NewTextAttachmentPart("notes.md", "text/markdown", "line one\nline <two>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts, err := runtime.NewMessageContentParts(
+		text,
+		runtime.MessageContentPart{Type: runtime.ContentPartImage, MimeType: "image/png", Data: "aW1hZ2UtYnl0ZXM="},
+		runtime.MessageContentPart{Type: runtime.ContentPartDocument, Filename: "report.pdf", MimeType: runtime.DocumentMimeTypePDF, Data: "cGRmLWJ5dGVz"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Threads().CreateThread(ctx, runtime.ThreadRecord{ID: "thread-parts", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Messages().AppendMessages(ctx, []runtime.MessageRecord{
+		{ID: "parts-1", ThreadID: "thread-parts", Message: runtime.Message{Role: runtime.RoleUser, ContentParts: parts}, CreatedAt: now},
+		{ID: "legacy-1", ThreadID: "thread-parts", Message: runtime.Message{Role: runtime.RoleUser, Content: "plain text"}, CreatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.Messages().ListMessages(ctx, "thread-parts", runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Records) != 2 {
+		t.Fatalf("records = %#v", page.Records)
+	}
+	stored := page.Records[0].Message
+	if stored.Content != "" {
+		t.Fatalf("multipart content = %q, want empty", stored.Content)
+	}
+	if stored.ContentParts != parts {
+		t.Fatalf("stored parts = %#v, want %#v", stored, parts)
+	}
+	values := stored.ContentParts.Values()
+	if len(values) != 3 ||
+		values[0].Type != runtime.ContentPartText || values[0].Text != text.Text ||
+		values[1].Type != runtime.ContentPartImage || values[1].MimeType != "image/png" || values[1].Data != "aW1hZ2UtYnl0ZXM=" ||
+		values[2].Type != runtime.ContentPartDocument || values[2].Filename != "report.pdf" || values[2].Data != "cGRmLWJ5dGVz" {
+		t.Fatalf("decoded parts = %#v", values)
+	}
+	if err := stored.Validate(); err != nil {
+		t.Fatalf("stored multipart message validation = %v", err)
+	}
+	// Mutating decoded values must not affect stored state.
+	values[1].MimeType = "image/tampered"
+	reloaded, err := store.Messages().ListMessages(ctx, "thread-parts", runtime.PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Records[0].Message.ContentParts.Values()[1].MimeType != "image/png" {
+		t.Fatalf("decoded parts alias stored state: %#v", reloaded.Records[0].Message.ContentParts.Values())
+	}
+	legacy := page.Records[1].Message
+	if legacy.Content != "plain text" || !legacy.ContentParts.IsZero() {
+		t.Fatalf("legacy record = %#v", legacy)
+	}
+	if err := legacy.Validate(); err != nil {
+		t.Fatalf("legacy record validation = %v", err)
 	}
 }

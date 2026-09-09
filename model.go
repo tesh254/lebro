@@ -26,4 +26,22 @@ func NewModelReasoningDetails(value json.RawMessage) ModelReasoningDetails {
 	return runtime.NewModelReasoningDetails(value)
 }
 
+func NewTextPart(text string) (MessageContentPart, error) { return runtime.NewTextPart(text) }
+
+func NewImagePart(mimeType, base64Data string) (MessageContentPart, error) {
+	return runtime.NewImagePart(mimeType, base64Data)
+}
+
+func NewDocumentPart(filename, mimeType, base64Data string) (MessageContentPart, error) {
+	return runtime.NewDocumentPart(filename, mimeType, base64Data)
+}
+
+func NewTextAttachmentPart(filename, mimeType, text string) (MessageContentPart, error) {
+	return runtime.NewTextAttachmentPart(filename, mimeType, text)
+}
+
+func NewMessageContentParts(parts ...MessageContentPart) (MessageContentParts, error) {
+	return runtime.NewMessageContentParts(parts...)
+}
+
 func AsStreamingModel(model Model) StreamingModel { return runtime.AsStreamingModel(model) }

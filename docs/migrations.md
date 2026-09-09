@@ -60,6 +60,17 @@ provider replay payload in the existing `messages.message` JSON column. Run
 `Migrate` as part of the normal deployment procedure, but no new schema version
 is introduced solely for reasoning.
 
+## Message content parts
+
+Native image and PDF support adds an optional `content_parts` field inside the
+existing serialized `Message` value. Like reasoning, it needs no SQL migration:
+Memory, SQLite, and Postgres stores keep the full multipart payload in the
+existing `messages.message` JSON column. Messages persisted before this field
+existed decode with zero content parts and replay as plain text unchanged;
+multipart messages carry every part, payload, and ordering byte-faithfully. A
+stored `content_parts` value that no longer validates fails loudly at decode
+instead of silently dropping parts.
+
 ## Durable run records
 
 MAD-83 observability support adds three append-only tables to the SQLite and

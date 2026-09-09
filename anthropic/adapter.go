@@ -115,7 +115,11 @@ func (m *Model) params(request lebro.ModelRequest) (claude.MessageNewParams, err
 		case lebro.RoleSystem:
 			params.System = append(params.System, claude.TextBlockParam{Text: message.Content})
 		case lebro.RoleUser:
-			params.Messages = append(params.Messages, claude.NewUserMessage(claude.NewTextBlock(message.Content)))
+			blocks, err := anthropicUserBlocks(message)
+			if err != nil {
+				return claude.MessageNewParams{}, m.invalid(err)
+			}
+			params.Messages = append(params.Messages, claude.NewUserMessage(blocks...))
 		case lebro.RoleAssistant:
 			blocks := []claude.ContentBlockParamUnion{}
 			if replayThinking {
@@ -160,6 +164,52 @@ func (m *Model) params(request lebro.ModelRequest) (claude.MessageNewParams, err
 		params.OutputConfig = claude.OutputConfigParam{Format: claude.JSONOutputFormatParam{Schema: schema}}
 	}
 	return params, nil
+}
+
+// anthropicUserImageMediaTypes is the static, documented set of image media
+// types the Messages API accepts for base64 image sources. Requests carrying
+// any other image type fail locally with a clear message instead of traveling
+// to the endpoint only to be rejected.
+var anthropicUserImageMediaTypes = map[string]struct{}{
+	"image/jpeg": {},
+	"image/png":  {},
+	"image/gif":  {},
+	"image/webp": {},
+}
+
+// anthropicUserBlocks maps a user message onto ordered Messages API content
+// blocks, preserving part order. Images become base64 image sources and PDF
+// documents become base64 document sources; the document filename is preserved
+// as the block title because the API has no filename field. Unknown part kinds
+// fail the request instead of silently dropping content.
+func anthropicUserBlocks(message lebro.Message) ([]claude.ContentBlockParamUnion, error) {
+	parts := message.ContentParts.Values()
+	if len(parts) == 0 {
+		return []claude.ContentBlockParamUnion{claude.NewTextBlock(message.Content)}, nil
+	}
+	blocks := make([]claude.ContentBlockParamUnion, 0, len(parts))
+	for i, part := range parts {
+		switch part.Type {
+		case lebro.ContentPartText:
+			blocks = append(blocks, claude.NewTextBlock(part.Text))
+		case lebro.ContentPartImage:
+			if _, ok := anthropicUserImageMediaTypes[part.MimeType]; !ok {
+				return nil, fmt.Errorf("lebro: Anthropic image content part %d media type %q is not supported; use image/jpeg, image/png, image/gif, or image/webp", i, part.MimeType)
+			}
+			blocks = append(blocks, claude.NewImageBlock(claude.Base64ImageSourceParam{
+				Data:      part.Data,
+				MediaType: claude.Base64ImageSourceMediaType(part.MimeType),
+			}))
+		case lebro.ContentPartDocument:
+			blocks = append(blocks, claude.ContentBlockParamUnion{OfDocument: &claude.DocumentBlockParam{
+				Source: claude.DocumentBlockParamSourceUnion{OfBase64: &claude.Base64PDFSourceParam{Data: part.Data}},
+				Title:  claude.String(part.Filename),
+			}})
+		default:
+			return nil, fmt.Errorf("lebro: message content part %d has unsupported type %q", i, part.Type)
+		}
+	}
+	return blocks, nil
 }
 
 // reasoningParams maps neutral effort to Anthropic's token-budget mechanism.

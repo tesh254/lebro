@@ -5,6 +5,7 @@ package geminiapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,7 +107,11 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 				config.SystemInstruction.Parts = append(config.SystemInstruction.Parts, genai.NewPartFromText(message.Content))
 			}
 		case lebro.RoleUser:
-			contents = append(contents, genai.NewContentFromText(message.Content, genai.RoleUser))
+			content, err := geminiUserContent(message)
+			if err != nil {
+				return "", nil, nil, m.invalid(err)
+			}
+			contents = append(contents, content)
 		case lebro.RoleAssistant:
 			parts := []*genai.Part{}
 			reasoning, err := geminiReasoningParts(message.Reasoning)
@@ -158,6 +163,34 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 		config.ResponseJsonSchema = schema
 	}
 	return model, contents, config, nil
+}
+
+// geminiUserContent maps a user message onto ordered generate-content parts,
+// preserving part order. Images and PDF documents become inlineData blobs with
+// decoded bytes; the Gemini API has no filename field, so document filenames
+// exist only in the neutral part. Unknown part kinds fail the request instead
+// of silently dropping content.
+func geminiUserContent(message lebro.Message) (*genai.Content, error) {
+	parts := message.ContentParts.Values()
+	if len(parts) == 0 {
+		return genai.NewContentFromText(message.Content, genai.RoleUser), nil
+	}
+	mapped := make([]*genai.Part, 0, len(parts))
+	for i, part := range parts {
+		switch part.Type {
+		case lebro.ContentPartText:
+			mapped = append(mapped, genai.NewPartFromText(part.Text))
+		case lebro.ContentPartImage, lebro.ContentPartDocument:
+			data, err := base64.StdEncoding.DecodeString(part.Data)
+			if err != nil {
+				return nil, fmt.Errorf("lebro: message content part %d data: %w", i, err)
+			}
+			mapped = append(mapped, &genai.Part{InlineData: &genai.Blob{MIMEType: part.MimeType, Data: data}})
+		default:
+			return nil, fmt.Errorf("lebro: message content part %d has unsupported type %q", i, part.Type)
+		}
+	}
+	return genai.NewContentFromParts(mapped, genai.RoleUser), nil
 }
 
 // geminiThinkingConfig maps effort to the Gemini generations each model

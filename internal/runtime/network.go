@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -389,8 +390,25 @@ func (n *Network) applyDeadline(ctx context.Context) (context.Context, context.C
 
 func networkTask(messages []Message) (string, error) {
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role == RoleUser && messages[i].Content != "" {
+		if messages[i].Role != RoleUser {
+			continue
+		}
+		if messages[i].Content != "" {
 			return messages[i].Content, nil
+		}
+		// A multipart user message carries its text in ordered parts; the
+		// routing task uses that text while specialists receive the full
+		// message, parts included.
+		if parts := messages[i].ContentParts.Values(); len(parts) > 0 {
+			var texts []string
+			for _, part := range parts {
+				if part.Type == ContentPartText && part.Text != "" {
+					texts = append(texts, part.Text)
+				}
+			}
+			if len(texts) > 0 {
+				return strings.Join(texts, "\n"), nil
+			}
 		}
 	}
 	return "", errors.New("lebro: network requires a non-empty user message")
