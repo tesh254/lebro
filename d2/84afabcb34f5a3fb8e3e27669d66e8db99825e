@@ -1,0 +1,72 @@
+anthropic/adapter.go
+  s_ae9c101bcf5250::t_4c1e4fdf363bf7 169-186,188-214
+  s_ae9c101bcf5250::t_8e8a4a4edf1b5c 187
+  s_ae9c101bcf5250::t_0511b585ac9eb8 118-122
+doc.go
+  s_ae9c101bcf5250::t_db8693a7ecbd27 19-33
+internal/runtime/content_test.go
+  s_ae9c101bcf5250::t_572d02f0dbc4b4 10
+  s_ae9c101bcf5250::t_04ca59c929e4f8 240-241,244
+  s_ae9c101bcf5250::t_fa139ddb0e2906 1-9,11-239,242-243,245-305
+README.md
+  s_ae9c101bcf5250::t_2a0d3b72fea882 285-343
+internal/geminiapi/adapter.go
+  s_ae9c101bcf5250::t_f6882f801780ac 8
+  s_ae9c101bcf5250::t_d81791b7d15cbc 110-114
+  s_ae9c101bcf5250::t_7b6bfc3a7a9046 175
+  s_ae9c101bcf5250::t_b19f9e2d08c428 168-174,176-195
+CHANGELOG.md
+  s_ae9c101bcf5250::t_c34fa329322fb4 9-23
+internal/geminiapi/content_test.go
+  s_ae9c101bcf5250::t_1987e8fa38efa2 1-91
+model.go
+  s_ae9c101bcf5250::t_8d8b8f7491b0ad 29-46
+api_types.go
+  s_ae9c101bcf5250::t_d4afebd28fea46 16-18
+  s_ae9c101bcf5250::t_4090c8ae832581 315-318
+openai/adapter.go
+  s_ae9c101bcf5250::t_b40e6ea08d289d 570-571,580-586
+  s_ae9c101bcf5250::t_a584d08af3d93b 579
+  s_ae9c101bcf5250::t_fa4757b9671915 611-641
+anthropic/content_test.go
+  s_ae9c101bcf5250::t_9a0ecd8f27ef9b 162-163,173
+  s_ae9c101bcf5250::t_74d8d1228d3dd9 1-4,6-147,149-161,164-172,174
+  s_ae9c101bcf5250::t_66a4f9e2e02501 5,148
+internal/runtime/agent_parts_test.go
+  s_ae9c101bcf5250::t_11a850803c5b6c 1-109
+docs/migrations.md
+  s_ae9c101bcf5250::t_6635959de1ea0d 63-73
+internal/runtime/types.go
+  s_ae9c101bcf5250::t_11cae421c28fc8 87-90,92-94
+  s_ae9c101bcf5250::t_6edd608a7d0370 45
+  s_ae9c101bcf5250::t_ce94977eebcd26 39-41
+  s_ae9c101bcf5250::t_ae5a5fbcdaafec 91
+internal/runtime/content.go
+  s_ae9c101bcf5250::t_4b38d4bb660394 1-153,159-280
+  s_ae9c101bcf5250::t_a5ddc9a6808264 154-158
+internal/testkit/contract_storage.go
+  s_ae9c101bcf5250::t_f92fdacd9c3abd 38
+  s_ae9c101bcf5250::t_0355abb861e6c7 1101-1173
+internal/runtime/network.go
+  s_ae9c101bcf5250::t_da77052ba7ea32 393-396,399-401,403-411
+  s_ae9c101bcf5250::t_c22c5226d3e48a 402
+  s_ae9c101bcf5250::t_ca519e0525f54f 9
+openai/content_test.go
+  s_ae9c101bcf5250::t_588fba3ebc341e 47-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "d284afabcb34f5a3fb8e3e27669d66e8db99825e",
+  "prompts": {},
+  "sessions": {
+    "s_ae9c101bcf5250": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f7815b01dffeTFQbCRE3CAyDO3",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
