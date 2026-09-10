@@ -179,7 +179,9 @@ func (c *Client) info(o lebro.MediaOperation, h http.Header) lebro.MediaResultIn
 	}
 	return lebro.MediaResultInfo{Operation: o, Provider: c.provider, Model: c.model, ProviderRequestID: id}
 }
-func safeID(id string) bool { return len(id) <= 256 && !strings.ContainsAny(id, "/?#\r\n\x00") }
+func safeID(id string) bool {
+	return id != "" && len(id) <= 256 && !strings.ContainsAny(id, "/?#\r\n\x00")
+}
 func (c *Client) request(ctx context.Context, method, path, contentType string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
@@ -286,21 +288,20 @@ func readBounded(r io.Reader, max int64) ([]byte, error) {
 }
 func usage(raw map[string]json.RawMessage) lebro.MediaUsage {
 	u := lebro.MediaUsage{Units: map[string]json.Number{}}
-	for _, k := range []string{"input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens", "seconds", "characters", "images"} {
-		if b, ok := raw[k]; ok {
+	for k, b := range raw {
+		if k == "cost" {
 			var n json.Number
 			if json.Unmarshal(b, &n) == nil {
 				if v, e := n.Float64(); e == nil && v >= 0 {
-					u.Units[k] = n
+					u.CostUSD = &n
 				}
 			}
+			continue
 		}
-	}
-	if b, ok := raw["cost"]; ok {
 		var n json.Number
 		if json.Unmarshal(b, &n) == nil {
 			if v, e := n.Float64(); e == nil && v >= 0 {
-				u.CostUSD = &n
+				u.Units[k] = n
 			}
 		}
 	}
@@ -321,7 +322,7 @@ func (c *Client) authorize(ctx context.Context, o lebro.MediaOperation, action s
 		identity, _ := lebro.IdentityFromContext(ctx)
 		decision := c.policy.Authorize(ctx, identity, lebro.Action(action), lebro.Resource{Kind: "media", ID: o.ID, Tenant: o.Scope.Namespace, OwnerID: o.Scope.OwnerID})
 		if !decision.Allowed {
-			return &lebro.MediaError{Kind: lebro.MediaErrorAuthorization, Message: "media operation denied"}
+			return &lebro.MediaError{Kind: lebro.MediaErrorAuthorization, Message: "media operation denied", Cause: lebro.ErrPolicyDenied}
 		}
 	}
 	return nil

@@ -32,13 +32,16 @@ func RecordMediaAttempt(ctx context.Context, repo ModelAttemptRepository, info M
 	if outcome != nil {
 		status = ModelAttemptFailed
 		errorKind = "media_failure"
-		if errors.Is(outcome, context.Canceled) {
+		if errors.Is(outcome, context.Canceled) || errors.Is(outcome, context.DeadlineExceeded) {
 			status = ModelAttemptCancelled
 			errorKind = "cancelled"
 		}
 		var me *MediaError
 		if errors.As(outcome, &me) {
 			errorKind = string(me.Kind)
+			if me.Kind == MediaErrorCancelled {
+				status = ModelAttemptCancelled
+			}
 		}
 	}
 	payload, err := json.Marshal(struct {

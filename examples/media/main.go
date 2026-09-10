@@ -73,7 +73,7 @@ func main() {
 	}
 }
 func run() error {
-	mode := flag.String("mode", "image", "image, video, resume, transcribe, speak, live, agent, or voice")
+	mode := flag.String("mode", "image", "image, video, resume, transcribe, speak, speak-stream, live, agent, or voice")
 	providerName := flag.String("provider", "openrouter", "openrouter or openai")
 	model := flag.String("model", "", "explicit provider media model")
 	chatModel := flag.String("chat-model", "", "chat model for agent/voice modes")
@@ -193,6 +193,8 @@ func run() error {
 			return e
 		}
 		return save(speech.Audio)
+	case "speak-stream":
+		return streamSpeech(ctx, op, media, *prompt, sink)
 	case "live":
 		f, e := os.Open(*input)
 		if e != nil {
@@ -229,6 +231,34 @@ func run() error {
 	default:
 		return errors.New("unknown mode")
 	}
+}
+func streamSpeech(ctx context.Context, op lebro.MediaOperation, media backend, prompt string, sink diskSink) error {
+	if err := os.MkdirAll(sink.dir, 0700); err != nil {
+		return err
+	}
+	id := rand.Text()
+	f, err := os.CreateTemp(sink.dir, ".partial-")
+	if err != nil {
+		return err
+	}
+	info, err := media.StreamSpeech(ctx, lebro.SpeechRequest{Operation: op, Text: prompt, Voice: "alloy", Format: "mp3"}, func(_ lebro.MediaAsset, b []byte) error {
+		_, e := f.Write(b)
+		return e
+	})
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return err
+	}
+	if err = f.Close(); err != nil {
+		_ = os.Remove(f.Name())
+		return err
+	}
+	if err = os.Rename(f.Name(), filepath.Join(sink.dir, id)); err != nil {
+		return err
+	}
+	a := lebro.MediaAsset{ID: id, Locator: id, Kind: lebro.MediaAudio, MIMEType: "audio/mpeg", Codec: "mp3", Provider: info.Provider, Model: info.Model, ProviderRequestID: info.ProviderRequestID}
+	return json.NewEncoder(os.Stdout).Encode(a)
 }
 func chatAgent(providerName, model string, tools *lebro.ToolRegistry, ids []lebro.ToolID) (*lebro.Agent, error) {
 	if model == "" {

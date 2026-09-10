@@ -31,7 +31,7 @@ type VideoServiceConfig struct {
 type VideoService struct{ config VideoServiceConfig }
 
 func NewVideoService(c VideoServiceConfig) (*VideoService, error) {
-	if c.Generator == nil || c.Jobs == nil {
+	if c.Generator == nil || isNilInterface(c.Generator) || c.Jobs == nil || isNilInterface(c.Jobs) {
 		return nil, mediaInvalid("video generator and job repository are required")
 	}
 	return &VideoService{config: c}, nil
@@ -104,6 +104,11 @@ func (s *VideoService) Submit(ctx context.Context, r VideoRequest) (VideoJob, er
 	defer cancel()
 	if err = s.config.Jobs.SaveVideoJob(saveCtx, job, 1); err != nil {
 		return job, &MediaError{Kind: MediaErrorAmbiguous, Message: "submission outcome could not be persisted; retain returned handle", Cause: err}
+	}
+	if job.State.Terminal() {
+		if recordErr := s.record(saveCtx, job); recordErr != nil {
+			return job, recordErr
+		}
 	}
 	return job, submitErr
 }
@@ -218,6 +223,12 @@ func (s *VideoService) Wait(ctx context.Context, o MediaOperation, opt MediaWait
 		}
 		if err == nil && job.State.Terminal() {
 			if job.State != MediaJobSucceeded {
+				switch job.State {
+				case MediaJobCancelled:
+					return job, &MediaError{Kind: MediaErrorCancelled, Message: "video was cancelled"}
+				case MediaJobExpired:
+					return job, &MediaError{Kind: MediaErrorExpired, Message: "video expired"}
+				}
 				return job, &MediaError{Kind: MediaErrorRemote, Message: "video ended in state " + string(job.State)}
 			}
 			return job, nil
@@ -261,6 +272,9 @@ func (s *VideoService) Cancel(ctx context.Context, o MediaOperation) (VideoJob, 
 	j, err := s.config.Jobs.GetVideoJob(ctx, o.Scope, o.ID)
 	if err != nil || j.State.Terminal() {
 		return j, err
+	}
+	if j.ProviderJobID == "" || j.State == MediaJobSubmitting || j.State == MediaJobAmbiguous {
+		return j, &MediaError{Kind: MediaErrorAmbiguous, Message: "operation has no confirmed provider job ID"}
 	}
 	next, err := c.CancelVideo(ctx, j)
 	if err != nil {

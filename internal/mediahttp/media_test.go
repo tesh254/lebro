@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"image"
@@ -327,13 +328,46 @@ func TestConfigAndProfiles(t *testing.T) {
 	if c.Capabilities().Image {
 		t.Fatal("fabricated model capabilities")
 	}
-	if _, e = c.GenerateImages(context.Background(), lebro.ImageRequest{}); e == nil {
+	if _, e = c.GenerateImages(context.Background(), lebro.ImageRequest{Operation: operation(), Prompt: "draw"}); e == nil {
 		t.Fatal("unknown image model accepted")
 	}
 	for _, m := range []string{"gpt-image-1", "whisper-1", "gpt-4o-mini-tts", "gpt-live-transcribe"} {
 		if _, e = New(Config{APIKey: "key", Model: m}, "openai"); e != nil {
 			t.Fatal(e)
 		}
+	}
+}
+
+func TestWebPDimensions(t *testing.T) {
+	lossy := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8 \x1a\x00\x00\x00"), make([]byte, 10)...)
+	lossy[23], lossy[24], lossy[25] = 0x9d, 0x01, 0x2a
+	binary.LittleEndian.PutUint16(lossy[26:28], 2)
+	binary.LittleEndian.PutUint16(lossy[28:30], 3)
+	if w, h, ok := webpDimensions(lossy); !ok || w != 2 || h != 3 {
+		t.Fatalf("lossy dims %d %d %v", w, h, ok)
+	}
+	lossless := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8L\x05\x00\x00\x00"), make([]byte, 6)...)
+	lossless[20] = 0x2f
+	binary.LittleEndian.PutUint32(lossless[21:25], 26|34<<14)
+	if w, h, ok := webpDimensions(lossless); !ok || w != 27 || h != 35 {
+		t.Fatalf("lossless dims %d %d %v", w, h, ok)
+	}
+	extended := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X\x0d\x00\x00\x00"), make([]byte, 13)...)
+	extended[27], extended[30] = 99, 64
+	if w, h, ok := webpDimensions(extended); !ok || w != 100 || h != 65 {
+		t.Fatalf("extended dims %d %d %v", w, h, ok)
+	}
+	if _, _, ok := webpDimensions([]byte("not webp data here")); ok {
+		t.Fatal("accepted non-webp")
+	}
+	if _, _, ok := webpDimensions(lossy[:25]); ok {
+		t.Fatal("accepted truncated lossy")
+	}
+	if _, _, ok := webpDimensions(lossless[:25]); ok {
+		t.Fatal("accepted truncated lossless")
+	}
+	if _, _, ok := webpDimensions(extended[:32]); ok {
+		t.Fatal("accepted truncated extended")
 	}
 }
 
@@ -492,7 +526,11 @@ func TestLiveFailuresAndCancellation(t *testing.T) {
 					}
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			deadline := 10 * time.Second
+			if scenario == "cancel" {
+				deadline = 50 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), deadline)
 			defer cancel()
 			e := c.StreamTranscription(ctx, lebro.LiveTranscriptionRequest{Operation: operation()}, func(ctx context.Context, b []byte) (int, error) {
 				if scenario == "bad-chunk" {

@@ -33,6 +33,9 @@ func (c *Client) StreamTranscription(ctx context.Context, r lebro.LiveTranscript
 	if source == nil || sink == nil {
 		return invalid("audio source and transcript consumer are required")
 	}
+	if r.Language != "" && !c.caps.Language || r.Prompt != "" && !c.caps.PromptHint {
+		return unsupported("unsupported transcription option")
+	}
 	if len(r.Language) > 16 || len(r.Prompt) > 4096 {
 		return invalid("over-limit transcription hints")
 	}

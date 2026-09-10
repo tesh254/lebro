@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 )
@@ -105,8 +106,11 @@ func (c MediaContent) Validate() error {
 	if !strings.HasPrefix(c.Asset.MIMEType, string(c.Asset.Kind)+"/") {
 		return mediaInvalid("MIME type does not match media kind")
 	}
-	if c.Asset.Bytes < 0 || c.Asset.Width < 0 || c.Asset.Height < 0 {
+	if c.Asset.Bytes < 0 || c.Asset.Width < 0 || c.Asset.Height < 0 || c.Asset.SampleRate < 0 || c.Asset.Channels < 0 {
 		return mediaInvalid("negative media measurement")
+	}
+	if c.Asset.DurationSeconds != nil && (math.IsNaN(*c.Asset.DurationSeconds) || math.IsInf(*c.Asset.DurationSeconds, 0) || *c.Asset.DurationSeconds < 0) {
+		return mediaInvalid("invalid media duration")
 	}
 	return nil
 }
@@ -353,7 +357,7 @@ func CopyMedia(ctx context.Context, dst io.Writer, src io.Reader, limit int64) (
 			return total, err
 		}
 		size := int64(len(buf))
-		if size > limit-total+1 {
+		if limit-total < size {
 			size = limit - total + 1
 		}
 		n, err := src.Read(buf[:size])

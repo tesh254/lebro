@@ -143,10 +143,20 @@ func TestRunnableMediaFlowsWithProviderFixtures(t *testing.T) {
 	}
 	originalFlags, originalArgs := flag.CommandLine, os.Args
 	defer func() { flag.CommandLine = originalFlags; os.Args = originalArgs }()
-	for _, tc := range []struct{ mode, provider, model string }{{"image", "openrouter", "openai/gpt-image-1"}, {"image", "openai", "gpt-image-1"}, {"video", "openrouter", "google/veo-3.1"}, {"resume", "openrouter", "google/veo-3.1"}, {"transcribe", "openai", "whisper-1"}, {"voice", "openai", "whisper-1"}, {"voice", "openrouter", "openai/whisper-1"}, {"speak", "openrouter", "openai/gpt-4o-mini-tts"}, {"agent", "openrouter", "openai/gpt-image-1"}} {
+	for _, tc := range []struct{ mode, provider, model string }{{"image", "openrouter", "openai/gpt-image-1"}, {"image", "openai", "gpt-image-1"}, {"video", "openrouter", "google/veo-3.1"}, {"resume", "openrouter", "google/veo-3.1"}, {"transcribe", "openai", "whisper-1"}, {"voice", "openai", "whisper-1"}, {"voice", "openrouter", "openai/whisper-1"}, {"speak", "openrouter", "openai/gpt-4o-mini-tts"}, {"speak-stream", "openrouter", "openai/gpt-4o-mini-tts"}, {"agent", "openrouter", "openai/gpt-image-1"}} {
 		t.Run(tc.mode+tc.provider, func(t *testing.T) {
+			dbPath := filepath.Join(dir, tc.mode+"-"+tc.provider+".db")
+			opID := "example-op"
+			if tc.mode == "resume" {
+				opID = "resume-op"
+				flag.CommandLine = flag.NewFlagSet("media", flag.ContinueOnError)
+				os.Args = []string{"media", "-mode", "video", "-provider", tc.provider, "-model", tc.model, "-operation", opID, "-db", dbPath, "-output", filepath.Join(dir, "assets"), "-input", recording, "-chat-model", "chat"}
+				if e := run(); e != nil {
+					t.Fatal(e)
+				}
+			}
 			flag.CommandLine = flag.NewFlagSet("media", flag.ContinueOnError)
-			os.Args = []string{"media", "-mode", tc.mode, "-provider", tc.provider, "-model", tc.model, "-operation", "example-op", "-db", filepath.Join(dir, "jobs.db"), "-output", filepath.Join(dir, "assets"), "-input", recording, "-chat-model", "chat"}
+			os.Args = []string{"media", "-mode", tc.mode, "-provider", tc.provider, "-model", tc.model, "-operation", opID, "-db", dbPath, "-output", filepath.Join(dir, "assets"), "-input", recording, "-chat-model", "chat"}
 			if e := run(); e != nil {
 				t.Fatal(e)
 			}

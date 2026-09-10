@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,6 +291,79 @@ func TestVideoRemoteCancelAndTerminalAttempts(t *testing.T) {
 	}
 }
 
+func TestVideoWaitTerminalStateKinds(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryStore()
+	s := videoService(t, &fakeVideo{}, repo)
+	o := mediaOp()
+	if _, e := s.Submit(ctx, VideoRequest{Operation: o, Prompt: "video"}); e != nil {
+		t.Fatal(e)
+	}
+	job, e := repo.GetVideoJob(ctx, o.Scope, o.ID)
+	if e != nil || job.State != MediaJobQueued {
+		t.Fatal(job, e)
+	}
+	job.State = MediaJobExpired
+	job.Revision = 3
+	if e = repo.SaveVideoJob(ctx, job, 2); e != nil {
+		t.Fatal(e)
+	}
+	_, e = s.Wait(ctx, o, MediaWaitOptions{Timeout: time.Second})
+	var me *MediaError
+	if !errors.As(e, &me) || me.Kind != MediaErrorExpired {
+		t.Fatalf("expired wait kind %v", e)
+	}
+	cs := videoService(t, cancellingVideo{&fakeVideo{}}, NewMemoryStore())
+	o2 := MediaOperation{ID: "cancel-op", Scope: o.Scope}
+	if _, e = cs.Submit(ctx, VideoRequest{Operation: o2, Prompt: "video"}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = cs.Cancel(ctx, o2); e != nil {
+		t.Fatal(e)
+	}
+	_, e = cs.Wait(ctx, o2, MediaWaitOptions{Timeout: time.Second})
+	if !errors.As(e, &me) || me.Kind != MediaErrorCancelled {
+		t.Fatalf("cancelled wait kind %v", e)
+	}
+}
+
+func TestVideoCancelRejectsUnconfirmedJob(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryStore()
+	s := videoService(t, cancellingVideo{&fakeVideo{}}, repo)
+	o := mediaOp()
+	now := time.Now().UTC()
+	job := VideoJob{Info: MediaResultInfo{Operation: o}, State: MediaJobSubmitting, CreatedAt: now, UpdatedAt: now, Revision: 1}
+	if e := repo.SaveVideoJob(ctx, job, 0); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.Cancel(ctx, o); e == nil {
+		t.Fatal("cancelled job without provider identity")
+	}
+}
+
+func TestRecordMediaAttemptCancellationClassification(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	o := mediaOp()
+	deadline := MediaOperation{ID: "deadline-op", Scope: o.Scope}
+	if e := RecordMediaAttempt(ctx, store.ModelAttempts(), MediaResultInfo{Operation: o, Provider: "fixture", Model: "m"}, "image", time.Now(), time.Now(), context.DeadlineExceeded); e != nil {
+		t.Fatal(e)
+	}
+	if e := RecordMediaAttempt(ctx, store.ModelAttempts(), MediaResultInfo{Operation: deadline, Provider: "fixture", Model: "m"}, "image", time.Now(), time.Now(), &MediaError{Kind: MediaErrorCancelled, Message: "cancelled"}); e != nil {
+		t.Fatal(e)
+	}
+	records, e := store.ListModelAttempts(ctx, ModelAttemptFilter{}, PageRequest{})
+	if e != nil || len(records.Records) != 2 {
+		t.Fatalf("records %+v %v", records, e)
+	}
+	for _, r := range records.Records {
+		if r.Status != ModelAttemptCancelled || r.ErrorKind != "cancelled" {
+			t.Fatalf("misclassified %+v", r)
+		}
+	}
+}
+
 type mediaSink struct {
 	data    []byte
 	locator string
@@ -474,6 +548,18 @@ func TestMediaToolsTrustedContextAndVideo(t *testing.T) {
 	if _, e = NewImageTool(ImageToolConfig{}); e == nil {
 		t.Fatal("nil image generator")
 	}
+	var nilVideo *fakeVideo
+	if _, e = NewVideoService(VideoServiceConfig{Generator: nilVideo, Jobs: NewMemoryStore()}); e == nil {
+		t.Fatal("typed-nil generator accepted")
+	}
+	var nilJobs MediaJobRepository
+	if _, e = NewVideoService(VideoServiceConfig{Generator: &fakeVideo{}, Jobs: nilJobs}); e == nil {
+		t.Fatal("typed-nil job repository accepted")
+	}
+	var nilSink *mediaSink
+	if _, e = NewImageTool(ImageToolConfig{Generator: imageFake{}, Sink: nilSink}); e == nil {
+		t.Fatal("typed-nil sink accepted")
+	}
 	if _, e = NewImageTool(ImageToolConfig{Generator: imageFake{}, Sink: &mediaSink{}, MaxBytes: -1}); e == nil {
 		t.Fatal("negative image limit")
 	}
@@ -616,10 +702,22 @@ func TestMediaIOAndValidationFailures(t *testing.T) {
 	if _, e := CopyMedia(ctx, io.Discard, strings.NewReader("x"), 0); e == nil {
 		t.Fatal("invalid limit")
 	}
-	for _, c := range []MediaContent{{}, {Data: []byte{}}, {Data: []byte("x"), Reader: io.NopCloser(strings.NewReader("x"))}, {Data: []byte("x"), Asset: MediaAsset{Kind: "invalid"}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "image/png"}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav", Bytes: -1}}} {
+	if n, e := CopyMedia(ctx, io.Discard, strings.NewReader("x"), math.MaxInt64); e != nil || n != 1 {
+		t.Fatalf("max-int64 limit %d %v", n, e)
+	}
+	negative := -1.5
+	positive := 1.5
+	nan := math.NaN()
+	for _, c := range []MediaContent{{}, {Data: []byte{}}, {Data: []byte("x"), Reader: io.NopCloser(strings.NewReader("x"))}, {Data: []byte("x"), Asset: MediaAsset{Kind: "invalid"}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "image/png"}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav", Bytes: -1}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav", SampleRate: -1, Channels: -2}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav", DurationSeconds: &negative}}, {Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav", DurationSeconds: &nan}}} {
 		if e := c.Validate(); e == nil {
 			t.Fatal("invalid content accepted")
 		}
+	}
+	if e := (MediaContent{Data: []byte("x"), Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav", SampleRate: 24000, Channels: 1, DurationSeconds: &positive}}).Validate(); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := SaveMediaAsset(ctx, mediaOp(), MediaContent{Asset: MediaAsset{Kind: MediaAudio, MIMEType: "audio/wav"}, Reader: io.NopCloser(strings.NewReader(""))}, &mediaSink{}, nil, 64<<20); e == nil {
+		t.Fatal("empty media accepted")
 	}
 	e := &MediaError{Kind: MediaErrorTransport, Message: "safe", Cause: sentinel}
 	if !errors.Is(e, sentinel) || strings.Contains(e.Error(), "source failed") {
@@ -631,6 +729,11 @@ func TestMediaIOAndValidationFailures(t *testing.T) {
 	q := (&sqlMediaJobs{postgres: true}).bind("UPDATE media_jobs SET revision=? WHERE namespace=? AND owner_id=? AND id=?")
 	if q != "UPDATE media_jobs SET revision=$1 WHERE namespace=$2 AND owner_id=$3 AND id=$4" {
 		t.Fatal(q)
+	}
+	q = (&sqlMediaJobs{postgres: true}).bind(strings.Repeat("?,", 12) + "?")
+	want := "$" + strings.Join([]string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"}, ",$")
+	if q != want {
+		t.Fatalf("placeholder numbering: got %s want %s", q, want)
 	}
 }
 

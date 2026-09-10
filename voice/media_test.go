@@ -79,3 +79,54 @@ func TestMediaVoiceCancellation(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+type speakerSTT struct{}
+
+func (speakerSTT) StreamTranscription(ctx context.Context, r lebro.LiveTranscriptionRequest, source lebro.AudioSource, sink func(lebro.TranscriptionEvent) error) error {
+	if e := sink(lebro.TranscriptionEvent{Segment: lebro.TranscriptSegment{ID: "s", Text: "partial", Speaker: "agent"}}); e != nil {
+		return e
+	}
+	return sink(lebro.TranscriptionEvent{Segment: lebro.TranscriptSegment{ID: "s", Text: "final text", Speaker: "agent"}, Final: true, Terminal: true})
+}
+func TestMediaVoiceTranscriptMetadataAndTerminal(t *testing.T) {
+	v, e := voice.NewMediaVoice(voice.MediaVoiceConfig{Transcriber: speakerSTT{}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	audio := make(chan voice.AudioChunk)
+	close(audio)
+	stream, e := v.Recognizer.Recognize(context.Background(), audio)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var last voice.Transcript
+	for tr := range stream.Transcripts {
+		last = tr
+	}
+	if e = stream.Wait(); e != nil {
+		t.Fatal(e)
+	}
+	if !last.Final || last.Text != "final text" || last.Metadata["speaker"] != "agent" {
+		t.Fatalf("bad transcript %+v", last)
+	}
+}
+func TestMediaVoiceTypedNilProviders(t *testing.T) {
+	var nilSTT lebro.StreamingTranscriber = (*mediaSTT)(nil)
+	var nilTTS lebro.StreamingSpeechSynthesizer = (*mediaTTS)(nil)
+	if _, e := voice.NewMediaVoice(voice.MediaVoiceConfig{Transcriber: nilSTT}); e == nil {
+		t.Fatal("typed-nil transcriber accepted")
+	}
+	if _, e := voice.NewMediaVoice(voice.MediaVoiceConfig{Speech: nilTTS}); e == nil {
+		t.Fatal("typed-nil speech accepted")
+	}
+	if _, e := voice.NewMediaVoice(voice.MediaVoiceConfig{}); e == nil {
+		t.Fatal("no provider accepted")
+	}
+	v, e := voice.NewMediaVoice(voice.MediaVoiceConfig{Transcriber: nilSTT, Speech: mediaTTS{}})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if v.Recognizer != nil || v.Synthesizer == nil {
+		t.Fatal("wrong bridge installation")
+	}
+}

@@ -37,11 +37,12 @@ func videoState(s string) (lebro.MediaJobState, error) {
 	}
 	return "", malformed("unknown video state")
 }
-func (c *Client) SubmitVideo(ctx context.Context, r lebro.VideoRequest) (lebro.VideoJob, error) {
-	var job lebro.VideoJob
+func (c *Client) SubmitVideo(ctx context.Context, r lebro.VideoRequest) (job lebro.VideoJob, retErr error) {
 	if err := c.authorize(ctx, r.Operation, "media.generate"); err != nil {
 		return job, err
 	}
+	start := time.Now().UTC()
+	defer func() { _ = c.record(ctx, job.Info, r.Operation, "video_submit", start, retErr) }()
 	if !c.caps.Video {
 		return job, unsupported("video generation is unsupported")
 	}
@@ -91,6 +92,9 @@ func (c *Client) SubmitVideo(ctx context.Context, r lebro.VideoRequest) (lebro.V
 	now := time.Now().UTC()
 	job = lebro.VideoJob{Info: c.info(r.Operation, h), ProviderJobID: out.ID, State: state, ProviderStatus: out.Status, CreatedAt: now, UpdatedAt: now, OutputCount: len(out.URLs)}
 	job.Info.Usage = usage(out.Usage)
+	if safeID(out.GenerationID) {
+		job.Info.ProviderRequestID = out.GenerationID
+	}
 	return job, nil
 }
 func (c *Client) validateJob(j lebro.VideoJob) error {
@@ -102,13 +106,15 @@ func (c *Client) validateJob(j lebro.VideoJob) error {
 	}
 	return j.Info.Operation.Validate()
 }
-func (c *Client) GetVideo(ctx context.Context, j lebro.VideoJob) (lebro.VideoJob, error) {
+func (c *Client) GetVideo(ctx context.Context, j lebro.VideoJob) (ret lebro.VideoJob, retErr error) {
 	if err := c.authorize(ctx, j.Info.Operation, "media.read"); err != nil {
 		return j, err
 	}
 	if err := c.validateJob(j); err != nil {
 		return j, err
 	}
+	start := time.Now().UTC()
+	defer func() { _ = c.record(ctx, ret.Info, j.Info.Operation, "video_status", start, retErr) }()
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	var out videoResponse
@@ -125,7 +131,9 @@ func (c *Client) GetVideo(ctx context.Context, j lebro.VideoJob) (lebro.VideoJob
 	}
 	j.State = state
 	j.ProviderStatus = out.Status
-	j.Info.Usage = usage(out.Usage)
+	if u := usage(out.Usage); len(u.Units) > 0 || u.CostUSD != nil {
+		j.Info.Usage = u
+	}
 	if safeID(out.GenerationID) {
 		j.Info.ProviderRequestID = out.GenerationID
 	}
@@ -138,21 +146,25 @@ func (c *Client) GetVideo(ctx context.Context, j lebro.VideoJob) (lebro.VideoJob
 	}
 	return j, nil
 }
-func (c *Client) OpenVideo(ctx context.Context, j lebro.VideoJob, index int) (lebro.MediaContent, error) {
+func (c *Client) OpenVideo(ctx context.Context, j lebro.VideoJob, index int) (content lebro.MediaContent, retErr error) {
 	if err := c.authorize(ctx, j.Info.Operation, "media.read"); err != nil {
-		return lebro.MediaContent{}, err
+		return content, err
 	}
 	if err := c.validateJob(j); err != nil {
-		return lebro.MediaContent{}, err
+		return content, err
 	}
+	start := time.Now().UTC()
+	defer func() { _ = c.record(ctx, j.Info, j.Info.Operation, "video_open", start, retErr) }()
 	if j.State != lebro.MediaJobSucceeded || index < 0 || index >= j.OutputCount {
-		return lebro.MediaContent{}, invalid("video output unavailable")
+		return content, invalid("video output unavailable")
 	}
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	resp, err := c.request(ctx, http.MethodGet, "/videos/"+url.PathEscape(j.ProviderJobID)+"/content?index="+strconv.Itoa(index), "", nil)
 	if err != nil {
 		cancel()
-		return lebro.MediaContent{}, err
+		return content, err
 	}
-	return c.content(resp, cancel, lebro.MediaVideo)
+	content, err = c.content(resp, cancel, lebro.MediaVideo)
+	content.Asset.ProviderRequestID = j.Info.ProviderRequestID
+	return content, err
 }

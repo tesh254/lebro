@@ -5,10 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 )
 
-const mediaJobsMigration = `CREATE TABLE media_jobs (
+const mediaJobsMigration = `CREATE TABLE IF NOT EXISTS media_jobs (
  namespace TEXT NOT NULL, owner_id TEXT NOT NULL, id TEXT NOT NULL,
  revision BIGINT NOT NULL, terminal BOOLEAN NOT NULL, record TEXT NOT NULL,
  PRIMARY KEY (namespace, owner_id, id)
@@ -125,7 +126,7 @@ func (s *sqlMediaJobs) bind(query string) string {
 		if r == '?' {
 			n++
 			out.WriteByte('$')
-			out.WriteByte(byte('0' + n))
+			out.WriteString(strconv.Itoa(n))
 		} else {
 			out.WriteRune(r)
 		}

@@ -102,8 +102,9 @@ prompt step. Existing custom voice implementations remain compatible.
 
 ## Speech output and ownership
 
-`SynthesizeSpeech` returns a bounded `io.ReadCloser`. Consume it to EOF and close
-it, including on failure. `StreamSpeech` invokes a synchronous callback with at
+`SynthesizeSpeech` returns a `SpeechResult` whose `Audio.Reader` is a bounded
+`io.ReadCloser`. Consume `Audio.Reader` to EOF and close it, including on failure.
+`StreamSpeech` invokes a synchronous callback with at
 most 32 KiB per chunk. Copy bytes before retaining them. Chunks belong to one
 encoded stream; they are not independently playable files. Slow consumers
 naturally apply backpressure. Cancel the context to stop network reads.
@@ -207,6 +208,7 @@ go run ./examples/media -mode resume -model google/veo-3.1 -operation video-001
 go run ./examples/media -mode transcribe -provider openai -model whisper-1 -input recording.wav
 go run ./examples/media -mode live -provider openai -model gpt-live-transcribe -input utterance.pcm
 go run ./examples/media -mode speak -model openai/gpt-4o-mini-tts -prompt 'Hello!'
+go run ./examples/media -mode speak-stream -model openai/gpt-4o-mini-tts -prompt 'Hello!'
 go run ./examples/media -mode agent -model openai/gpt-image-1 -chat-model YOUR_CHAT_MODEL
 go run ./examples/media -mode voice -provider openai -model whisper-1 -input recording.wav -chat-model YOUR_CHAT_MODEL
 ```

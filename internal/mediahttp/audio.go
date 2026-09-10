@@ -166,11 +166,10 @@ func (c *Client) Transcribe(ctx context.Context, r lebro.TranscriptionRequest) (
 		done <- e
 	}()
 	resp, requestErr := c.request(ctx, http.MethodPost, "/audio/transcriptions", writer.FormDataContentType(), pr)
-	// Stop the upload on early rejection, including a source blocked in Read.
-	_ = pr.Close()
-	_ = src.Close()
 	if requestErr != nil {
+		// Stop the upload on early rejection, including a source blocked in Read.
 		cancel()
+		_ = pr.Close()
 		_ = src.Close()
 	}
 	uploadErr := <-done
@@ -181,6 +180,7 @@ func (c *Client) Transcribe(ctx context.Context, r lebro.TranscriptionRequest) (
 	if uploadErr != nil {
 		return result, uploadErr
 	}
+	result.Info = c.info(r.Operation, resp.Header)
 	b, err := readBounded(resp.Body, 4<<20)
 	if err != nil {
 		return result, err
@@ -196,7 +196,6 @@ func (c *Client) Transcribe(ctx context.Context, r lebro.TranscriptionRequest) (
 	if json.Unmarshal(b, &wire) != nil || wire.Text == nil {
 		return result, malformed("transcription missing text")
 	}
-	result.Info = c.info(r.Operation, resp.Header)
 	result.Info.Usage = usage(wire.Usage)
 	result.Text = *wire.Text
 	result.Language = wire.Language

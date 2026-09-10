@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 )
 
@@ -55,7 +56,7 @@ type imageMediaTool struct{ config ImageToolConfig }
 // NewImageTool creates a schema-backed image capability for AgentConfig.Tools.
 // Applications set defaults and may allow the model to override generation options.
 func NewImageTool(c ImageToolConfig) (Tool, error) {
-	if c.Generator == nil || c.Sink == nil {
+	if c.Generator == nil || isNilInterface(c.Generator) || c.Sink == nil || isNilInterface(c.Sink) {
 		return nil, mediaInvalid("image tool requires generator and asset sink")
 	}
 	if c.ID == "" {
@@ -103,6 +104,10 @@ func mediaPrompt(args json.RawMessage) (string, error) {
 	if d.Decode(&input) != nil {
 		return "", mediaInvalid("expected prompt object")
 	}
+	var extra any
+	if d.Decode(&extra) != io.EOF {
+		return "", mediaInvalid("expected one prompt object")
+	}
 	if err := validateMediaText(input.Prompt, 32000); err != nil {
 		return "", err
 	}
@@ -112,6 +117,9 @@ func (t *imageMediaTool) input(args json.RawMessage) (string, ImageOptions, erro
 	options := t.config.Defaults
 	if options.Count == 0 {
 		options.Count = 1
+	}
+	if options.Size != "" && (options.Resolution != "" || options.AspectRatio != "") {
+		return "", options, mediaInvalid("size conflicts with resolution/aspect ratio")
 	}
 	if !t.config.AllowModelOptions {
 		prompt, err := mediaPrompt(args)
@@ -230,7 +238,7 @@ func (r *mediaCopyReader) Read(p []byte) (int, error) {
 		r.err = err
 		return 0, err
 	}
-	if int64(len(p)) > r.left+1 {
+	if r.left < int64(len(p)) && r.left < math.MaxInt64 {
 		p = p[:r.left+1]
 	}
 	n, e := r.r.Read(p)
@@ -291,6 +299,9 @@ func SaveMediaAsset(ctx context.Context, o MediaOperation, c MediaContent, sink 
 	}
 	if !bounded.eof {
 		return MediaAsset{}, mediaInvalid("asset sink did not consume to EOF")
+	}
+	if bounded.n == 0 {
+		return MediaAsset{}, mediaInvalid("media is empty")
 	}
 	if asset.ID == "" || asset.Locator == "" || len(asset.ID) > 256 || len(asset.Locator) > 2048 || strings.Contains(asset.Locator, "://") || strings.ContainsAny(asset.Locator, "?#\r\n") {
 		return MediaAsset{}, mediaInvalid("asset sink must return an opaque durable storage key")

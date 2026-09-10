@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
@@ -20,7 +20,7 @@ func (c *Client) GenerateImages(ctx context.Context, r lebro.ImageRequest) (resu
 		return result, err
 	}
 	start := time.Now().UTC()
-	defer func() { retErr = errors.Join(retErr, c.record(ctx, result.Info, r.Operation, "image", start, retErr)) }()
+	defer func() { _ = c.record(ctx, result.Info, r.Operation, "image", start, retErr) }()
 	if !c.caps.Image {
 		return result, unsupported("image generation is unsupported")
 	}
@@ -91,7 +91,7 @@ func (c *Client) GenerateImages(ctx context.Context, r lebro.ImageRequest) (resu
 		if d.MIME != "" && d.MIME != mime {
 			return result, malformed("image MIME mismatch")
 		}
-		if mime != "image/png" && mime != "image/jpeg" && mime != "image/webp" {
+		if mime != "image/png" && mime != "image/jpeg" && mime != "image/webp" || r.Format != "" && mime != "image/"+r.Format {
 			return result, malformed("unsupported generated image format")
 		}
 		a.MIMEType = mime
@@ -99,10 +99,40 @@ func (c *Client) GenerateImages(ctx context.Context, r lebro.ImageRequest) (resu
 		if cfg, _, e := image.DecodeConfig(bytes.NewReader(b)); e == nil {
 			a.Width = cfg.Width
 			a.Height = cfg.Height
+		} else if mime == "image/webp" {
+			if w, h, ok := webpDimensions(b); ok {
+				a.Width = w
+				a.Height = h
+			}
 		}
 		result.Images = append(result.Images, lebro.MediaContent{Asset: a, Data: b})
 		result.RevisedPrompts = append(result.RevisedPrompts, d.Revised)
 	}
 	result.Partial = len(result.Images) < r.Count
 	return result, nil
+}
+
+func webpDimensions(b []byte) (w, h int, ok bool) {
+	if len(b) < 20 || string(b[:4]) != "RIFF" || string(b[8:12]) != "WEBP" {
+		return 0, 0, false
+	}
+	switch string(b[12:16]) {
+	case "VP8 ":
+		if len(b) < 30 || b[23] != 0x9d || b[24] != 0x01 || b[25] != 0x2a {
+			return 0, 0, false
+		}
+		return int(binary.LittleEndian.Uint16(b[26:28]) & 0x3fff), int(binary.LittleEndian.Uint16(b[28:30]) & 0x3fff), true
+	case "VP8L":
+		if len(b) < 26 || b[20] != 0x2f {
+			return 0, 0, false
+		}
+		n := binary.LittleEndian.Uint32(b[21:25])
+		return int(n&0x3fff) + 1, int((n>>14)&0x3fff) + 1, true
+	case "VP8X":
+		if len(b) < 33 {
+			return 0, 0, false
+		}
+		return (int(b[27]) | int(b[28])<<8 | int(b[29])<<16) + 1, (int(b[30]) | int(b[31])<<8 | int(b[32])<<16) + 1, true
+	}
+	return 0, 0, false
 }

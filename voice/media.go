@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"reflect"
 
 	"github.com/tesh254/lebro"
 )
@@ -23,7 +24,7 @@ type mediaVoice struct{ config MediaVoiceConfig }
 // For an editable prompt field, call Transcribe/StreamTranscription directly;
 // Session.Turn intentionally starts an agent run from the finalized transcript.
 func NewMediaVoice(c MediaVoiceConfig) (Voice, error) {
-	if c.Transcriber == nil && c.Speech == nil {
+	if (c.Transcriber == nil || isNilProvider(c.Transcriber)) && (c.Speech == nil || isNilProvider(c.Speech)) {
 		return Voice{}, errors.New("lebro/voice: a media provider is required")
 	}
 	if c.Operation == nil {
@@ -42,13 +43,22 @@ func NewMediaVoice(c MediaVoiceConfig) (Voice, error) {
 	}
 	bridge := &mediaVoice{config: c}
 	v := Voice{}
-	if c.Transcriber != nil {
+	if c.Transcriber != nil && !isNilProvider(c.Transcriber) {
 		v.Recognizer = bridge
 	}
-	if c.Speech != nil {
+	if c.Speech != nil && !isNilProvider(c.Speech) {
 		v.Synthesizer = bridge
 	}
 	return v, nil
+}
+
+func isNilProvider(v any) bool {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return rv.IsNil()
+	}
+	return false
 }
 func (v *mediaVoice) Recognize(ctx context.Context, audio <-chan AudioChunk) (*RecognitionStream, error) {
 	o, err := v.config.Operation(ctx)
@@ -88,9 +98,12 @@ func (v *mediaVoice) Recognize(ctx context.Context, audio <-chan AudioChunk) (*R
 			}
 		}
 		err := v.config.Transcriber.StreamTranscription(ctx, lebro.LiveTranscriptionRequest{Operation: o}, source, func(e lebro.TranscriptionEvent) error {
-			t := Transcript{Text: e.Segment.Text, Final: e.Terminal}
+			t := Transcript{Text: e.Segment.Text, Final: e.Final && e.Terminal}
 			if e.Segment.Confidence != nil {
 				t.Confidence = *e.Segment.Confidence
+			}
+			if e.Segment.Speaker != "" {
+				t.Metadata = map[string]string{"speaker": e.Segment.Speaker}
 			}
 			select {
 			case <-ctx.Done():
