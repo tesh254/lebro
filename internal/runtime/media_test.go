@@ -3,6 +3,8 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -304,8 +306,8 @@ func TestVideoWaitTerminalStateKinds(t *testing.T) {
 		t.Fatal(job, e)
 	}
 	job.State = MediaJobExpired
-	job.Revision = 3
-	if e = repo.SaveVideoJob(ctx, job, 2); e != nil {
+	job.Revision = 4
+	if e = repo.SaveVideoJob(ctx, job, 3); e != nil {
 		t.Fatal(e)
 	}
 	_, e = s.Wait(ctx, o, MediaWaitOptions{Timeout: time.Second})
@@ -328,17 +330,21 @@ func TestVideoWaitTerminalStateKinds(t *testing.T) {
 }
 
 func TestVideoCancelRejectsUnconfirmedJob(t *testing.T) {
-	ctx := context.Background()
-	repo := NewMemoryStore()
-	s := videoService(t, cancellingVideo{&fakeVideo{}}, repo)
-	o := mediaOp()
-	now := time.Now().UTC()
-	job := VideoJob{Info: MediaResultInfo{Operation: o}, State: MediaJobSubmitting, CreatedAt: now, UpdatedAt: now, Revision: 1}
-	if e := repo.SaveVideoJob(ctx, job, 0); e != nil {
-		t.Fatal(e)
-	}
-	if _, e := s.Cancel(ctx, o); e == nil {
-		t.Fatal("cancelled job without provider identity")
+	for _, state := range []MediaJobState{MediaJobSubmitting, MediaJobContacting} {
+		t.Run(string(state), func(t *testing.T) {
+			ctx := context.Background()
+			repo := NewMemoryStore()
+			s := videoService(t, cancellingVideo{&fakeVideo{}}, repo)
+			o := mediaOp()
+			now := time.Now().UTC()
+			job := VideoJob{Info: MediaResultInfo{Operation: o}, State: state, CreatedAt: now, UpdatedAt: now, Revision: 1}
+			if e := repo.SaveVideoJob(ctx, job, 0); e != nil {
+				t.Fatal(e)
+			}
+			if _, e := s.Cancel(ctx, o); e == nil {
+				t.Fatal("cancelled job without provider identity")
+			}
+		})
 	}
 }
 
@@ -473,7 +479,7 @@ func (f faultJobs) SaveVideoJob(ctx context.Context, j VideoJob, revision int64)
 	return f.MediaJobRepository.SaveVideoJob(ctx, j, revision)
 }
 func TestVideoStorageFailureSafety(t *testing.T) {
-	for _, phase := range []string{"read", "reserve", "accepted"} {
+	for _, phase := range []string{"read", "reserve", "contacting", "accepted"} {
 		t.Run(phase, func(t *testing.T) {
 			f := &fakeVideo{}
 			repo := faultJobs{MediaJobRepository: NewMemoryStore(), failSave: -1}
@@ -483,8 +489,11 @@ func TestVideoStorageFailureSafety(t *testing.T) {
 			if phase == "reserve" {
 				repo.failSave = 0
 			}
-			if phase == "accepted" {
+			if phase == "contacting" {
 				repo.failSave = 1
+			}
+			if phase == "accepted" {
+				repo.failSave = 2
 			}
 			s := videoService(t, f, repo)
 			j, e := s.Submit(context.Background(), VideoRequest{Operation: mediaOp(), Prompt: "video"})
@@ -499,6 +508,83 @@ func TestVideoStorageFailureSafety(t *testing.T) {
 				t.Fatal("submitted before durable reservation")
 			}
 		})
+	}
+}
+
+func requestHash(r VideoRequest) string {
+	body, _ := json.Marshal(r)
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func TestVideoSubmitResumesPreContactReservation(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryStore()
+	f := &fakeVideo{}
+	s := videoService(t, f, repo)
+	o := mediaOp()
+	r := VideoRequest{Operation: o, Prompt: "video"}
+	now := time.Now().UTC()
+	orphan := VideoJob{Info: MediaResultInfo{Operation: o}, State: MediaJobSubmitting, CreatedAt: now, UpdatedAt: now, Revision: 1, RequestHash: requestHash(r)}
+	if e := repo.SaveVideoJob(ctx, orphan, 0); e != nil {
+		t.Fatal(e)
+	}
+	j, e := s.Submit(ctx, r)
+	if e != nil || j.ProviderJobID != "job-1" || j.State != MediaJobQueued || f.posts.Load() != 1 {
+		t.Fatalf("pre-contact resume %+v %v", j, e)
+	}
+	stored, e := repo.GetVideoJob(ctx, o.Scope, o.ID)
+	if e != nil || stored.ProviderJobID != "job-1" || stored.State != MediaJobQueued {
+		t.Fatalf("durable resume %+v %v", stored, e)
+	}
+	if _, e = s.Submit(ctx, r); e != nil {
+		t.Fatal(e)
+	}
+	if f.posts.Load() != 1 {
+		t.Fatal("resubmitted completed work")
+	}
+}
+
+func TestVideoSubmitRefusesPostContactOrphans(t *testing.T) {
+	for _, state := range []MediaJobState{MediaJobContacting, MediaJobAmbiguous} {
+		t.Run(string(state), func(t *testing.T) {
+			ctx := context.Background()
+			repo := NewMemoryStore()
+			f := &fakeVideo{}
+			s := videoService(t, f, repo)
+			o := mediaOp()
+			r := VideoRequest{Operation: o, Prompt: "video"}
+			now := time.Now().UTC()
+			orphan := VideoJob{Info: MediaResultInfo{Operation: o}, State: state, CreatedAt: now, UpdatedAt: now, Revision: 1, RequestHash: requestHash(r)}
+			if e := repo.SaveVideoJob(ctx, orphan, 0); e != nil {
+				t.Fatal(e)
+			}
+			if _, e := s.Submit(ctx, r); e == nil {
+				t.Fatalf("resubmitted %s orphan", state)
+			}
+			if f.posts.Load() != 0 {
+				t.Fatal("contacted provider for ambiguous outcome")
+			}
+		})
+	}
+}
+
+func TestVideoSubmitConflictDoesNotResumeForeignReservation(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemoryStore()
+	f := &fakeVideo{}
+	s := videoService(t, f, repo)
+	o := mediaOp()
+	now := time.Now().UTC()
+	orphan := VideoJob{Info: MediaResultInfo{Operation: o}, State: MediaJobSubmitting, CreatedAt: now, UpdatedAt: now, Revision: 1, RequestHash: requestHash(VideoRequest{Operation: o, Prompt: "different"})}
+	if e := repo.SaveVideoJob(ctx, orphan, 0); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.Submit(ctx, VideoRequest{Operation: o, Prompt: "video"}); !errors.Is(e, ErrConflict) {
+		t.Fatalf("accepted different request on orphan %v", e)
+	}
+	if f.posts.Load() != 0 {
+		t.Fatal("contacted provider for conflicting request")
 	}
 }
 func TestMediaToolsTrustedContextAndVideo(t *testing.T) {

@@ -50,7 +50,9 @@ func (s *VideoService) check(ctx context.Context, o MediaOperation, action Actio
 }
 
 // Submit reserves identity before billable work. A replay returns the existing
-// handle; submitting/ambiguous records require explicit application reconciliation.
+// handle. A reservation that provably never reached the provider (crashed
+// before the contacting marker) resumes on the next Submit; contacting and
+// ambiguous records require explicit application reconciliation.
 func (s *VideoService) Submit(ctx context.Context, r VideoRequest) (VideoJob, error) {
 	if err := s.check(ctx, r.Operation, "media.generate"); err != nil {
 		return VideoJob{}, err
@@ -60,6 +62,9 @@ func (s *VideoService) Submit(ctx context.Context, r VideoRequest) (VideoJob, er
 	hash := hex.EncodeToString(digest[:])
 	old, err := s.config.Jobs.GetVideoJob(ctx, r.Operation.Scope, r.Operation.ID)
 	if err == nil {
+		if resumableReservation(old, hash) {
+			return s.contact(ctx, old, r)
+		}
 		return sameVideoRequest(old, hash)
 	}
 	if !errors.Is(err, ErrNotFound) {
@@ -73,7 +78,38 @@ func (s *VideoService) Submit(ctx context.Context, r VideoRequest) (VideoJob, er
 			if e != nil {
 				return VideoJob{}, e
 			}
+			if resumableReservation(old, hash) {
+				return s.contact(ctx, old, r)
+			}
 			return sameVideoRequest(old, hash)
+		}
+		return VideoJob{}, err
+	}
+	return s.contact(ctx, job, r)
+}
+
+// resumableReservation reports a reservation persisted strictly before the
+// provider was contacted, so resubmitting cannot duplicate billable work.
+// contact persists the contacting marker before SubmitVideo, making Submitting
+// records provably pre-contact.
+func resumableReservation(job VideoJob, hash string) bool {
+	return job.RequestHash == hash && job.State == MediaJobSubmitting && job.ProviderJobID == ""
+}
+
+// contact marks the reservation as reaching the provider, submits, and
+// persists the outcome. The marker save is the boundary between a safe
+// resubmission and an ambiguous outcome.
+func (s *VideoService) contact(ctx context.Context, job VideoJob, r VideoRequest) (VideoJob, error) {
+	job.Revision++
+	job.UpdatedAt = time.Now().UTC()
+	job.State = MediaJobContacting
+	if err := s.config.Jobs.SaveVideoJob(ctx, job, job.Revision-1); err != nil {
+		if errors.Is(err, ErrConflict) {
+			current, e := s.config.Jobs.GetVideoJob(ctx, job.Info.Operation.Scope, job.Info.Operation.ID)
+			if e != nil {
+				return VideoJob{}, e
+			}
+			return sameVideoRequest(current, job.RequestHash)
 		}
 		return VideoJob{}, err
 	}
@@ -96,13 +132,13 @@ func (s *VideoService) Submit(ctx context.Context, r VideoRequest) (VideoJob, er
 			submitErr = &MediaError{Kind: MediaErrorAmbiguous, Message: "submission returned no job identity"}
 		}
 	}
-	job.Revision = 2
+	job.Revision++
 	job.UpdatedAt = time.Now().UTC()
 	// Saving accepted identity must survive local request cancellation, bounded by
 	// its own deadline. A failed save still returns the handle for reconciliation.
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if err = s.config.Jobs.SaveVideoJob(saveCtx, job, 1); err != nil {
+	if err := s.config.Jobs.SaveVideoJob(saveCtx, job, job.Revision-1); err != nil {
 		return job, &MediaError{Kind: MediaErrorAmbiguous, Message: "submission outcome could not be persisted; retain returned handle", Cause: err}
 	}
 	if job.State.Terminal() {
@@ -116,7 +152,7 @@ func sameVideoRequest(job VideoJob, hash string) (VideoJob, error) {
 	if job.RequestHash != hash {
 		return job, ErrConflict
 	}
-	if job.State == MediaJobSubmitting || job.State == MediaJobAmbiguous {
+	if job.State == MediaJobSubmitting || job.State == MediaJobContacting || job.State == MediaJobAmbiguous {
 		return job, &MediaError{Kind: MediaErrorAmbiguous, Message: "operation requires reconciliation; do not resubmit"}
 	}
 	return job, nil

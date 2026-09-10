@@ -33,7 +33,7 @@ func validateVideoRecord(ctx context.Context, j VideoJob, expected int64) ([]byt
 		return nil, mediaInvalid("invalid job revision or timestamps")
 	}
 	switch j.State {
-	case MediaJobSubmitting, MediaJobAmbiguous, MediaJobQueued, MediaJobRunning, MediaJobSucceeded, MediaJobFailed, MediaJobCancelled, MediaJobExpired:
+	case MediaJobSubmitting, MediaJobContacting, MediaJobAmbiguous, MediaJobQueued, MediaJobRunning, MediaJobSucceeded, MediaJobFailed, MediaJobCancelled, MediaJobExpired:
 	default:
 		return nil, mediaInvalid("invalid job state")
 	}

@@ -224,6 +224,7 @@ type MediaJobState string
 
 const (
 	MediaJobSubmitting MediaJobState = "submitting"
+	MediaJobContacting MediaJobState = "contacting"
 	MediaJobAmbiguous  MediaJobState = "ambiguous"
 	MediaJobQueued     MediaJobState = "queued"
 	MediaJobRunning    MediaJobState = "running"

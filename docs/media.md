@@ -148,11 +148,16 @@ its own atomic compare-and-swap boundary and is not part of a legacy Store
 transaction. Memory is process-local. Raw provider `SubmitVideo` calls return a
 portable handle but leave persistence entirely to the caller.
 
-A reserved operation that loses its submission response remains ambiguous.
-Never retry it blindly: inspect the provider account and reconcile the handle
-through `MediaJobRepository` using the saved revision. If the process dies
-between acceptance and persisting the provider ID, the SDK cannot recover an ID
-the provider never returned. Failed save errors return any known handle. This is
+Submission is two durable steps. The service first reserves the operation
+identity, then marks the reservation as contacting before it reaches the
+provider. If a process dies before that marker, the reservation provably never
+reached the provider and the next identical `Submit` resumes it automatically,
+so a crash in that window needs no manual action. Once a job is contacting or
+ambiguous, the outcome is unknown and the record is never retried blindly:
+inspect the provider account and reconcile the handle through
+`MediaJobRepository` using the saved revision. If the process dies between
+acceptance and persisting the provider ID, the SDK cannot recover an ID the
+provider never returned. Failed save errors return any known handle. This is
 not an exactly-once guarantee for external providers.
 
 Polling retries only transient/rate-limit errors within the configured budget,

@@ -67,6 +67,7 @@ const (
 	MediaErrorAmbiguous      = runtime.MediaErrorAmbiguous
 	MediaErrorExpired        = runtime.MediaErrorExpired
 	MediaJobSubmitting       = runtime.MediaJobSubmitting
+	MediaJobContacting       = runtime.MediaJobContacting
 	MediaJobAmbiguous        = runtime.MediaJobAmbiguous
 	MediaJobQueued           = runtime.MediaJobQueued
 	MediaJobRunning          = runtime.MediaJobRunning
