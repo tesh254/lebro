@@ -276,6 +276,7 @@ var sqliteSchemaMigrations = []string{
 	`ALTER TABLE schedules ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedule_executions ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedule_executions ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
+	mediaJobsMigration,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;

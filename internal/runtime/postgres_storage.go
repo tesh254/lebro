@@ -301,6 +301,7 @@ var postgresSchemaMigrations = []string{
 	`ALTER TABLE schedules ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedule_executions ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedule_executions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
+	mediaJobsMigration,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()

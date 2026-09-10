@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Add independent image/video/transcription/speech contracts, OpenAI and OpenRouter media adapters, image/video agent tools, and a bridge to voice sessions.
+- Add bounded asset I/O, application storage hooks, optional durable video-job repositories for Memory/SQLite/Postgres, tenant scoping and safe attempt metadata. SQL stores require migration. Existing Model/Store interfaces and transcripts remain compatible.
+- Add media examples and application integration guidance. Credential-free fixtures cover the adapters; live-provider verification remains opt-in. Additive public APIs require the next minor release.
+
 - Native image and PDF message parts. A user `Message` can carry ordered
   `ContentParts` — text, image, and document (PDF) parts built with
   `NewTextPart`, `NewImagePart`, `NewDocumentPart`, and
