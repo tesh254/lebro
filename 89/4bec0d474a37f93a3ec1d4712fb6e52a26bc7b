@@ -1,0 +1,86 @@
+internal/mediahttp/media_test.go
+  s_82baf352a5363e::t_e1f2527492b778 529-533
+  s_82baf352a5363e::t_ea64eb1f663731 360,363,366,369
+  s_82baf352a5363e::t_addca9108d48cb 7
+  s_82baf352a5363e::t_2741b5c681c7eb 331
+  s_82baf352a5363e::t_9ac5f6106bd2af 341-359,361-362,364-365,367-368,370-373
+voice/media_test.go
+  s_82baf352a5363e::t_98ee6142eedb8a 82-132
+docs/media.md
+  s_82baf352a5363e::t_8eea55459e8029 105-107
+  s_82baf352a5363e::t_262589ba5a8c0e 211
+internal/runtime/media_test.go
+  s_82baf352a5363e::t_c6085316e9b7b1 705-709,716-720
+  s_82baf352a5363e::t_2d05c13b8e91ad 710-711
+  s_82baf352a5363e::t_bfd615ad529193 9
+  s_82baf352a5363e::t_32fd40cbcc2a39 294-366
+  s_82baf352a5363e::t_ef03841559dafe 733-737
+  s_82baf352a5363e::t_0a7b0869a8b33d 551-562
+internal/runtime/media_storage.go
+  s_82baf352a5363e::t_74054ac0da03b5 129
+  s_82baf352a5363e::t_cbd6441b16fd34 8,12
+internal/mediahttp/video.go
+  s_82baf352a5363e::t_0300d5570032ae 40,44-45
+  s_82baf352a5363e::t_bb3469c6a62f2b 95-97
+  s_82baf352a5363e::t_d05fda1fefea83 109,116-117,134-136,149,151,154,156-157,159,165,167-169
+internal/runtime/postgres_storage_test.go
+  s_82baf352a5363e::t_e90103554168e2 44,203,356
+internal/runtime/media_jobs.go
+  s_82baf352a5363e::t_4621b6f20fd290 226-231
+  s_82baf352a5363e::t_656f0af8403ba1 276-278
+  s_82baf352a5363e::t_8b50a06ebe3031 34
+  s_82baf352a5363e::t_d2345c20cc5187 108-112
+internal/mediahttp/live.go
+  s_82baf352a5363e::t_47331006b5681c 36-38
+internal/runtime/postgres_contract_test.go
+  s_82baf352a5363e::t_e90103554168e2 94,113,144,175
+internal/mediahttp/audio.go
+  s_82baf352a5363e::t_fed8db6f9ce6f3 170,172,183
+openai/media_test.go
+  s_82baf352a5363e::t_1e1af02a5edb91 10-14
+internal/mediahttp/image.go
+  s_82baf352a5363e::t_58998203174a59 94,102-106
+  s_82baf352a5363e::t_874841125860c1 114-138
+  s_82baf352a5363e::t_2abde0f50293ac 7,23
+internal/runtime/media_tools.go
+  s_82baf352a5363e::t_3c4cee69bbf7cb 241
+  s_82baf352a5363e::t_eb2c662d7354be 59
+  s_82baf352a5363e::t_913dbece13475e 11
+  s_82baf352a5363e::t_d9ac03927b7132 303-305
+  s_82baf352a5363e::t_f12f743d907e8d 107-110,121-122
+internal/runtime/media.go
+  s_82baf352a5363e::t_09cae69eac7b28 9
+  s_82baf352a5363e::t_1611f7e31827f4 109,112-113
+voice/media.go
+  s_82baf352a5363e::t_7fa51f7ada0382 8
+  s_82baf352a5363e::t_4d10fee150c91d 101,105-107
+  s_82baf352a5363e::t_a6e51ffcc19871 27,46,49,54-61
+internal/mediahttp/client.go
+  s_82baf352a5363e::t_4d10fee150c91d 182-184
+  s_82baf352a5363e::t_477d96f29345e2 291-292,296,299,304
+  s_82baf352a5363e::t_ffbce733c370a0 325
+internal/runtime/media_observability.go
+  s_82baf352a5363e::t_6228af86f34e65 35,42-44
+examples/media/main.go
+  s_82baf352a5363e::t_5eabe05f439b00 76
+  s_82baf352a5363e::t_1576a5cd510524 196-197
+  s_82baf352a5363e::t_bbad94b510de30 235-262
+examples/media/main_test.go
+  s_82baf352a5363e::t_b9c744a34603ce 146,148-157,159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "894bec0d474a37f93a3ec1d4712fb6e52a26bc7b",
+  "prompts": {},
+  "sessions": {
+    "s_82baf352a5363e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f72f9be31ffelbqvx3k79E2s29",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
