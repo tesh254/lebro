@@ -1,0 +1,25 @@
+examples/media/main.go
+  s_82baf352a5363e::t_2925b4c818a69f 258
+internal/runtime/media_jobs.go
+  s_82baf352a5363e::t_6da01f498f924a 145
+internal/mediahttp/image.go
+  s_82baf352a5363e::t_e234b86ecc3983 132,135
+internal/mediahttp/media_test.go
+  s_82baf352a5363e::t_2e5865aa083310 355-356,360-363,373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "22bca36249ea28d41ba94da12309bc86e8086abb",
+  "prompts": {},
+  "sessions": {
+    "s_82baf352a5363e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f72f9be31ffelbqvx3k79E2s29",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
