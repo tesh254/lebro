@@ -129,10 +129,10 @@ func webpDimensions(b []byte) (w, h int, ok bool) {
 		n := binary.LittleEndian.Uint32(b[21:25])
 		return int(n&0x3fff) + 1, int((n>>14)&0x3fff) + 1, true
 	case "VP8X":
-		if len(b) < 33 {
+		if len(b) < 30 {
 			return 0, 0, false
 		}
-		return (int(b[27]) | int(b[28])<<8 | int(b[29])<<16) + 1, (int(b[30]) | int(b[31])<<8 | int(b[32])<<16) + 1, true
+		return (int(b[24]) | int(b[25])<<8 | int(b[26])<<16) + 1, (int(b[27]) | int(b[28])<<8 | int(b[29])<<16) + 1, true
 	}
 	return 0, 0, false
 }

@@ -255,6 +255,7 @@ func streamSpeech(ctx context.Context, op lebro.MediaOperation, media backend, p
 		return err
 	}
 	if err = os.Rename(f.Name(), filepath.Join(sink.dir, id)); err != nil {
+		_ = os.Remove(f.Name())
 		return err
 	}
 	a := lebro.MediaAsset{ID: id, Locator: id, Kind: lebro.MediaAudio, MIMEType: "audio/mpeg", Codec: "mp3", Provider: info.Provider, Model: info.Model, ProviderRequestID: info.ProviderRequestID}

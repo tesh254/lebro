@@ -352,10 +352,14 @@ func TestWebPDimensions(t *testing.T) {
 	if w, h, ok := webpDimensions(lossless); !ok || w != 27 || h != 35 {
 		t.Fatalf("lossless dims %d %d %v", w, h, ok)
 	}
-	extended := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X\x0d\x00\x00\x00"), make([]byte, 13)...)
-	extended[27], extended[30] = 99, 64
+	extended := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00"), make([]byte, 10)...)
+	extended[24], extended[27] = 99, 64
 	if w, h, ok := webpDimensions(extended); !ok || w != 100 || h != 65 {
 		t.Fatalf("extended dims %d %d %v", w, h, ok)
+	}
+	realVP8X := []byte{0x52, 0x49, 0x46, 0x46, 0x7a, 0x0a, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x88, 0x00, 0x00, 0x5a, 0x00, 0x00}
+	if w, h, ok := webpDimensions(realVP8X); !ok || w != 137 || h != 91 {
+		t.Fatalf("real webp dims %d %d %v", w, h, ok)
 	}
 	if _, _, ok := webpDimensions([]byte("not webp data here")); ok {
 		t.Fatal("accepted non-webp")
@@ -366,7 +370,7 @@ func TestWebPDimensions(t *testing.T) {
 	if _, _, ok := webpDimensions(lossless[:25]); ok {
 		t.Fatal("accepted truncated lossless")
 	}
-	if _, _, ok := webpDimensions(extended[:32]); ok {
+	if _, _, ok := webpDimensions(extended[:29]); ok {
 		t.Fatal("accepted truncated extended")
 	}
 }

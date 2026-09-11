@@ -142,9 +142,7 @@ func (s *VideoService) contact(ctx context.Context, job VideoJob, r VideoRequest
 		return job, &MediaError{Kind: MediaErrorAmbiguous, Message: "submission outcome could not be persisted; retain returned handle", Cause: err}
 	}
 	if job.State.Terminal() {
-		if recordErr := s.record(saveCtx, job); recordErr != nil {
-			return job, recordErr
-		}
+		_ = s.record(saveCtx, job)
 	}
 	return job, submitErr
 }
