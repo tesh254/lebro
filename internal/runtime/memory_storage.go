@@ -14,9 +14,10 @@ import (
 // It preserves the same validation, pagination, and transaction semantics
 // expected from durable adapters.
 type MemoryStore struct {
-	mu      sync.RWMutex
-	state   memoryState
-	version uint64
+	mediaJobs map[string][]byte
+	mu        sync.RWMutex
+	state     memoryState
+	version   uint64
 }
 
 type memoryState struct {

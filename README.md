@@ -10,6 +10,10 @@ storage, RAG, tenant policy hooks, streaming, observability, and evaluations.
 Start small with one tool or agent; add only the optional packages your service
 needs as it grows.
 
+## Media generation and speech
+
+Generate images/video through provider-neutral media APIs, expose generation as agent tools, or transcribe microphone recordings into editable prompt text. OpenAI and OpenRouter adapters support explicit model capability profiles, bounded audio streams, application-owned assets, and durable video jobs. See [the media integration guide](docs/media.md) and [runnable examples](examples/media).
+
 ## Package layout
 
 `github.com/tesh254/lebro` is the only import most applications need. It is a
