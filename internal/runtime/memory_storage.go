@@ -975,6 +975,9 @@ func saveModelAttempts(ctx context.Context, s *memoryState, vs []ModelAttemptRec
 }
 
 func listModelAttempts(ctx context.Context, s memoryState, filter ModelAttemptFilter, p PageRequest) (Page[ModelAttemptRecord], error) {
+	if !validCostSource(filter.CostSource) {
+		return Page[ModelAttemptRecord]{}, fmt.Errorf("lebro: invalid model attempt cost source %q", filter.CostSource)
+	}
 	if err := ctx.Err(); err != nil {
 		return Page[ModelAttemptRecord]{}, err
 	}
@@ -996,8 +999,29 @@ func listModelAttempts(ctx context.Context, s memoryState, filter ModelAttemptFi
 			if filter.Provider != "" && attempt.Provider != filter.Provider {
 				continue
 			}
+			if filter.Model != "" && attempt.Model != filter.Model {
+				continue
+			}
 			if filter.Status != "" && attempt.Status != filter.Status {
 				continue
+			}
+			if !filter.From.IsZero() && attempt.StartedAt.Before(filter.From) {
+				continue
+			}
+			if !filter.To.IsZero() && !attempt.StartedAt.Before(filter.To) {
+				continue
+			}
+			if filter.CostSource != "" {
+				found := false
+				for _, cost := range attempt.Accounting.Costs {
+					if cost.Source == filter.CostSource {
+						found = true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
 			}
 			matched = append(matched, cloneModelAttemptRecord(attempt))
 		}
@@ -1208,6 +1232,7 @@ func cloneMessageRecord(v MessageRecord) MessageRecord {
 func cloneRunEventRecord(v RunEventRecord) RunEventRecord {
 	v.Payload = cloneJSON(v.Payload)
 	v.Metadata = v.Metadata.Clone()
+	v.Accounting = v.Accounting.Clone()
 	if v.Plugin != nil {
 		plugin := *v.Plugin
 		v.Plugin = &plugin
@@ -1219,6 +1244,7 @@ func cloneModelAttemptRecord(v ModelAttemptRecord) ModelAttemptRecord {
 		v.ProducedMessageIDs = append([]string(nil), v.ProducedMessageIDs...)
 	}
 	v.Metadata = v.Metadata.Clone()
+	v.Accounting = v.Accounting.Clone()
 	return v
 }
 func cloneToolExecutionRecord(v ToolExecutionRecord) ToolExecutionRecord {

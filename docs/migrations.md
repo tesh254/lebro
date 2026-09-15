@@ -82,6 +82,12 @@ written only by stores that opt into `ObservabilityRepositories`; existing
 databases gain empty tables and nothing else changes. See
 `docs/run-records.md` for retention and redaction guidance.
 
+Model cost accounting appends cache token counters and a nullable accounting
+JSON column to `run_events` and `model_attempts`, plus model/time indexes. Old
+rows retain zero cache counters and NULL accounting; legacy `cost_micros`,
+`currency`, and `provider_request_id` columns remain readable. Run `Migrate`
+before deploying code that writes the new fields.
+
 ## Durable workflows and schedules
 
 Persisted workflow records retain caller-supplied definition/version references;

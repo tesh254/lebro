@@ -536,7 +536,7 @@ func TestJournalConcurrentCaptureIsRaceFree(t *testing.T) {
 			journal.OnRunEvent(RunEvent{Sequence: 1, Type: RunEventStarted, Timestamp: time.Now()})
 			journal.beginModelAttempt("", "")
 			journal.completeModelAttempt(ModelAttempt{Status: ModelAttemptSuccess})
-			journal.finishModelCall(ModelUsage{}, FinishReasonStop, nil)
+			journal.finishModelCall(ModelUsage{}, ModelAccounting{}, FinishReasonStop, nil)
 			journal.toolStarted(1, "step", ModelToolCall{ID: "c", ToolID: "t"})
 			journal.toolFinished(ToolExecutionResult{ToolID: "t", State: ToolExecutionSucceeded})
 			journal.linkProducedMessages([]string{"m"})

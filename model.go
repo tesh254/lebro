@@ -1,6 +1,7 @@
 package lebro
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/tesh254/lebro/internal/runtime"
@@ -45,3 +46,15 @@ func NewMessageContentParts(parts ...MessageContentPart) (MessageContentParts, e
 }
 
 func AsStreamingModel(model Model) StreamingModel { return runtime.AsStreamingModel(model) }
+
+func ParseDecimal(value string) (Decimal, error) { return runtime.ParseDecimal(value) }
+
+func UnavailableModelCost(domain PricingDomain, reason CostUnavailableReason) ModelCost {
+	return runtime.UnavailableModelCost(domain, reason)
+}
+
+func NewOfficialPricingResolver() CostResolver { return runtime.NewOfficialPricingResolver() }
+
+func AggregateModelCosts(ctx context.Context, repo ModelAttemptRepository, filter ModelAttemptFilter) ([]ModelCost, error) {
+	return runtime.AggregateModelCosts(ctx, repo, filter)
+}

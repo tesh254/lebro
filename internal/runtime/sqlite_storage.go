@@ -277,6 +277,16 @@ var sqliteSchemaMigrations = []string{
 	`ALTER TABLE schedule_executions ADD COLUMN namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedule_executions ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
 	mediaJobsMigration,
+	`ALTER TABLE run_events ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_events ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_events ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_events ADD COLUMN accounting TEXT`,
+	`ALTER TABLE model_attempts ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE model_attempts ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE model_attempts ADD COLUMN cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE model_attempts ADD COLUMN accounting TEXT`,
+	`CREATE INDEX IF NOT EXISTS idx_model_attempts_model ON model_attempts(model)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_attempts_started ON model_attempts(started_at)`,
 }
 
 // Migrate applies any pending schema migrations atomically. It is idempotent;

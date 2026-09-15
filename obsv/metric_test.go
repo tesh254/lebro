@@ -174,6 +174,27 @@ func TestMetricsOmitZeroTokenCounters(t *testing.T) {
 	}
 }
 
+func TestMetricsExportExactAvailableCostWithoutUnavailableValues(t *testing.T) {
+	metrics := obsv.NewMemoryMetricExporter()
+	observer := newObserver(t, synchronousConfig(obsv.Config{Metrics: metrics}))
+	start := fixtureStart
+	for _, event := range []lebro.RunEvent{
+		{Type: lebro.RunEventStarted, RunID: "run-cost", Timestamp: start},
+		{Type: lebro.RunEventModelStarted, RunID: "run-cost", Step: 1, Timestamp: start.Add(time.Millisecond)},
+		{Type: lebro.RunEventModelFinished, RunID: "run-cost", Step: 1, Timestamp: start.Add(2 * time.Millisecond), Accounting: lebro.ModelAccounting{Costs: []lebro.ModelCost{
+			lebro.UnavailableModelCost(lebro.PricingDomainOpenAI, lebro.CostUnavailableProviderOmitted),
+			{Currency: "USD", Amount: "0.0000003", Source: lebro.CostEstimated, Domain: lebro.PricingDomainOpenAI},
+		}}},
+		{Type: lebro.RunEventSucceeded, RunID: "run-cost", Timestamp: start.Add(3 * time.Millisecond)},
+	} {
+		observer.OnRunEvent(event)
+	}
+	costs := metricsNamed(metrics.Metrics(), obsv.MetricModelCost)
+	if len(costs) != 1 || costs[0].DecimalValue != "0.0000003" || costs[0].Labels[obsv.LabelCostSource] != string(lebro.CostEstimated) || costs[0].Labels[obsv.LabelCurrency] != "USD" {
+		t.Fatalf("cost metrics = %#v", costs)
+	}
+}
+
 // TestMetricsRecordFailureStatus checks that a failed call is labelled as such;
 // an error rate computed from these labels would otherwise read zero.
 func TestMetricsRecordFailureStatus(t *testing.T) {

@@ -48,10 +48,10 @@ func (r *sqliteRepositories) AppendRunEvents(ctx context.Context, vs []RunEventR
 			}
 			chunk := vs[start:end]
 			placeholders := make([]string, 0, len(chunk))
-			args := make([]any, 0, len(chunk)*35)
+			args := make([]any, 0, len(chunk)*39)
 			for _, v := range chunk {
 				payload, pluginID, pluginVersion, pluginAction, pluginOutcome := obsEventExtras(v)
-				placeholders = append(placeholders, "("+strings.Repeat("?, ", 34)+"?)")
+				placeholders = append(placeholders, "("+strings.Repeat("?, ", 38)+"?)")
 				args = append(args,
 					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Sequence, v.Type, sqliteTime(v.Timestamp),
 					v.Step, v.StepID, v.ParentRunID, v.ParentStepID, v.Branch,
@@ -59,6 +59,7 @@ func (r *sqliteRepositories) AppendRunEvents(ctx context.Context, vs []RunEventR
 					string(v.AttemptStatus), string(v.ProcessorPhase), string(v.ProcessorAction),
 					string(v.Status), string(v.FinishReason),
 					v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.ReasoningTokens, v.Usage.TotalTokens,
+					v.Usage.CacheReadTokens, v.Usage.CacheWriteTokens, v.Usage.CacheWrite1hTokens, obsAccountingJSON(v.Accounting),
 					v.DurationNanos, v.ErrorKind, v.ErrorMessage, payload,
 					pluginID, pluginVersion, pluginAction, pluginOutcome,
 					obsMetadataJSON(v.Metadata),
@@ -70,6 +71,7 @@ func (r *sqliteRepositories) AppendRunEvents(ctx context.Context, vs []RunEventR
 				tool_call_id, tool_id, provider, provider_model,
 				attempt_status, processor_phase, processor_action,
 				status, finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens,
+				cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
 				duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
 			) VALUES ` + strings.Join(placeholders, ", ") + ` ON CONFLICT (run_id, id) DO NOTHING`
 			if _, err := q.ExecContext(ctx, query, args...); err != nil {
@@ -93,7 +95,8 @@ func (r *sqliteRepositories) ListRunEvents(ctx context.Context, filter RunEventF
 		`SELECT id, run_id, thread_id, namespace, owner_id, seq, type, timestamp, step, step_id, parent_run_id, parent_step_id,
 		 branch, tool_call_id, tool_id, provider, provider_model, attempt_status, processor_phase,
 		 processor_action, status, finish_reason, input_tokens, output_tokens, reasoning_tokens,
-		 total_tokens, duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
+		 total_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
+		 duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
 		 FROM run_events `+where+` ORDER BY run_id, seq LIMIT ? OFFSET ?`,
 		append(args, limit+1, offset)...)
 	if err != nil {
@@ -111,6 +114,7 @@ func (r *sqliteRepositories) ListRunEvents(ctx context.Context, filter RunEventF
 			pluginAct   sql.NullString
 			pluginOut   sql.NullString
 			annotations sql.NullString
+			accounting  sql.NullString
 		)
 		if err := rows.Scan(
 			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Sequence, &v.Type, &timestamp,
@@ -119,6 +123,7 @@ func (r *sqliteRepositories) ListRunEvents(ctx context.Context, filter RunEventF
 			&v.AttemptStatus, &v.ProcessorPhase, &v.ProcessorAction,
 			&v.Status, &v.FinishReason,
 			&v.Usage.InputTokens, &v.Usage.OutputTokens, &v.Usage.ReasoningTokens, &v.Usage.TotalTokens,
+			&v.Usage.CacheReadTokens, &v.Usage.CacheWriteTokens, &v.Usage.CacheWrite1hTokens, &accounting,
 			&v.DurationNanos, &v.ErrorKind, &v.ErrorMessage, &payload,
 			&pluginID, &pluginVers, &pluginAct, &pluginOut, &annotations,
 		); err != nil {
@@ -143,6 +148,10 @@ func (r *sqliteRepositories) ListRunEvents(ctx context.Context, filter RunEventF
 			return Page[RunEventRecord]{}, err
 		}
 		v.Metadata = metadata
+		v.Accounting, err = obsParseAccounting(accounting)
+		if err != nil {
+			return Page[RunEventRecord]{}, err
+		}
 		page.Records = append(page.Records, v)
 	}
 	if err := rows.Err(); err != nil {
@@ -179,11 +188,11 @@ func sqliteRunEventFilter(filter RunEventFilter) (string, []any) {
 		args = append(args, filter.Type)
 	}
 	if !filter.From.IsZero() {
-		clauses = append(clauses, "timestamp >= ?")
+		clauses = append(clauses, "julianday(timestamp) >= julianday(?)")
 		args = append(args, sqliteTime(filter.From))
 	}
 	if !filter.To.IsZero() {
-		clauses = append(clauses, "timestamp < ?")
+		clauses = append(clauses, "julianday(timestamp) < julianday(?)")
 		args = append(args, sqliteTime(filter.To))
 	}
 	if filter.Provider != "" {
@@ -221,14 +230,15 @@ func (r *sqliteRepositories) SaveModelAttempts(ctx context.Context, vs []ModelAt
 			}
 			chunk := vs[start:end]
 			placeholders := make([]string, 0, len(chunk))
-			args := make([]any, 0, len(chunk)*26)
+			args := make([]any, 0, len(chunk)*30)
 			for _, v := range chunk {
 				messageIDs := obsStringArray(v.ProducedMessageIDs)
-				placeholders = append(placeholders, "("+strings.Repeat("?, ", 25)+"?)")
+				placeholders = append(placeholders, "("+strings.Repeat("?, ", 29)+"?)")
 				args = append(args,
 					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Step, v.StepID, v.Index,
 					string(v.Provider), v.Model, v.RoutedModel, string(v.Status), string(v.FinishReason),
 					v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.ReasoningTokens, v.Usage.TotalTokens,
+					v.Usage.CacheReadTokens, v.Usage.CacheWriteTokens, v.Usage.CacheWrite1hTokens, obsAccountingJSON(v.Accounting),
 					sqliteTime(v.StartedAt), sqliteTime(v.FinishedAt), messageIDs,
 					v.ErrorKind, v.ErrorMessage, v.ProviderRequestID, v.CostMicros,
 					v.Currency, obsMetadataJSON(v.Metadata),
@@ -238,6 +248,7 @@ func (r *sqliteRepositories) SaveModelAttempts(ctx context.Context, vs []ModelAt
 				id, run_id, thread_id, namespace, owner_id, step, step_id, idx,
 				provider, model, routed_model, status, finish_reason,
 				input_tokens, output_tokens, reasoning_tokens, total_tokens,
+				cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
 				started_at, finished_at, message_ids,
 				error_kind, error_message, provider_request_id, cost_micros, currency, annotations
 			) VALUES ` + strings.Join(placeholders, ", ") + ` ON CONFLICT (run_id, id) DO NOTHING`
@@ -252,6 +263,9 @@ func (r *sqliteRepositories) SaveModelAttempts(ctx context.Context, vs []ModelAt
 func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter ModelAttemptFilter, p PageRequest) (Page[ModelAttemptRecord], error) {
 	if err := ctx.Err(); err != nil {
 		return Page[ModelAttemptRecord]{}, err
+	}
+	if !validCostSource(filter.CostSource) {
+		return Page[ModelAttemptRecord]{}, fmt.Errorf("lebro: invalid model attempt cost source %q", filter.CostSource)
 	}
 	offset, limit, err := sqlPageBounds(p)
 	if err != nil {
@@ -279,9 +293,25 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 		clauses = append(clauses, "provider = ?")
 		args = append(args, filter.Provider)
 	}
+	if filter.Model != "" {
+		clauses = append(clauses, "model = ?")
+		args = append(args, filter.Model)
+	}
 	if filter.Status != "" {
 		clauses = append(clauses, "status = ?")
 		args = append(args, filter.Status)
+	}
+	if !filter.From.IsZero() {
+		clauses = append(clauses, "julianday(started_at) >= julianday(?)")
+		args = append(args, sqliteTime(filter.From))
+	}
+	if !filter.To.IsZero() {
+		clauses = append(clauses, "julianday(started_at) < julianday(?)")
+		args = append(args, sqliteTime(filter.To))
+	}
+	if filter.CostSource != "" {
+		clauses = append(clauses, "EXISTS (SELECT 1 FROM json_each(COALESCE(accounting, '{}'), '$.costs') AS cost WHERE json_extract(cost.value, '$.source') = ?)")
+		args = append(args, string(filter.CostSource))
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -289,7 +319,8 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 	}
 	rows, err := r.q.QueryContext(ctx,
 		`SELECT id, run_id, thread_id, namespace, owner_id, step, step_id, idx, provider, model, routed_model, status,
-		 finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens, started_at,
+		 finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens,
+		 cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting, started_at,
 		 finished_at, message_ids, error_kind, error_message, provider_request_id, cost_micros,
 		 currency, annotations FROM model_attempts `+where+` ORDER BY run_id, seq LIMIT ? OFFSET ?`,
 		append(args, limit+1, offset)...)
@@ -305,11 +336,13 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 			finishedAt  string
 			messageIDs  sql.NullString
 			annotations sql.NullString
+			accounting  sql.NullString
 		)
 		if err := rows.Scan(
 			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Step, &v.StepID, &v.Index,
 			&v.Provider, &v.Model, &v.RoutedModel, &v.Status, &v.FinishReason,
 			&v.Usage.InputTokens, &v.Usage.OutputTokens, &v.Usage.ReasoningTokens, &v.Usage.TotalTokens,
+			&v.Usage.CacheReadTokens, &v.Usage.CacheWriteTokens, &v.Usage.CacheWrite1hTokens, &accounting,
 			&startedAt, &finishedAt, &messageIDs,
 			&v.ErrorKind, &v.ErrorMessage, &v.ProviderRequestID, &v.CostMicros,
 			&v.Currency, &annotations,
@@ -335,6 +368,13 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 			return Page[ModelAttemptRecord]{}, err
 		}
 		v.Metadata = metadata
+		v.Accounting, err = obsParseAccounting(accounting)
+		if err != nil {
+			return Page[ModelAttemptRecord]{}, err
+		}
+		if v.Accounting.ProviderRequestID == "" {
+			v.Accounting.ProviderRequestID = v.ProviderRequestID
+		}
 		page.Records = append(page.Records, v)
 	}
 	if err := rows.Err(); err != nil {

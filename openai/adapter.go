@@ -53,6 +53,10 @@ type Config struct {
 	// Endpoint detection is deliberately explicit: gateways and proxies in
 	// front of such endpoints would otherwise silently lose reasoning output.
 	IncludeReasoning bool
+	// PricingDomain identifies the billing contract behind a compatible
+	// endpoint. It defaults from the endpoint host for OpenAI and OpenRouter;
+	// other compatible gateways remain explicitly unclassified.
+	PricingDomain lebro.PricingDomain
 }
 
 // Model is a [lebro.Model] backed by an OpenAI-compatible chat-completions
@@ -66,9 +70,17 @@ type Model struct {
 	userAgent        string
 	organization     string
 	includeReasoning bool
+	pricingDomain    lebro.PricingDomain
 }
 
 var _ lebro.Model = (*Model)(nil)
+
+func (m *Model) ProviderID() lebro.ProviderID {
+	if m != nil && m.pricingDomain == lebro.PricingDomainOpenRouter {
+		return "openrouter"
+	}
+	return providerName
+}
 
 // New builds a text-generation adapter for an OpenAI-compatible endpoint.
 // The returned model is safe for concurrent use.
@@ -104,6 +116,17 @@ func New(config Config) (*Model, error) {
 		userAgent = defaultUserAgent
 	}
 
+	pricingDomain := config.PricingDomain
+	if pricingDomain == "" {
+		switch strings.ToLower(parsed.Hostname()) {
+		case "api.openai.com":
+			pricingDomain = lebro.PricingDomainOpenAI
+		case "openrouter.ai":
+			pricingDomain = lebro.PricingDomainOpenRouter
+		default:
+			pricingDomain = lebro.PricingDomainOpenAICompatible
+		}
+	}
 	return &Model{
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		apiKey:           config.APIKey,
@@ -113,6 +136,7 @@ func New(config Config) (*Model, error) {
 		userAgent:        userAgent,
 		organization:     config.Organization,
 		includeReasoning: config.IncludeReasoning,
+		pricingDomain:    pricingDomain,
 	}, nil
 }
 
@@ -363,8 +387,10 @@ func (m *Model) mapResponse(request lebro.ModelRequest, parsed chatResponse) (le
 		Usage: lebro.ModelUsage{
 			InputTokens: parsed.Usage.PromptTokens, OutputTokens: parsed.Usage.CompletionTokens,
 			ReasoningTokens: parsed.Usage.CompletionTokensDetails.ReasoningTokens, TotalTokens: parsed.Usage.TotalTokens,
+			CacheReadTokens: parsed.Usage.PromptTokensDetails.CachedTokens, CacheWriteTokens: parsed.Usage.PromptTokensDetails.CacheWriteTokens,
 		},
 		FinishReason: mapFinishReason(choice.FinishReason),
+		Accounting:   m.mapAccounting(parsed.ID, parsed.Usage),
 	}
 	if parsed.ID != "" || parsed.Model != "" {
 		extension, _ := json.Marshal(map[string]string{"openai_id": parsed.ID, "openai_model": parsed.Model})
@@ -545,6 +571,36 @@ type chatUsageBody struct {
 	CompletionTokensDetails struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details"`
+	PromptTokensDetails struct {
+		CachedTokens     int64 `json:"cached_tokens"`
+		CacheWriteTokens int64 `json:"cache_write_tokens"`
+		AudioTokens      int64 `json:"audio_tokens"`
+	} `json:"prompt_tokens_details"`
+	Cost        *json.Number `json:"cost"`
+	CostDetails struct {
+		UpstreamInferenceCost *json.Number `json:"upstream_inference_cost"`
+	} `json:"cost_details"`
+}
+
+func (m *Model) mapAccounting(id string, usage chatUsageBody) lebro.ModelAccounting {
+	accounting := lebro.ModelAccounting{ProviderRequestID: id}
+	if usage.Cost == nil {
+		accounting.Costs = []lebro.ModelCost{lebro.UnavailableModelCost(m.pricingDomain, lebro.CostUnavailableProviderOmitted)}
+		return accounting
+	}
+	amount, err := lebro.ParseDecimal(usage.Cost.String())
+	if err != nil {
+		accounting.Costs = []lebro.ModelCost{lebro.UnavailableModelCost(m.pricingDomain, lebro.CostUnavailableMissingDimension)}
+		return accounting
+	}
+	cost := lebro.ModelCost{Currency: "CREDITS", Amount: amount, Source: lebro.CostProviderReported, Domain: m.pricingDomain, Provenance: "provider response usage.cost"}
+	if usage.CostDetails.UpstreamInferenceCost != nil {
+		if upstream, parseErr := lebro.ParseDecimal(usage.CostDetails.UpstreamInferenceCost.String()); parseErr == nil {
+			cost.Components = append(cost.Components, lebro.CostComponent{Kind: lebro.CostComponentUpstream, Amount: upstream})
+		}
+	}
+	accounting.Costs = []lebro.ModelCost{cost}
+	return accounting
 }
 
 type chatErrorBody struct {
@@ -927,9 +983,11 @@ type sseStreamReader struct {
 
 	textBuf      strings.Builder
 	usage        lebro.ModelUsage
+	accounting   lebro.ModelAccounting
 	pendingTools map[int]*streamToolBuilder
 	toolOrder    []int
 	pending      []lebro.StreamDelta
+	final        *lebro.StreamDelta
 }
 
 // streamToolBuilder accumulates one streamed tool call from its wire
@@ -1001,8 +1059,7 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 				return lebro.StreamDelta{}, r.model.timeoutError("stream idle timeout exceeded", err)
 			}
 			if err == nil {
-				r.markTerminal()
-				return lebro.StreamDelta{FinishReason: lebro.FinishReasonUnspecified}, nil
+				return r.finishDelta(), nil
 			}
 			if errors.Is(err, context.Canceled) {
 				r.markTerminal()
@@ -1024,8 +1081,7 @@ func (r *sseStreamReader) Next() (lebro.StreamDelta, error) {
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
-			r.markTerminal()
-			return lebro.StreamDelta{}, io.EOF
+			return r.finishDelta(), nil
 		}
 		var event chatStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
@@ -1074,17 +1130,26 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 	if event.Model != "" {
 		r.modelName = event.Model
 	}
-	if event.Usage != (chatUsageBody{}) {
+	hasUsage := event.Usage != nil
+	if hasUsage {
+		usage := *event.Usage
 		r.usage = lebro.ModelUsage{
-			InputTokens:     event.Usage.PromptTokens,
-			OutputTokens:    event.Usage.CompletionTokens,
-			ReasoningTokens: event.Usage.CompletionTokensDetails.ReasoningTokens,
-			TotalTokens:     event.Usage.TotalTokens,
+			InputTokens:      usage.PromptTokens,
+			OutputTokens:     usage.CompletionTokens,
+			ReasoningTokens:  usage.CompletionTokensDetails.ReasoningTokens,
+			TotalTokens:      usage.TotalTokens,
+			CacheReadTokens:  usage.PromptTokensDetails.CachedTokens,
+			CacheWriteTokens: usage.PromptTokensDetails.CacheWriteTokens,
 		}
+		r.accounting = r.model.mapAccounting(r.id, usage)
 	}
 	if len(event.Choices) == 0 {
-		if event.Usage != (chatUsageBody{}) {
-			return lebro.StreamDelta{Usage: r.usage}, true, nil
+		if hasUsage && r.final != nil {
+			r.final.Usage = r.usage
+			r.final.Accounting = r.accounting.Clone()
+			terminal := *r.final
+			r.final = nil
+			return terminal, true, nil
 		}
 		return lebro.StreamDelta{}, false, nil
 	}
@@ -1116,14 +1181,30 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 			r.pending = append(r.pending, lebro.StreamDelta{ToolCall: &call})
 		}
 	}
-	terminal := lebro.StreamDelta{FinishReason: finish, Usage: r.usage}
+	terminal := lebro.StreamDelta{FinishReason: finish, Usage: r.usage, Accounting: r.accounting.Clone()}
 	if finish != lebro.FinishReasonToolCalls && r.outputSchema != nil {
 		if text := r.textBuf.String(); text != "" && json.Valid([]byte(text)) {
 			terminal.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(text))
 		}
 	}
-	r.pending = append(r.pending, terminal)
+	if hasUsage {
+		r.pending = append(r.pending, terminal)
+	} else {
+		r.final = &terminal
+	}
 	return lebro.StreamDelta{}, false, nil
+}
+
+func (r *sseStreamReader) finishDelta() lebro.StreamDelta {
+	terminal := lebro.StreamDelta{FinishReason: lebro.FinishReasonUnspecified, Usage: r.usage, Accounting: r.accounting.Clone()}
+	if r.final != nil {
+		terminal = *r.final
+		terminal.Usage = r.usage
+		terminal.Accounting = r.accounting.Clone()
+		r.final = nil
+	}
+	r.markTerminal()
+	return terminal
 }
 
 func (r *sseStreamReader) accumulateToolFragments(fragments []chatStreamToolFragment) {
@@ -1316,7 +1397,7 @@ type chatStreamEvent struct {
 	ID      string             `json:"id"`
 	Model   string             `json:"model"`
 	Choices []chatStreamChoice `json:"choices"`
-	Usage   chatUsageBody      `json:"usage"`
+	Usage   *chatUsageBody     `json:"usage"`
 	Error   *chatError         `json:"error,omitempty"`
 }
 

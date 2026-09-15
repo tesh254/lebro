@@ -96,6 +96,16 @@ type (
 	ModelReasoningDetails       = runtime.ModelReasoningDetails
 	ModelReasoning              = runtime.ModelReasoning
 	ModelUsage                  = runtime.ModelUsage
+	Decimal                     = runtime.Decimal
+	CostSource                  = runtime.CostSource
+	PricingDomain               = runtime.PricingDomain
+	CostUnavailableReason       = runtime.CostUnavailableReason
+	CostComponentKind           = runtime.CostComponentKind
+	CostComponent               = runtime.CostComponent
+	ModelCost                   = runtime.ModelCost
+	ModelAccounting             = runtime.ModelAccounting
+	CostResolver                = runtime.CostResolver
+	CostResolverFunc            = runtime.CostResolverFunc
 	FinishReason                = runtime.FinishReason
 	ModelResponse               = runtime.ModelResponse
 	Model                       = runtime.Model
@@ -494,11 +504,41 @@ const (
 	ChunkMetadataSource     = runtime.ChunkMetadataSource
 	ChunkMetadataChunkIndex = runtime.ChunkMetadataChunkIndex
 
-	DefaultChunkSize            = runtime.DefaultChunkSize
-	DefaultEmbeddingBatchSize   = runtime.DefaultEmbeddingBatchSize
-	DefaultRetrievalTopK        = runtime.DefaultRetrievalTopK
-	DefaultRerankCandidateTopK  = runtime.DefaultRerankCandidateTopK
-	RuntimeStoreContractVersion = runtime.RuntimeStoreContractVersion
+	DefaultChunkSize              = runtime.DefaultChunkSize
+	DefaultEmbeddingBatchSize     = runtime.DefaultEmbeddingBatchSize
+	DefaultRetrievalTopK          = runtime.DefaultRetrievalTopK
+	DefaultRerankCandidateTopK    = runtime.DefaultRerankCandidateTopK
+	RuntimeStoreContractVersion   = runtime.RuntimeStoreContractVersion
+	OfficialPricingCatalogVersion = runtime.OfficialPricingCatalogVersion
+)
+
+const (
+	CostUnavailable                      = runtime.CostUnavailable
+	CostProviderReported                 = runtime.CostProviderReported
+	CostDeveloperSupplied                = runtime.CostDeveloperSupplied
+	CostEstimated                        = runtime.CostEstimated
+	PricingDomainOpenRouter              = runtime.PricingDomainOpenRouter
+	PricingDomainOpenAI                  = runtime.PricingDomainOpenAI
+	PricingDomainOpenAICompatible        = runtime.PricingDomainOpenAICompatible
+	PricingDomainAnthropic               = runtime.PricingDomainAnthropic
+	PricingDomainGemini                  = runtime.PricingDomainGemini
+	PricingDomainVertexAI                = runtime.PricingDomainVertexAI
+	CostUnavailableProviderOmitted       = runtime.CostUnavailableProviderOmitted
+	CostUnavailableUnknownModel          = runtime.CostUnavailableUnknownModel
+	CostUnavailableMissingUsage          = runtime.CostUnavailableMissingUsage
+	CostUnavailableMissingDimension      = runtime.CostUnavailableMissingDimension
+	CostUnavailableUnsupportedTerms      = runtime.CostUnavailableUnsupportedTerms
+	CostUnavailableResolverNotConfigured = runtime.CostUnavailableResolverNotConfigured
+	CostUnavailableResolverFailed        = runtime.CostUnavailableResolverFailed
+	CostUnavailableResolverRejected      = runtime.CostUnavailableResolverRejected
+	CostUnavailableResolverInvalid       = runtime.CostUnavailableResolverInvalid
+	CostComponentInput                   = runtime.CostComponentInput
+	CostComponentOutput                  = runtime.CostComponentOutput
+	CostComponentReasoning               = runtime.CostComponentReasoning
+	CostComponentCacheRead               = runtime.CostComponentCacheRead
+	CostComponentCacheWrite              = runtime.CostComponentCacheWrite
+	CostComponentUpstream                = runtime.CostComponentUpstream
+	CostComponentModality                = runtime.CostComponentModality
 )
 
 const (

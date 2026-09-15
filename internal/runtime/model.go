@@ -277,6 +277,7 @@ const (
 type ModelResponse struct {
 	Message      Message
 	Usage        ModelUsage
+	Accounting   ModelAccounting
 	FinishReason FinishReason
 	Extension    json.RawMessage
 }
@@ -345,6 +346,7 @@ type StreamDelta struct {
 	StructuredOutput ModelStructuredOutput
 	FinishReason     FinishReason
 	Usage            ModelUsage
+	Accounting       ModelAccounting
 	Err              error
 }
 
@@ -358,7 +360,7 @@ func (d StreamDelta) IsTerminal() bool {
 // called by the agent runtime as deltas arrive so a malformed stream fails
 // fast instead of corrupting the transcript.
 func (d StreamDelta) Validate() error {
-	if d.Text == "" && d.Reasoning.IsZero() && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && d.Err == nil {
+	if d.Text == "" && d.Reasoning.IsZero() && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && len(d.Accounting.Costs) == 0 && d.Accounting.ProviderRequestID == "" && d.Err == nil {
 		return errors.New("lebro: stream delta is empty")
 	}
 	if d.ToolCall != nil {
@@ -377,6 +379,12 @@ func (d StreamDelta) Validate() error {
 	}
 	if d.Usage.InputTokens < 0 || d.Usage.OutputTokens < 0 || d.Usage.ReasoningTokens < 0 || d.Usage.TotalTokens < 0 {
 		return errors.New("lebro: stream delta usage must not contain negative token counts")
+	}
+	if d.Usage.CacheReadTokens < 0 || d.Usage.CacheWriteTokens < 0 || d.Usage.CacheWrite1hTokens < 0 {
+		return errors.New("lebro: stream delta usage must not contain negative cache token counts")
+	}
+	if err := d.Accounting.Validate(); err != nil {
+		return fmt.Errorf("lebro: stream delta accounting: %w", err)
 	}
 	return nil
 }
@@ -490,6 +498,12 @@ func (r ModelResponse) Validate() error {
 	}
 	if r.Usage.InputTokens < 0 || r.Usage.OutputTokens < 0 || r.Usage.ReasoningTokens < 0 || r.Usage.TotalTokens < 0 {
 		return errors.New("lebro: model usage must not contain negative token counts")
+	}
+	if r.Usage.CacheReadTokens < 0 || r.Usage.CacheWriteTokens < 0 || r.Usage.CacheWrite1hTokens < 0 {
+		return errors.New("lebro: model usage must not contain negative cache token counts")
+	}
+	if err := r.Accounting.Validate(); err != nil {
+		return fmt.Errorf("lebro: model response accounting: %w", err)
 	}
 
 	toolCalls := r.Message.ToolCalls.Values()

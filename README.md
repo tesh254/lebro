@@ -430,6 +430,12 @@ if err != nil {
 OpenRouter normalizes an OpenAI-compatible Chat Completions API, so it belongs
 behind `openai.New`, not `anthropic.New`. The OpenAI adapter supports text
 generation, function tool calls, streaming, and JSON-schema structured output;
+OpenRouter responses also preserve `usage.cost`, upstream inference cost,
+cache usage, and generation ID. Native OpenAI, Anthropic, Gemini, and Vertex
+responses explicitly mark cost unavailable when their response omits it. Add
+`CostResolver: lebro.NewOfficialPricingResolver()` to an agent for opt-in,
+versioned standard text-token estimates; unknown models and unsupported billing
+dimensions remain explicit unavailable results.
 the returned structured value is validated locally, while provider-side
 restrictions (model support for `json_schema` output, strict-mode field
 requirements) stay enforced by the endpoint and surface as normalized model
@@ -684,7 +690,7 @@ agent, _ := lebro.NewAgent(lebro.AgentConfig{
 
 When an agent is bound to a `Store`, the same lifecycle data persists as
 queryable records: one `ModelAttemptRecord` per provider attempt (identity,
-usage, finish reason, retry/fallback lineage), one `ToolExecutionRecord` per
+usage, exact decimal accounting, request ID, finish reason, retry/fallback lineage), one `ToolExecutionRecord` per
 tool call, and every non-delta event as an ordered `RunEventRecord` —
 correlated by run, step, tool-call, and produced-message IDs. Delta text,
 tool arguments/results, raw prompts, and reasoning replay data are never
@@ -697,8 +703,9 @@ page, err := store.ModelAttempts().ListModelAttempts(ctx, lebro.ModelAttemptFilt
     RunID: result.ID,
 }, lebro.PageRequest{})
 for _, attempt := range page.Records {
-    fmt.Printf("%s %s tokens=%d produced=%v\n",
-        attempt.Provider, attempt.Status, attempt.Usage.TotalTokens, attempt.ProducedMessageIDs)
+	fmt.Printf("%s %s tokens=%d costs=%v produced=%v\n",
+		attempt.Provider, attempt.Status, attempt.Usage.TotalTokens,
+		attempt.Accounting.Costs, attempt.ProducedMessageIDs)
 }
 ```
 
