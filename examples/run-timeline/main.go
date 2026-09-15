@@ -1,4 +1,4 @@
-// run-timeline demonstrates MAD-83's durable observability records: a store-
+// run-timeline demonstrates durable observability and cost records: a store-
 // bound agent run persists model attempts (provider identity, token usage,
 // finish reason), tool-execution lifecycle, and ordered run events. After the
 // run, the example queries the thread timeline — attempts, tool executions,
@@ -28,12 +28,13 @@ func main() {
 			ID:           "support-agent",
 			Name:         "support",
 			Instructions: "Answer support questions.",
-			Model:        "gpt-fixture",
+			Model:        "gpt-6-astra",
 			Tools:        []lebro.ToolID{"order_lookup"},
 		},
-		Model: newFixtureModel(),
-		Tools: mustValue(newLookupRegistry()),
-		Store: store,
+		Model:        newFixtureModel(),
+		CostResolver: lebro.NewOfficialPricingResolver(),
+		Tools:        mustValue(newLookupRegistry()),
+		Store:        store,
 	}))
 
 	result, err := agent.Run(ctx, lebro.RunInput{
@@ -58,9 +59,20 @@ func main() {
 func printAttempts(ctx context.Context, store *lebro.MemoryStore, runID lebro.RunID) {
 	page := mustValue(store.ModelAttempts().ListModelAttempts(ctx, lebro.ModelAttemptFilter{RunID: runID}, lebro.PageRequest{}))
 	for _, attempt := range page.Records {
-		fmt.Printf("attempt #%d provider=%q model=%q status=%s finish=%s tokens=%d/%d duration<1s produced=%v\n",
+		fmt.Printf("attempt #%d provider=%q model=%q status=%s finish=%s tokens=%d/%d cache-read=%d duration<1s produced=%v\n",
 			attempt.Index, string(attempt.Provider), attempt.Model, attempt.Status, attempt.FinishReason,
-			attempt.Usage.InputTokens, attempt.Usage.OutputTokens, attempt.ProducedMessageIDs)
+			attempt.Usage.InputTokens, attempt.Usage.OutputTokens, attempt.Usage.CacheReadTokens, attempt.ProducedMessageIDs)
+		for _, cost := range attempt.Accounting.Costs {
+			if cost.Source == lebro.CostUnavailable {
+				fmt.Printf("  cost domain=%s source=%s reason=%s\n", cost.Domain, cost.Source, cost.UnavailableReason)
+				continue
+			}
+			fmt.Printf("  cost domain=%s source=%s amount=%s %s catalog=%s\n", cost.Domain, cost.Source, cost.Amount, cost.Currency, cost.CatalogVersion)
+		}
+	}
+	totals := mustValue(lebro.AggregateModelCosts(ctx, store.ModelAttempts(), lebro.ModelAttemptFilter{RunID: runID}))
+	for _, total := range totals {
+		fmt.Printf("run cost source=%s amount=%s %s\n", total.Source, total.Amount, total.Currency)
 	}
 }
 
@@ -113,6 +125,8 @@ type fixtureModel struct{}
 
 var _ lebro.Model = (*fixtureModel)(nil)
 
+func (*fixtureModel) ProviderID() lebro.ProviderID { return "openai" }
+
 func newFixtureModel() *fixtureModel { return &fixtureModel{} }
 
 func (m *fixtureModel) Generate(ctx context.Context, request lebro.ModelRequest) (lebro.ModelResponse, error) {
@@ -121,7 +135,8 @@ func (m *fixtureModel) Generate(ctx context.Context, request lebro.ModelRequest)
 			return lebro.ModelResponse{
 				Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "Your order shipped yesterday."},
 				FinishReason: lebro.FinishReasonStop,
-				Usage:        lebro.ModelUsage{InputTokens: 210, OutputTokens: 14, TotalTokens: 224},
+				Usage:        lebro.ModelUsage{InputTokens: 210, OutputTokens: 14, CacheReadTokens: 50, TotalTokens: 224},
+				Accounting:   lebro.ModelAccounting{ProviderRequestID: "fixture-response-2", Costs: []lebro.ModelCost{lebro.UnavailableModelCost(lebro.PricingDomainOpenAI, lebro.CostUnavailableProviderOmitted)}},
 			}, nil
 		}
 	}
@@ -134,6 +149,7 @@ func (m *fixtureModel) Generate(ctx context.Context, request lebro.ModelRequest)
 		Message:      lebro.Message{Role: lebro.RoleAssistant, ToolCalls: calls},
 		FinishReason: lebro.FinishReasonToolCalls,
 		Usage:        lebro.ModelUsage{InputTokens: 120, OutputTokens: 8, TotalTokens: 128},
+		Accounting:   lebro.ModelAccounting{ProviderRequestID: "fixture-response-1", Costs: []lebro.ModelCost{lebro.UnavailableModelCost(lebro.PricingDomainOpenAI, lebro.CostUnavailableProviderOmitted)}},
 	}, nil
 }
 

@@ -46,6 +46,9 @@ func validateModelAttemptRecord(v ModelAttemptRecord) error {
 	if err := validateUsage(v.Usage); err != nil {
 		return fmt.Errorf("lebro: model attempt %q usage: %w", v.ID, err)
 	}
+	if err := v.Accounting.Validate(); err != nil {
+		return fmt.Errorf("lebro: model attempt %q accounting: %w", v.ID, err)
+	}
 	if err := validateFinishReasonValue(v.FinishReason); err != nil {
 		return fmt.Errorf("lebro: model attempt %q: %w", v.ID, err)
 	}
@@ -104,11 +107,17 @@ func validateRunEventRecord(v RunEventRecord) error {
 	if err := validateJSON(v.Payload); err != nil {
 		return fmt.Errorf("lebro: run event %q payload: %w", v.ID, err)
 	}
+	if err := validateUsage(v.Usage); err != nil {
+		return fmt.Errorf("lebro: run event %q usage: %w", v.ID, err)
+	}
+	if err := v.Accounting.Validate(); err != nil {
+		return fmt.Errorf("lebro: run event %q accounting: %w", v.ID, err)
+	}
 	return v.Metadata.Validate()
 }
 
 func validateUsage(usage ModelUsage) error {
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.ReasoningTokens < 0 || usage.TotalTokens < 0 {
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.ReasoningTokens < 0 || usage.TotalTokens < 0 || usage.CacheReadTokens < 0 || usage.CacheWriteTokens < 0 || usage.CacheWrite1hTokens < 0 {
 		return errors.New("token counts must not be negative")
 	}
 	return nil
@@ -183,6 +192,35 @@ func obsParseMetadata(v sql.NullString) (Metadata, error) {
 		return nil, fmt.Errorf("lebro: decode record metadata: %w", err)
 	}
 	return decoded, nil
+}
+
+// obsAccountingJSON encodes model accounting as a nullable JSON column. The
+// empty value stays NULL so records written before cost accounting remain
+// distinguishable from an explicit unavailable result.
+func obsAccountingJSON(accounting ModelAccounting) any {
+	if accounting.IsZero() {
+		return nil
+	}
+	encoded, err := json.Marshal(accounting)
+	if err != nil {
+		// Validation already guaranteed JSON-encodable values.
+		return nil
+	}
+	return string(encoded)
+}
+
+func obsParseAccounting(v sql.NullString) (ModelAccounting, error) {
+	if !v.Valid || v.String == "" || v.String == "null" {
+		return ModelAccounting{}, nil
+	}
+	var accounting ModelAccounting
+	if err := json.Unmarshal([]byte(v.String), &accounting); err != nil {
+		return ModelAccounting{}, fmt.Errorf("lebro: decode model accounting: %w", err)
+	}
+	if err := accounting.Validate(); err != nil {
+		return ModelAccounting{}, fmt.Errorf("lebro: decode model accounting: %w", err)
+	}
+	return accounting, nil
 }
 
 // obsStringArray marshals a string slice into a nullable JSON array column

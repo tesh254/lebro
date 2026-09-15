@@ -32,6 +32,9 @@ const (
 	MetricOutputTokens         = "lebro.model.output_tokens"
 	MetricReasoningTokens      = "lebro.model.reasoning_tokens"
 	MetricTotalTokens          = "lebro.model.total_tokens"
+	MetricCacheReadTokens      = "lebro.model.cache_read_tokens"
+	MetricCacheWriteTokens     = "lebro.model.cache_write_tokens"
+	MetricModelCost            = "lebro.model.cost"
 	MetricRunOutcome           = "lebro.run.outcome"
 	MetricStepOutcome          = "lebro.step.outcome"
 	MetricStepAttemptOutcome   = "lebro.step_attempt.outcome"
@@ -53,19 +56,23 @@ const (
 	LabelProviderModel = "provider_model"
 	LabelStepID        = "step_id"
 	LabelFinishReason  = "finish_reason"
+	LabelCostSource    = "cost_source"
+	LabelCostDomain    = "cost_domain"
+	LabelCurrency      = "currency"
 )
 
 // Metric is one measurement derived from a span. Value carries counters and
 // Duration carries elapsed times; exactly one is meaningful for a given Kind.
 type Metric struct {
-	Name      string            `json:"name"`
-	Kind      MetricKind        `json:"kind"`
-	Value     int64             `json:"value,omitempty"`
-	Duration  time.Duration     `json:"duration,omitempty"`
-	Timestamp time.Time         `json:"timestamp"`
-	TraceID   TraceID           `json:"trace_id,omitempty"`
-	RunID     lebro.RunID       `json:"run_id,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
+	Name         string            `json:"name"`
+	Kind         MetricKind        `json:"kind"`
+	Value        int64             `json:"value,omitempty"`
+	DecimalValue lebro.Decimal     `json:"decimal_value,omitempty"`
+	Duration     time.Duration     `json:"duration,omitempty"`
+	Timestamp    time.Time         `json:"timestamp"`
+	TraceID      TraceID           `json:"trace_id,omitempty"`
+	RunID        lebro.RunID       `json:"run_id,omitempty"`
+	Labels       map[string]string `json:"labels,omitempty"`
 }
 
 // Clone returns a deep copy of the metric.
@@ -118,6 +125,8 @@ func metricsForSpan(span Span) []Metric {
 			{MetricOutputTokens, span.Usage.OutputTokens},
 			{MetricReasoningTokens, span.Usage.ReasoningTokens},
 			{MetricTotalTokens, span.Usage.TotalTokens},
+			{MetricCacheReadTokens, span.Usage.CacheReadTokens},
+			{MetricCacheWriteTokens, span.Usage.CacheWriteTokens + span.Usage.CacheWrite1hTokens},
 		} {
 			if usage.value == 0 {
 				continue
@@ -131,6 +140,16 @@ func metricsForSpan(span Span) []Metric {
 				RunID:     span.RunID,
 				Labels:    cloneAttributes(labels),
 			})
+		}
+		for _, cost := range span.Accounting.Costs {
+			if cost.Source == lebro.CostUnavailable {
+				continue
+			}
+			costLabels := cloneAttributes(labels)
+			costLabels[LabelCostSource] = string(cost.Source)
+			costLabels[LabelCostDomain] = string(cost.Domain)
+			costLabels[LabelCurrency] = cost.Currency
+			metrics = append(metrics, Metric{Name: MetricModelCost, Kind: MetricKindCounter, DecimalValue: cost.Amount, Timestamp: timestamp, TraceID: span.TraceID, RunID: span.RunID, Labels: costLabels})
 		}
 	}
 	if len(metrics) == 0 {

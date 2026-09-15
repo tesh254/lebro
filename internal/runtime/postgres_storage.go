@@ -302,6 +302,16 @@ var postgresSchemaMigrations = []string{
 	`ALTER TABLE schedule_executions ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE schedule_executions ADD COLUMN IF NOT EXISTS owner_id TEXT NOT NULL DEFAULT ''`,
 	mediaJobsMigration,
+	`ALTER TABLE run_events ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_events ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_events ADD COLUMN IF NOT EXISTS cache_write_1h_tokens BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE run_events ADD COLUMN IF NOT EXISTS accounting JSONB`,
+	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS cache_write_1h_tokens BIGINT NOT NULL DEFAULT 0`,
+	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS accounting JSONB`,
+	`CREATE INDEX IF NOT EXISTS idx_model_attempts_model ON model_attempts(model)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_attempts_started ON model_attempts(started_at)`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()

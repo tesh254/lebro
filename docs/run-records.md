@@ -14,7 +14,7 @@ and finish reasons live on attempt records — never on tool-result messages.
 
 | Record | One row per | Key fields |
 |---|---|---|
-| `ModelAttemptRecord` | actual provider invocation | provider/model identity, routed target, status, usage, finish reason, timestamps, error classification, produced message IDs |
+| `ModelAttemptRecord` | actual provider invocation | provider/model identity, routed target, status, usage, accounting, request ID, finish reason, timestamps, error classification, produced message IDs |
 | `ToolExecutionRecord` | tool call lifecycle | tool/tool-call IDs, state, timing, redacted error data |
 | `RunEventRecord` | non-delta `RunEvent` | sequence per run, type, correlation IDs, safe payload, plugin attribution |
 
@@ -99,7 +99,7 @@ page, err := store.RunEvents().ListRunEvents(ctx, lebro.RunEventFilter{
 ```
 
 Filters: `RunEventFilter` (run/thread/type/provider/tool/time range),
-`ModelAttemptFilter` (run/thread/provider/status), `ToolExecutionFilter`
+`ModelAttemptFilter` (run/thread/provider/model/status/time range/cost source), `ToolExecutionFilter`
 (run/thread/tool/state). All filters also accept `Namespace` and `OwnerID` to
 preserve tenant isolation. Listings order by run then insertion/sequence and use
 the same cursor pagination as every repository. Records do not require a
@@ -142,11 +142,56 @@ Write semantics by outcome:
 Diagnostic flushes are best-effort: a failure writing them never masks the
 run's own error.
 
-## Cost model limitations
+## Cost accounting
 
-`CostMicros`/`Currency` and `ProviderRequestID` exist because some providers
-report them; lebro never computes cost. Token counts are provider-reported
-and may be absent (zero) for providers or streams that omit usage.
+`ModelAccounting` is carried by model responses, terminal stream deltas,
+model-finished events, attempts, and model/run spans. It records the provider
+request ID, service tier/region when reported, and one or more `ModelCost`
+results. Each result identifies its pricing domain and one of four sources:
+`provider_reported`, `developer_supplied`, `estimated`, or `unavailable`.
+Unavailable pricing has no numeric amount and always includes a reason such as
+`provider_omitted`, `unknown_model`, or `unsupported_account_terms`. Therefore
+a known zero is never confused with an unknown cost.
+
+OpenRouter Chat Completions maps `usage.cost` and
+`cost_details.upstream_inference_cost` from both complete responses and the
+final streaming usage frame. OpenAI, Anthropic, Gemini Developer API, and
+Vertex AI adapters preserve their detailed token usage and explicitly report
+that provider cost was omitted. Generic OpenAI-compatible endpoints use the
+separate `openai_compatible` pricing domain so a proxy is never priced as the
+OpenAI API by accident.
+
+Applications can opt into the bundled standard pay-as-you-go text catalog:
+
+```go
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition:   definition,
+    Model:        model,
+    CostResolver: lebro.NewOfficialPricingResolver(),
+})
+```
+
+The catalog covers selected OpenAI, Anthropic, Gemini, and Vertex model IDs,
+is pinned to `lebro.OfficialPricingCatalogVersion`, and includes an official
+pricing URL and effective date in each estimate. It does not make network
+calls. Unknown model aliases, nonstandard service tiers, missing usage, and
+dimensions without a published rate return an explicit unavailable result.
+Provider-reported cost always wins and bypasses fallback estimation. Custom
+resolvers implement `CostResolver`; resolver failures do not fail a successful
+model call and are recorded as `resolver_failed`.
+
+Amounts use canonical decimal strings and are aggregated without floating
+point rounding:
+
+```go
+totals, err := lebro.AggregateModelCosts(ctx, store.ModelAttempts(),
+    lebro.ModelAttemptFilter{ThreadID: threadID, From: since})
+```
+
+Totals are grouped by currency and source so estimates are never silently
+combined with provider-reported charges. Legacy `CostMicros` and `Currency`
+fields remain readable for compatibility; new accounting is stored in
+`ModelAttemptRecord.Accounting`.
 
 ## Relationship to `obsv`
 

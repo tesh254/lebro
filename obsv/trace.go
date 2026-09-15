@@ -79,6 +79,11 @@ const (
 	AttrRunStatus     = "run.status"
 	AttrStepPosition  = "step.position"
 	AttrThreadID      = "thread.id"
+	AttrCostSource    = "model.cost.source"
+	AttrCostDomain    = "model.cost.domain"
+	AttrCostCurrency  = "model.cost.currency"
+	AttrCostAmount    = "model.cost.amount"
+	AttrRequestID     = "model.provider_request_id"
 
 	// AttrSensitiveDeltaText accumulates streamed assistant text.
 	AttrSensitiveDeltaText = SensitiveAttr + "model.delta_text"
@@ -114,30 +119,32 @@ type SpanEvent struct {
 // maps and slices reachable from it, so retaining a span past the export call
 // is safe.
 type Span struct {
-	TraceID      TraceID           `json:"trace_id"`
-	SpanID       SpanID            `json:"span_id"`
-	ParentSpanID SpanID            `json:"parent_span_id,omitempty"`
-	Kind         SpanKind          `json:"kind"`
-	Name         string            `json:"name"`
-	RunID        lebro.RunID       `json:"run_id,omitempty"`
-	RunSpanID    SpanID            `json:"run_span_id,omitempty"`
-	StepID       lebro.StepID      `json:"step_id,omitempty"`
-	Step         int               `json:"step,omitempty"`
-	Start        time.Time         `json:"start"`
-	End          time.Time         `json:"end,omitempty"`
-	Duration     time.Duration     `json:"duration,omitempty"`
-	Status       SpanStatus        `json:"status"`
-	Usage        lebro.ModelUsage  `json:"usage,omitzero"`
-	Attributes   map[string]string `json:"attributes,omitempty"`
-	Events       []SpanEvent       `json:"events,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	Err          error             `json:"-"`
+	TraceID      TraceID               `json:"trace_id"`
+	SpanID       SpanID                `json:"span_id"`
+	ParentSpanID SpanID                `json:"parent_span_id,omitempty"`
+	Kind         SpanKind              `json:"kind"`
+	Name         string                `json:"name"`
+	RunID        lebro.RunID           `json:"run_id,omitempty"`
+	RunSpanID    SpanID                `json:"run_span_id,omitempty"`
+	StepID       lebro.StepID          `json:"step_id,omitempty"`
+	Step         int                   `json:"step,omitempty"`
+	Start        time.Time             `json:"start"`
+	End          time.Time             `json:"end,omitempty"`
+	Duration     time.Duration         `json:"duration,omitempty"`
+	Status       SpanStatus            `json:"status"`
+	Usage        lebro.ModelUsage      `json:"usage,omitzero"`
+	Accounting   lebro.ModelAccounting `json:"accounting,omitzero"`
+	Attributes   map[string]string     `json:"attributes,omitempty"`
+	Events       []SpanEvent           `json:"events,omitempty"`
+	Error        string                `json:"error,omitempty"`
+	Err          error                 `json:"-"`
 }
 
 // Clone returns a deep copy of the span. The copy shares no maps or slices with
 // the original, so a caller may retain or mutate it freely.
 func (s Span) Clone() Span {
 	cloned := s
+	cloned.Accounting = s.Accounting.Clone()
 	cloned.Attributes = cloneAttributes(s.Attributes)
 	if len(s.Events) > 0 {
 		events := make([]SpanEvent, len(s.Events))

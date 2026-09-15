@@ -216,6 +216,9 @@ type AgentConfig struct {
 	// result is resolved once before the first model call and takes precedence
 	// over the configured Router and Model.
 	ModelResolver ModelResolver
+	// CostResolver optionally adds developer-supplied or estimated accounting
+	// after each completed provider call. It receives no prompts or secrets.
+	CostResolver CostResolver
 	// Tools resolves schema-backed tool handlers by stable ID. May be nil when
 	// Definition.Tools is empty.
 	Tools *ToolRegistry
@@ -296,6 +299,7 @@ type Agent struct {
 	processors           ProcessorPipeline
 	instructionsResolver InstructionsResolver
 	modelResolver        ModelResolver
+	costResolver         CostResolver
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -414,6 +418,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		processors:           processors,
 		instructionsResolver: config.InstructionsResolver,
 		modelResolver:        config.ModelResolver,
+		costResolver:         config.CostResolver,
 	}, nil
 }
 
@@ -550,15 +555,18 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 		response, attempts, err := a.generateModel(runCtx, runConfig, runID, step, stepID, emitter, newAgentModelAttemptObserver(emitter, a.clock, journal, runID, step, stepID), request)
 		allAttempts = append(allAttempts, attempts...)
-		journal.finishModelCall(response.Usage, response.FinishReason, err)
+		if err == nil {
+			response.Accounting = a.resolveAccounting(runCtx, journal, response, attempts, request.Model)
+		}
+		journal.finishModelCall(response.Usage, response.Accounting, response.FinishReason, err)
 		if err != nil {
 			if cancelledErr := runCtx.Err(); cancelledErr != nil || (!isModelTimeout(err) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))) {
 				cause := preferContextError(err, cancelledErr)
-				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
+				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, cause)
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
 				return a.cancelledWithAttempts(runID, transcript, metadata, step, cause, allAttempts)
 			}
-			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, err)
+			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
 			agentErr := modelAgentError(step, err)
 			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
@@ -579,20 +587,20 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			if compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
 				errors.Is(err, ErrMessageStructuredOutputInvalidJSON) {
 				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
-				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
+				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, structuredErr)
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
 				result := a.failWithAttemptsResult(runID, metadata, step, transcript, structuredErr, allAttempts)
 				return result, structuredErr
 			}
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
-			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
+			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, failure)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
 			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure}
 			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
 			return result, agentErr
 		}
 
-		emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, nil)
+		emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, nil)
 
 		transcript = append(transcript, cloneMessage(response.Message))
 
@@ -977,7 +985,10 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 
 		response, attempts, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, p.threadID, p.metadata, modelStart, p.emitter, newAgentModelAttemptObserver(p.emitter, a.clock, p.journal, p.runID, step, stepID), p.deltas, request, p.streamingModel)
 		allAttempts = append(allAttempts, attempts...)
-		p.journal.finishModelCall(response.Usage, response.FinishReason, streamErr)
+		if streamErr == nil {
+			response.Accounting = a.resolveAccounting(p.ctx, p.journal, response, attempts, request.Model)
+		}
+		p.journal.finishModelCall(response.Usage, response.Accounting, response.FinishReason, streamErr)
 		if streamErr != nil {
 			if hasPartialStreamResponse(response) {
 				transcript = append(transcript, cloneMessage(response.Message))
@@ -985,7 +996,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			cause := streamErr
 			if cancelledErr := p.ctx.Err(); processorCancelled(streamErr) || cancelledErr != nil {
 				cause = preferContextError(streamErr, cancelledErr)
-				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, cause)
+				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, cause)
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
 				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, cause, allAttempts), err: a.cancelledError(step, cause)}
 				return
@@ -995,7 +1006,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			if errors.As(cause, &processorErr) {
 				agentErr = processorAgentError(step, cause)
 			}
-			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, agentErr)
+			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, agentErr)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
@@ -1018,20 +1029,20 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			if p.compiledOutput != nil && response.FinishReason != FinishReasonToolCalls &&
 				errors.Is(err, ErrMessageStructuredOutputInvalidJSON) {
 				structuredErr := &AgentError{Kind: AgentErrorInvalidStructuredOutput, Step: step, Err: errors.New("lebro: structured output must be valid JSON")}
-				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, structuredErr)
+				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, structuredErr)
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, structuredErr)
 				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, structuredErr, allAttempts), err: structuredErr}
 				return
 			}
 			failure := &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
-			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, failure)
+			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, failure)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, failure)
 			agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: failure}
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
 		}
 
-		p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, response.FinishReason, response.Usage, nil)
+		p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, nil)
 		transcript = append(transcript, cloneMessage(response.Message))
 
 		if response.FinishReason != FinishReasonToolCalls {
@@ -1124,6 +1135,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		if err != nil {
 			return ModelResponse{}, attempts, err
 		}
+		response.Accounting = a.resolveAccounting(ctx, observer.journal, response, attempts, request.Model)
 		// Emit deltas representing the complete response so streaming
 		// consumers observe every tool call and the terminal payload.
 		calls := response.Message.ToolCalls.Values()
@@ -1149,6 +1161,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			Reasoning:    response.Message.Reasoning,
 			FinishReason: response.FinishReason,
 			Usage:        response.Usage,
+			Accounting:   response.Accounting.Clone(),
 		}
 		if response.Message.StructuredOutput != "" {
 			terminal.StructuredOutput = response.Message.StructuredOutput
@@ -1173,6 +1186,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		response.Message.StructuredOutput = terminal.StructuredOutput
 		response.FinishReason = terminal.FinishReason
 		response.Usage = terminal.Usage
+		response.Accounting = terminal.Accounting.Clone()
 		encodedCalls, err := NewModelToolCalls(calls...)
 		if err != nil {
 			return ModelResponse{}, attempts, err
@@ -1204,6 +1218,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	var structuredOutput ModelStructuredOutput
 	var finishReason FinishReason
 	var usage ModelUsage
+	var accounting ModelAccounting
 	partialResponse := func() (ModelResponse, error) {
 		finish := finishReason
 		if finish == "" {
@@ -1218,11 +1233,11 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		if len(toolCalls) > 0 {
 			encoded, err := NewModelToolCalls(toolCalls...)
 			if err != nil {
-				return ModelResponse{Message: message, Usage: usage, FinishReason: finish}, fmt.Errorf("lebro: aggregate partial stream tool calls: %w", err)
+				return ModelResponse{Message: message, Usage: usage, Accounting: accounting.Clone(), FinishReason: finish}, fmt.Errorf("lebro: aggregate partial stream tool calls: %w", err)
 			}
 			message.ToolCalls = encoded
 		}
-		return ModelResponse{Message: message, Usage: usage, FinishReason: finish}, nil
+		return ModelResponse{Message: message, Usage: usage, Accounting: accounting.Clone(), FinishReason: finish}, nil
 	}
 	partialFailure := func(streamErr error) (ModelResponse, error) {
 		response, partialErr := partialResponse()
@@ -1249,6 +1264,10 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		if err := delta.Validate(); err != nil {
 			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err})
 			return response, attempts, streamErr
+		}
+		if delta.IsTerminal() {
+			provisional := ModelResponse{Usage: delta.Usage, Accounting: delta.Accounting.Clone(), FinishReason: delta.FinishReason}
+			delta.Accounting = a.resolveAccounting(ctx, observer.journal, provisional, attempts, request.Model)
 		}
 		decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Usage: delta.Usage, Delta: delta})
 		if processorErr != nil {
@@ -1281,6 +1300,9 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		if delta.Usage != (ModelUsage{}) {
 			usage = delta.Usage
+		}
+		if delta.Accounting.ProviderRequestID != "" || len(delta.Accounting.Costs) > 0 {
+			accounting = delta.Accounting.Clone()
 		}
 		if delta.Err != nil {
 			response, streamErr := partialFailure(delta.Err)
@@ -1516,6 +1538,47 @@ func (a *Agent) generateModel(ctx context.Context, config agentRunConfig, runID 
 	result, err := config.router.generateWithAttempts(ctx, request, observer)
 
 	return result.Response, result.Attempts, err
+}
+
+func (a *Agent) resolveAccounting(ctx context.Context, journal *runJournal, response ModelResponse, attempts []ModelAttempt, model string) ModelAccounting {
+	accounting := response.Accounting.Clone()
+	if accounting.HasAvailableCost() {
+		return accounting
+	}
+	if a.costResolver == nil || isNilInterface(a.costResolver) {
+		return accounting
+	}
+	attempt := journal.costResolutionAttempt(response.Usage, accounting)
+	if attempt.Model == "" {
+		attempt.Model = model
+	}
+	if attempt.Provider == "" && len(attempts) > 0 {
+		attempt.Provider = attempts[len(attempts)-1].Provider
+	}
+	if attempt.Provider == "" {
+		attempt.Provider = ProviderID(accounting.Domain())
+	}
+	cost, err := a.costResolver.ResolveCost(ctx, attempt)
+	if err != nil {
+		domain := accounting.Domain()
+		accounting.Costs = append(accounting.Costs, UnavailableModelCost(domain, CostUnavailableResolverFailed))
+		return accounting
+	}
+	if cost.Source == "" {
+		return accounting
+	}
+	if cost.Source == CostProviderReported {
+		domain := accounting.Domain()
+		accounting.Costs = append(accounting.Costs, UnavailableModelCost(domain, CostUnavailableResolverRejected))
+		return accounting
+	}
+	if cost.Validate() != nil {
+		domain := accounting.Domain()
+		accounting.Costs = append(accounting.Costs, UnavailableModelCost(domain, CostUnavailableResolverInvalid))
+		return accounting
+	}
+	accounting.Costs = append(accounting.Costs, cost)
+	return accounting
 }
 
 // newAgentModelAttemptObserver builds the per-model-call observer shared by

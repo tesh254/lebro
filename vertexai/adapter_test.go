@@ -49,6 +49,9 @@ func TestGenerateCallsVertexV1Endpoint(t *testing.T) {
 	if response.FinishReason != lebro.FinishReasonToolCalls || response.Usage.ReasoningTokens != 1 {
 		t.Fatalf("response = %#v", response)
 	}
+	if cost := response.Accounting.Costs[0]; cost.Source != lebro.CostUnavailable || cost.Domain != lebro.PricingDomainVertexAI {
+		t.Fatalf("accounting = %#v", response.Accounting)
+	}
 }
 
 func TestGenerateUsesConfiguredLocation(t *testing.T) {

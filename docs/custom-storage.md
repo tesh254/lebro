@@ -118,6 +118,9 @@ is a legitimate adapter — the contract says what it costs.
   `WorkflowSnapshotRecord`, `ScheduleRecord`, `ScheduleExecutionRecord`,
   `WorkingMemoryFact`, `RunEventRecord`, `ModelAttemptRecord`,
   `ToolExecutionRecord`.
+- Preserve `ModelUsage` cache-read/cache-write fields and the complete
+  `ModelAccounting` value on model attempts and run events. Decimal amounts
+  are strings by design; do not convert them through floating point.
 - The repository semantics Lebro relies on: context cancellation, cursor
   pagination (`PageRequest`/`Page`, `ErrInvalidPage`), `ErrNotFound` for
   missing reads, `ErrConflict` for stale versions, defensive copies (returned

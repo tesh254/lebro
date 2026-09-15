@@ -113,6 +113,34 @@ func TestGenerateMapsTextCompletion(t *testing.T) {
 	}
 }
 
+func TestGenerateDistinguishesMissingAndReportedZeroCost(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		cost       *json.Number
+		wantSource lebro.CostSource
+		wantAmount lebro.Decimal
+	}{
+		{name: "missing", wantSource: lebro.CostUnavailable},
+		{name: "zero", cost: func() *json.Number { value := json.Number("0"); return &value }(), wantSource: lebro.CostProviderReported, wantAmount: "0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := newRecordedServer(t, &observeRequest{}, func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(t, w, http.StatusOK, chatResponse{ID: "gen-1", Choices: []chatChoice{{Message: chatChoiceMessage{Role: "assistant", Content: json.RawMessage(`"ok"`)}, FinishReason: "stop"}}, Usage: chatUsageBody{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2, Cost: test.cost}})
+			})
+			model := newAdapter(t, server, Config{APIKey: "secret", Model: "vendor/model", PricingDomain: lebro.PricingDomainOpenRouter})
+			response, err := model.Generate(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			cost := response.Accounting.Costs[0]
+			if cost.Source != test.wantSource || cost.Amount != test.wantAmount || cost.Domain != lebro.PricingDomainOpenRouter {
+				t.Fatalf("cost = %#v", cost)
+			}
+		})
+	}
+}
+
 func TestGenerateMapsReasoningAndProtectsReasoningWireFields(t *testing.T) {
 	t.Parallel()
 	var observed observeRequest

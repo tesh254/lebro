@@ -872,7 +872,8 @@ func storageContractObservability(t *testing.T, newStore StoreFactory) {
 	events := []runtime.RunEventRecord{
 		{ID: "evt-1", RunID: "run-1", ThreadID: "thread-1", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now},
 		{ID: "evt-2", RunID: "run-1", ThreadID: "thread-1", Sequence: 2, Type: runtime.RunEventModelFinished, Timestamp: now.Add(time.Second),
-			FinishReason: runtime.FinishReasonStop, Usage: runtime.ModelUsage{InputTokens: 4, OutputTokens: 7}, DurationNanos: int64(time.Second)},
+			FinishReason: runtime.FinishReasonStop, Usage: runtime.ModelUsage{InputTokens: 4, OutputTokens: 7, CacheReadTokens: 2},
+			Accounting: runtime.ModelAccounting{ProviderRequestID: "req-event", Costs: []runtime.ModelCost{{Currency: "USD", Amount: "0.002", Source: runtime.CostProviderReported, Domain: runtime.PricingDomainOpenRouter}}}, DurationNanos: int64(time.Second)},
 		{ID: "evt-3", RunID: "run-1", ThreadID: "thread-1", Sequence: 3, Type: runtime.RunEventSucceeded, Timestamp: now.Add(2 * time.Second), Status: runtime.RunStatusSucceeded},
 		{ID: "evt-4", RunID: "run-2", ThreadID: "thread-1", Sequence: 1, Type: runtime.RunEventFailed, Timestamp: now.Add(3 * time.Second),
 			Status: runtime.RunStatusFailed, ErrorKind: string(runtime.AgentErrorToolFailure), ErrorMessage: "lebro: agent tool failure: boom"},
@@ -922,6 +923,9 @@ func storageContractObservability(t *testing.T, newStore StoreFactory) {
 	if len(byType.Records) != 1 || byType.Records[0].Usage.OutputTokens != 7 {
 		t.Fatalf("ListRunEvents(type=model_finished) = %#v, want the usage-bearing event", byType.Records)
 	}
+	if byType.Records[0].Usage.CacheReadTokens != 2 || byType.Records[0].Accounting.ProviderRequestID != "req-event" || byType.Records[0].Accounting.Costs[0].Amount != "0.002" {
+		t.Fatalf("run event accounting round-trip = %#v", byType.Records[0])
+	}
 	byRange, err := obs.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{From: now.Add(2 * time.Second), To: now.Add(4 * time.Second)}, runtime.PageRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -948,7 +952,8 @@ func storageContractObservability(t *testing.T, newStore StoreFactory) {
 			ErrorKind: "rate_limited", ErrorMessage: "rate limited"},
 		{ID: "att-2", RunID: "run-1", ThreadID: "thread-1", Namespace: "tenant-a", OwnerID: "owner-a", StepID: "step-001", Step: 1, Index: 2,
 			Provider: "anthropic", Model: "claude-y", RoutedModel: "claude-y-latest", Status: runtime.ModelAttemptFallback,
-			FinishReason: runtime.FinishReasonStop, Usage: runtime.ModelUsage{InputTokens: 11, OutputTokens: 5, ReasoningTokens: 2, TotalTokens: 18},
+			FinishReason: runtime.FinishReasonStop, Usage: runtime.ModelUsage{InputTokens: 11, OutputTokens: 5, ReasoningTokens: 2, CacheReadTokens: 3, CacheWriteTokens: 2, CacheWrite1hTokens: 1, TotalTokens: 18},
+			ProviderRequestID: "req-attempt", Accounting: runtime.ModelAccounting{ProviderRequestID: "req-attempt", Costs: []runtime.ModelCost{{Currency: "USD", Amount: "0.00125", Source: runtime.CostEstimated, Domain: runtime.PricingDomainAnthropic, CatalogVersion: "test-v1", Provenance: `{"source":"provider_reported"}`}}},
 			StartedAt: now.Add(150 * time.Millisecond), FinishedAt: now.Add(900 * time.Millisecond),
 			ProducedMessageIDs: []string{"run-1-msg-2"}, Metadata: metadata},
 	}
@@ -964,6 +969,9 @@ func storageContractObservability(t *testing.T, newStore StoreFactory) {
 	}
 	if gotAttempts.Records[0].Status != runtime.ModelAttemptFailed || gotAttempts.Records[1].Usage.TotalTokens != 18 {
 		t.Fatalf("ListModelAttempts round-trip mismatch: %#v", gotAttempts.Records)
+	}
+	if got := gotAttempts.Records[1]; got.Usage.CacheWrite1hTokens != 1 || got.Accounting.ProviderRequestID != "req-attempt" || got.Accounting.Costs[0].Amount != "0.00125" {
+		t.Fatalf("model attempt accounting round-trip = %#v", got)
 	}
 	if len(gotAttempts.Records[1].ProducedMessageIDs) != 1 || gotAttempts.Records[1].ProducedMessageIDs[0] != "run-1-msg-2" {
 		t.Fatalf("attempt produced message IDs = %#v", gotAttempts.Records[1].ProducedMessageIDs)
@@ -981,6 +989,12 @@ func storageContractObservability(t *testing.T, newStore StoreFactory) {
 	}
 	if len(openai.Records) != 1 || openai.Records[0].ID != "att-1" {
 		t.Fatalf("ListModelAttempts(provider=openai) = %#v", openai.Records)
+	}
+	if estimated, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{Model: "claude-y", From: now.Add(100 * time.Millisecond), To: now.Add(time.Second), CostSource: runtime.CostEstimated}, runtime.PageRequest{}); err != nil || len(estimated.Records) != 1 || estimated.Records[0].ID != "att-2" {
+		t.Fatalf("ListModelAttempts(cost query) = %#v, %v", estimated, err)
+	}
+	if providerCosts, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{CostSource: runtime.CostProviderReported}, runtime.PageRequest{}); err != nil || len(providerCosts.Records) != 0 {
+		t.Fatalf("ListModelAttempts(provider-reported source query) = %#v, %v", providerCosts, err)
 	}
 	if scoped, err := obs.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{Namespace: "tenant-a", OwnerID: "owner-a"}, runtime.PageRequest{}); err != nil || len(scoped.Records) != 2 {
 		t.Fatalf("ListModelAttempts(scope) = %#v, %v", scoped, err)

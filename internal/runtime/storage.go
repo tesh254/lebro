@@ -140,10 +140,13 @@ type WorkflowRunFilter struct {
 
 // ModelUsage records provider-reported token usage when available.
 type ModelUsage struct {
-	InputTokens     int64 `json:"input_tokens,omitempty"`
-	OutputTokens    int64 `json:"output_tokens,omitempty"`
-	ReasoningTokens int64 `json:"reasoning_tokens,omitempty"`
-	TotalTokens     int64 `json:"total_tokens,omitempty"`
+	InputTokens        int64 `json:"input_tokens,omitempty"`
+	OutputTokens       int64 `json:"output_tokens,omitempty"`
+	ReasoningTokens    int64 `json:"reasoning_tokens,omitempty"`
+	TotalTokens        int64 `json:"total_tokens,omitempty"`
+	CacheReadTokens    int64 `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens   int64 `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens int64 `json:"cache_write_1h_tokens,omitempty"`
 }
 
 // Metadata is validated, namespaced application metadata attached to durable
@@ -201,12 +204,13 @@ type ModelAttemptRecord struct {
 	// ErrorMessage is the safe error text. Raw provider payloads are excluded.
 	ErrorKind    string `json:"error_kind,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
-	// ProviderRequestID, CostMicros, and Currency are recorded only when the
-	// provider reports them; lebro never computes cost itself.
-	ProviderRequestID string   `json:"provider_request_id,omitempty"`
-	CostMicros        int64    `json:"cost_micros,omitempty"`
-	Currency          string   `json:"currency,omitempty"`
-	Metadata          Metadata `json:"metadata,omitempty"`
+	// ProviderRequestID, CostMicros, and Currency are retained for compatibility
+	// with the original attempt schema. New integrations use Accounting.
+	ProviderRequestID string          `json:"provider_request_id,omitempty"`
+	CostMicros        int64           `json:"cost_micros,omitempty"`
+	Currency          string          `json:"currency,omitempty"`
+	Accounting        ModelAccounting `json:"accounting,omitzero"`
+	Metadata          Metadata        `json:"metadata,omitempty"`
 }
 
 // ToolExecutionRecord is the durable record of one tool invocation lifecycle.
@@ -261,6 +265,7 @@ type RunEventRecord struct {
 	Status          RunStatus             `json:"status,omitempty"`
 	FinishReason    FinishReason          `json:"finish_reason,omitempty"`
 	Usage           ModelUsage            `json:"usage,omitempty"`
+	Accounting      ModelAccounting       `json:"accounting,omitzero"`
 	DurationNanos   int64                 `json:"duration_ns,omitempty"`
 	// ErrorKind classifies a reported failure (agent, model, tool, or context
 	// kind); ErrorMessage is its safe text. Raw provider payloads stay out.
@@ -288,12 +293,16 @@ type RunEventFilter struct {
 // ModelAttemptFilter narrows a ListModelAttempts query. Zero values match
 // anything.
 type ModelAttemptFilter struct {
-	RunID     RunID
-	ThreadID  ThreadID
-	Namespace string
-	OwnerID   string
-	Provider  ProviderID
-	Status    ModelAttemptStatus
+	RunID      RunID
+	ThreadID   ThreadID
+	Namespace  string
+	OwnerID    string
+	Provider   ProviderID
+	Model      string
+	Status     ModelAttemptStatus
+	From       time.Time
+	To         time.Time
+	CostSource CostSource
 }
 
 // ToolExecutionFilter narrows a ListToolExecutions query. Zero values match

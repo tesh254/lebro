@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+- Add precise model cost accounting with OpenRouter-reported streaming and
+  response costs, explicit unavailable outcomes for OpenAI, Anthropic, Gemini,
+  Vertex AI, and compatible endpoints, an opt-in dated official pricing
+  resolver, exact aggregation, durable store support, and cost-aware metrics
+  and traces.
+
 ### Added
 
 - Add independent image/video/transcription/speech contracts, OpenAI and OpenRouter media adapters, image/video agent tools, and a bridge to voice sessions.

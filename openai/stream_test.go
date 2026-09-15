@@ -19,6 +19,48 @@ func TestModelStreamImplementsStreamingModel(t *testing.T) {
 	var _ lebro.StreamingModel = (*Model)(nil)
 }
 
+func TestOpenRouterStreamEmitsFinalUsageAndZeroCostExactlyOnce(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"gen-123\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"gen-123\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":2,\"total_tokens\":12,\"prompt_tokens_details\":{\"cached_tokens\":4},\"cost\":0,\"cost_details\":{\"upstream_inference_cost\":0}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	model := newAdapter(t, server, Config{APIKey: "test-key", Model: "vendor/model", PricingDomain: lebro.PricingDomainOpenRouter})
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	terminalCount := 0
+	for {
+		delta, nextErr := reader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		if !delta.IsTerminal() {
+			continue
+		}
+		terminalCount++
+		if delta.Usage.CacheReadTokens != 4 || delta.Accounting.ProviderRequestID != "gen-123" {
+			t.Fatalf("terminal metadata = %#v", delta)
+		}
+		if len(delta.Accounting.Costs) != 1 || delta.Accounting.Costs[0].Source != lebro.CostProviderReported || delta.Accounting.Costs[0].Amount != "0" {
+			t.Fatalf("terminal cost = %#v, want known provider-reported zero", delta.Accounting.Costs)
+		}
+	}
+	if terminalCount != 1 {
+		t.Fatalf("terminal delta count = %d, want 1", terminalCount)
+	}
+}
+
 func TestModelStreamDeliversTextDeltas(t *testing.T) {
 	t.Parallel()
 
