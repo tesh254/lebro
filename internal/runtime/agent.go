@@ -983,9 +983,9 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			request = *decision.Request
 		}
 
-		response, attempts, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, p.threadID, p.metadata, modelStart, p.emitter, newAgentModelAttemptObserver(p.emitter, a.clock, p.journal, p.runID, step, stepID), p.deltas, request, p.streamingModel)
+		response, attempts, resolved, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, p.threadID, p.metadata, modelStart, p.emitter, newAgentModelAttemptObserver(p.emitter, a.clock, p.journal, p.runID, step, stepID), p.deltas, request, p.streamingModel)
 		allAttempts = append(allAttempts, attempts...)
-		if streamErr == nil {
+		if streamErr == nil && !resolved {
 			response.Accounting = a.resolveAccounting(p.ctx, p.journal, response, attempts, request.Model)
 		}
 		p.journal.finishModelCall(response.Usage, response.Accounting, response.FinishReason, streamErr)
@@ -1117,8 +1117,9 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 // implement StreamingModel, it falls back to Generate and emits a single
 // delta carrying the full response so streaming callers observe equivalent
 // output shape. The observer feeds run events and the durable journal for
-// every routed attempt and the direct-model call.
-func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, threadID ThreadID, metadata map[string]string, modelStart time.Time, emitter *runEmitter, observer *agentModelAttemptObserver, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, []ModelAttempt, error) {
+// every routed attempt and the direct-model call. The resolved flag reports
+// whether cost resolution already ran, so the caller resolves at most once.
+func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID StepID, threadID ThreadID, metadata map[string]string, modelStart time.Time, emitter *runEmitter, observer *agentModelAttemptObserver, deltas chan<- StreamDelta, request ModelRequest, streamingModel StreamingModel) (ModelResponse, []ModelAttempt, bool, error) {
 	if streamingModel == nil {
 		var response ModelResponse
 		var err error
@@ -1133,7 +1134,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			response, err = a.model.Generate(ctx, request)
 		}
 		if err != nil {
-			return ModelResponse{}, attempts, err
+			return ModelResponse{}, attempts, false, err
 		}
 		response.Accounting = a.resolveAccounting(ctx, observer.journal, response, attempts, request.Model)
 		// Emit deltas representing the complete response so streaming
@@ -1144,15 +1145,15 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			delta := StreamDelta{ToolCall: &call}
 			decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Delta: delta})
 			if processorErr != nil {
-				return ModelResponse{}, attempts, processorErr
+				return ModelResponse{}, attempts, false, processorErr
 			}
 			delta = *decision.Delta
 			if err := delta.Validate(); err != nil {
-				return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+				return ModelResponse{}, attempts, false, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			}
 			emitter.emitDelta(runID, step, stepID, delta)
 			if !sendDelta(ctx, deltas, delta) {
-				return ModelResponse{}, attempts, context.Canceled
+				return ModelResponse{}, attempts, false, context.Canceled
 			}
 			calls[i] = *delta.ToolCall
 		}
@@ -1168,18 +1169,18 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Usage: terminal.Usage, Delta: terminal})
 		if processorErr != nil {
-			return ModelResponse{}, attempts, processorErr
+			return ModelResponse{}, attempts, false, processorErr
 		}
 		terminal = *decision.Delta
 		if terminal.Text == "" && terminal.Reasoning.IsZero() && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
 			terminal.FinishReason = FinishReasonUnspecified
 		}
 		if err := terminal.Validate(); err != nil {
-			return ModelResponse{}, attempts, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			return ModelResponse{}, attempts, false, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		emitter.emitDelta(runID, step, stepID, terminal)
 		if !sendDelta(ctx, deltas, terminal) {
-			return ModelResponse{}, attempts, context.Canceled
+			return ModelResponse{}, attempts, false, context.Canceled
 		}
 		response.Message.Content = terminal.Text
 		response.Message.Reasoning = terminal.Reasoning
@@ -1189,15 +1190,16 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		response.Accounting = terminal.Accounting.Clone()
 		encodedCalls, err := NewModelToolCalls(calls...)
 		if err != nil {
-			return ModelResponse{}, attempts, err
+			return ModelResponse{}, attempts, false, err
 		}
 		response.Message.ToolCalls = encodedCalls
-		return response, attempts, nil
+		return response, attempts, true, nil
 	}
 
 	var reader StreamReader
 	var attempts []ModelAttempt
 	var err error
+	var resolved bool
 	if a.router != nil {
 		result, streamErr := a.router.streamWithAttempts(ctx, request, observer)
 		reader = result.Reader
@@ -1208,7 +1210,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		reader, err = streamingModel.Stream(ctx, request)
 	}
 	if err != nil {
-		return ModelResponse{}, attempts, err
+		return ModelResponse{}, attempts, false, err
 	}
 	defer func() { _ = reader.Close() }()
 
@@ -1247,38 +1249,39 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 	for {
 		if err := ctx.Err(); err != nil {
 			response, streamErr := partialFailure(err)
-			return response, attempts, streamErr
+			return response, attempts, false, streamErr
 		}
 		delta, derr := reader.Next()
 		if errors.Is(derr, io.EOF) {
 			if err := ctx.Err(); err != nil {
 				response, streamErr := partialFailure(err)
-				return response, attempts, streamErr
+				return response, attempts, resolved, streamErr
 			}
 			break
 		}
 		if derr != nil {
 			response, streamErr := partialFailure(derr)
-			return response, attempts, streamErr
+			return response, attempts, resolved, streamErr
 		}
 		if err := delta.Validate(); err != nil {
 			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err})
-			return response, attempts, streamErr
+			return response, attempts, resolved, streamErr
 		}
 		if delta.IsTerminal() {
 			provisional := ModelResponse{Usage: delta.Usage, Accounting: delta.Accounting.Clone(), FinishReason: delta.FinishReason}
 			delta.Accounting = a.resolveAccounting(ctx, observer.journal, provisional, attempts, request.Model)
+			resolved = true
 		}
 		decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Usage: delta.Usage, Delta: delta})
 		if processorErr != nil {
 			response, streamErr := partialFailure(processorErr)
-			return response, attempts, streamErr
+			return response, attempts, resolved, streamErr
 		}
 		delta = *decision.Delta
 		emitter.emitDelta(runID, step, stepID, delta)
 		if !sendDelta(ctx, deltas, delta) {
 			response, streamErr := partialFailure(context.Canceled)
-			return response, attempts, streamErr
+			return response, attempts, resolved, streamErr
 		}
 		if delta.Text != "" {
 			contentBuilder.WriteString(delta.Text)
@@ -1287,7 +1290,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		reasoning, reasoningErr = appendReasoning(reasoning, delta.Reasoning)
 		if reasoningErr != nil {
 			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr})
-			return response, attempts, streamErr
+			return response, attempts, resolved, streamErr
 		}
 		if delta.ToolCall != nil {
 			toolCalls = append(toolCalls, cloneToolCallValue(*delta.ToolCall))
@@ -1306,15 +1309,15 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		if delta.Err != nil {
 			response, streamErr := partialFailure(delta.Err)
-			return response, attempts, streamErr
+			return response, attempts, resolved, streamErr
 		}
 	}
 
 	response, err := partialResponse()
 	if err != nil {
-		return response, attempts, err
+		return response, attempts, resolved, err
 	}
-	return response, attempts, nil
+	return response, attempts, resolved, nil
 }
 
 func hasPartialStreamResponse(response ModelResponse) bool {

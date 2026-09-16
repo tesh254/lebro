@@ -136,6 +136,48 @@ func structuredDeltaStream(value json.RawMessage) []StreamDelta {
 	}
 }
 
+func TestAgentRunStreamResolvesUnavailableCostOnce(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel([]StreamDelta{
+		{Text: "hi"},
+		{FinishReason: FinishReasonStop, Usage: ModelUsage{InputTokens: 2, OutputTokens: 1, TotalTokens: 3}},
+	})
+	calls := 0
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "cost-stream", Model: "fixture-model", Instructions: "be brief"},
+		Model:      model,
+		CostResolver: CostResolverFunc(func(context.Context, ModelAttemptRecord) (ModelCost, error) {
+			calls++
+			return ModelCost{}, errors.New("pricing service offline")
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+
+	var last StreamDelta
+	for delta := range run.Deltas {
+		last = delta
+	}
+	result, runErr := run.Wait()
+	if runErr != nil || result.Status != RunStatusSucceeded {
+		t.Fatalf("stream result %+v %v", result, runErr)
+	}
+	if calls != 1 {
+		t.Fatalf("cost resolver invoked %d times, want 1", calls)
+	}
+	if len(last.Accounting.Costs) != 1 || last.Accounting.Costs[0].Source != CostUnavailable {
+		t.Fatalf("terminal delta accounting = %#v", last.Accounting)
+	}
+}
+
 func TestAgentRunStreamTextOnlyEmitsOrderedDeltas(t *testing.T) {
 	t.Parallel()
 
