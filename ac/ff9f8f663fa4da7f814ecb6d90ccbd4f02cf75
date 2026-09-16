@@ -1,0 +1,27 @@
+internal/runtime/agent.go
+  s_82baf352a5363e::t_0a5ee973f94c0e 1202,1213
+  s_82baf352a5363e::t_bf1a543710a58f 1172,1179,1183,1193,1196
+  s_82baf352a5363e::t_26984f8806491a 1137
+  s_82baf352a5363e::t_cf488a99ae6cc5 1120-1122
+  s_82baf352a5363e::t_2d822082b9fb86 986,988
+  s_82baf352a5363e::t_522ff30af9fb31 1148,1152,1156
+  s_82baf352a5363e::t_aa82998b4e74d5 1252,1258,1264,1268,1273,1278,1284,1293,1312,1318,1320
+internal/runtime/agent_stream_test.go
+  s_82baf352a5363e::t_2e78711972295c 139-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "acff9f8f663fa4da7f814ecb6d90ccbd4f02cf75",
+  "prompts": {},
+  "sessions": {
+    "s_82baf352a5363e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f72f9be31ffelbqvx3k79E2s29",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
