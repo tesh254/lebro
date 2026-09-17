@@ -54,7 +54,9 @@ The module pins Go 1.26.5 with Go's `toolchain` directive. With the default
 - Root runtime contracts: [`lebro`](.)
 - HTTP server, typed client, OpenAPI, and streaming contract:
   [`httpapi`](httpapi)
-- MCP client/server bridge: [`mcp`](mcp)
+- MCP client/server bridge: [`mcp`](mcp), including modern stateless and
+  legacy stateful Streamable HTTP clients with negotiated-mode health; see
+  [MCP usage](docs/mcp.md#streamable-http-connections).
 - Optional channels, voice, observability, and evaluations:
   [`channels`](channels), [`voice`](voice), [`obsv`](obsv), and
   [`evals`](evals)

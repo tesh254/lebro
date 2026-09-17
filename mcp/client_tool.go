@@ -62,10 +62,13 @@ func (t *remoteTool) Execute(ctx context.Context, input json.RawMessage) (json.R
 		arguments = json.RawMessage(`{}`)
 	}
 
+	t.client.requestMu.Lock()
+	t.client.touchStreamable()
 	result, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      t.remoteName,
 		Arguments: arguments,
 	})
+	t.client.requestMu.Unlock()
 	if err != nil {
 		// Surface cancellation as the bare context error so the execution
 		// boundary reports "cancelled" instead of burying it in a handler
@@ -77,6 +80,7 @@ func (t *remoteTool) Execute(ctx context.Context, input json.RawMessage) (json.R
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
+		err = t.client.classifyStreamableError(err)
 		return nil, &RemoteToolError{
 			ServerName: t.serverName,
 			ToolName:   t.remoteName,

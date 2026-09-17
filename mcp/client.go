@@ -35,6 +35,14 @@ type Client struct {
 
 	mu      sync.Mutex
 	session *mcpsdk.ClientSession
+
+	// requestMu keeps calls that share a legacy HTTP session in order. The MCP
+	// SDK is safe for concurrent use, but a stateful server may attach meaning
+	// to the sequence of related calls. Stateless and non-HTTP clients pay only
+	// the small mutex cost and retain their existing API.
+	requestMu sync.Mutex
+
+	streamable *streamableHTTPState
 }
 
 // NewClient creates a client for a remote MCP server. It panics when required
@@ -91,6 +99,13 @@ func (c *Client) Close() error {
 	c.mu.Lock()
 	session := c.session
 	c.session = nil
+	if c.streamable != nil {
+		if c.streamable.idleTimer != nil {
+			c.streamable.idleTimer.Stop()
+		}
+		c.streamable.health.Connected = false
+		c.streamable.health.Closed = true
+	}
 	c.mu.Unlock()
 	if session == nil {
 		return nil
@@ -127,6 +142,9 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]lebro.Tool, error) {
 			Err:        errors.New("lebro/mcp: client is not connected"),
 		}
 	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	c.touchStreamable()
 
 	var (
 		tools  []lebro.Tool
@@ -136,6 +154,7 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]lebro.Tool, error) {
 	for {
 		result, err := session.ListTools(ctx, &mcpsdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
+			err = c.classifyStreamableError(err)
 			return nil, &RemoteDiscoveryError{ServerName: c.config.ServerName, Err: err}
 		}
 		for _, remote := range result.Tools {
