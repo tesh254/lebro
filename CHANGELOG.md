@@ -12,6 +12,15 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Streamable HTTP MCP client lifecycle support. `mcp.Client` now offers
+  `ConnectStreamableHTTP`, `ConnectionHealth`, and `Reconnect`, negotiating
+  modern 2026-07-28 stateless servers and legacy initialized sessions through
+  the Go MCP SDK. Stateful calls retain the SDK-managed session only for one
+  client, serialize related operations, support explicit close or optional idle
+  expiry, and surface missing/404 sessions as `ErrRemoteSessionLost` without
+  replaying the failed operation. Application-owned tenant/principal partition
+  and legacy `/sse` + `/message` remain outside this API.
+
 - Add independent image/video/transcription/speech contracts, OpenAI and OpenRouter media adapters, image/video agent tools, and a bridge to voice sessions.
 - Add bounded asset I/O, application storage hooks, optional durable video-job repositories for Memory/SQLite/Postgres, tenant scoping and safe attempt metadata. SQL stores require migration. Existing Model/Store interfaces and transcripts remain compatible.
 - Add media examples and application integration guidance. Credential-free fixtures cover the adapters; live-provider verification remains opt-in. Additive public APIs require the next minor release.
