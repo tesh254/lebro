@@ -40,15 +40,23 @@ type ServerConfig struct {
 	// PageSize is the maximum number of items returned in a single list
 	// response. Zero uses the SDK default (1000).
 	PageSize int
+	// RequestResolver resolves the explicitly granted capabilities for one HTTP
+	// request. When set, StreamableHTTPHandler builds an isolated MCP server for
+	// every request from its result; capabilities exposed with ExposeTool,
+	// ExposeAgent, and ExposeWorkflow are not included. Applications own
+	// authentication and policy and should return only grants for the caller.
+	RequestResolver RequestResolver
 }
 
 // Server exposes selected lebro tools, agents, and workflows through an MCP
 // server. Only explicitly registered primitives are visible to MCP clients.
 // The zero value is not usable; construct one with NewServer.
 type Server struct {
-	mcpServer *mcpsdk.Server
-	mu        sync.Mutex
-	exposed   map[string]struct{}
+	mcpServer  *mcpsdk.Server
+	mu         sync.Mutex
+	exposed    map[string]struct{}
+	config     ServerConfig
+	validators *sync.Map
 }
 
 // NewServer creates an MCP server that exposes lebro primitives. The server
@@ -70,8 +78,10 @@ func NewServer(config ServerConfig) *Server {
 		opts.PageSize = config.PageSize
 	}
 	return &Server{
-		mcpServer: mcpsdk.NewServer(config.Implementation, opts),
-		exposed:   make(map[string]struct{}),
+		mcpServer:  mcpsdk.NewServer(config.Implementation, opts),
+		exposed:    make(map[string]struct{}),
+		config:     config,
+		validators: &sync.Map{},
 	}
 }
 
@@ -107,9 +117,12 @@ func (s *Server) StreamableHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) http.
 			PropagateRequestCancellation: true,
 		}
 	}
-	return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
-		return s.mcpServer
-	}, opts)
+	if s.config.RequestResolver == nil {
+		return mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server {
+			return s.mcpServer
+		}, opts)
+	}
+	return s.requestScopedHTTPHandler(opts)
 }
 
 // registerName reserves a tool name in the allow-list. It returns an error if

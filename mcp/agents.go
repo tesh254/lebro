@@ -54,7 +54,23 @@ func (s *Server) ExposeAgent(agent *lebro.Agent) error {
 	if agent == nil {
 		return errors.New("lebro/mcp: agent is nil")
 	}
-	def := agent.Definition()
+	return s.ExposeAgentAdapter(AgentAdapter{Definition: agent.Definition(), Run: agent.Run})
+}
+
+// ExposeAgentAdapter registers an agent execution adapter as an MCP tool. Use
+// it when the application stores published agent definitions separately from
+// an in-memory *lebro.Agent.
+func (s *Server) ExposeAgentAdapter(adapter AgentAdapter) error {
+	if s.config.RequestResolver != nil {
+		return errors.New("lebro/mcp: expose adapters through RequestResolver when request-scoped exposure is configured")
+	}
+	if adapter.Run == nil {
+		return errors.New("lebro/mcp: agent adapter Run is required")
+	}
+	def := adapter.Definition
+	if def.ID == "" {
+		return errors.New("lebro/mcp: agent adapter definition ID is required")
+	}
 	toolName := "agent." + string(def.ID)
 	if err := s.registerName(toolName); err != nil {
 		return err
@@ -95,7 +111,7 @@ func (s *Server) ExposeAgent(agent *lebro.Agent) error {
 		runInput := lebro.RunInput{
 			Messages: messages,
 		}
-		result, err := agent.Run(ctx, runInput)
+		result, err := adapter.Run(ctx, runInput)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err

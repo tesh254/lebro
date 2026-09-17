@@ -18,47 +18,7 @@ func (s *Server) ExposeTool(tool *lebro.RegisteredTool) error {
 	if tool == nil {
 		return errors.New("lebro/mcp: tool is nil")
 	}
-	def := tool.Definition()
-
-	inputSchema, err := normalizeInputSchema(def.InputSchema)
-	if err != nil {
-		return fmt.Errorf("lebro/mcp: tool %q: %w", def.ID, err)
-	}
-
-	var outputSchema json.RawMessage
-	if len(def.OutputSchema) > 0 {
-		outputSchema, err = normalizeOutputSchema(def.OutputSchema)
-		if err != nil {
-			return fmt.Errorf("lebro/mcp: tool %q: %w", def.ID, err)
-		}
-	}
-
-	if err := s.registerName(string(def.ID)); err != nil {
-		return err
-	}
-
-	mcpTool := &mcpsdk.Tool{
-		Name:        string(def.ID),
-		Description: def.Description,
-		InputSchema: inputSchema,
-	}
-	if len(outputSchema) > 0 {
-		mcpTool.OutputSchema = outputSchema
-	}
-
-	handler := func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-		arguments := req.Params.Arguments
-		if len(arguments) == 0 {
-			arguments = json.RawMessage(`{}`)
-		}
-		result := tool.Execute(ctx, lebro.ToolExecutionRequest{
-			Arguments: arguments,
-		})
-		return toolResultToMCP(result)
-	}
-
-	s.mcpServer.AddTool(mcpTool, handler)
-	return nil
+	return s.exposeTool(tool.Definition(), tool.Execute, nil)
 }
 
 // toolResultToMCP converts a lebro ToolExecutionResult to an MCP CallToolResult.
