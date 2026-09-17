@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -101,6 +102,9 @@ func (s *Server) ExposeWorkflowAdapter(adapter WorkflowAdapter) error {
 	if len(adapter.InputSchema) > 0 && adapter.ValidateInput == nil {
 		return errors.New("lebro/mcp: workflow adapter ValidateInput is required when InputSchema is set")
 	}
+	if err := validateWorkflowAdapterSchema(adapter.InputSchema); err != nil {
+		return err
+	}
 	def := adapter.Definition
 	toolName := "workflow." + string(def.ID)
 	if err := s.registerName(toolName); err != nil {
@@ -151,6 +155,16 @@ func (s *Server) ExposeWorkflowAdapter(adapter WorkflowAdapter) error {
 	}
 
 	s.mcpServer.AddTool(mcpTool, handler)
+	return nil
+}
+
+func validateWorkflowAdapterSchema(schema json.RawMessage) error {
+	if len(schema) == 0 {
+		return nil
+	}
+	if !json.Valid(schema) || bytes.Equal(bytes.TrimSpace(schema), []byte("null")) {
+		return errors.New("lebro/mcp: workflow adapter InputSchema must be a JSON Schema")
+	}
 	return nil
 }
 

@@ -216,18 +216,38 @@ func (s *Server) exposeTool(def lebro.ToolDefinition, execute func(context.Conte
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		if validators != nil {
-			if err := validators.input.Validate(arguments); err != nil {
-				return toolResultToMCP(lebro.ToolExecutionResult{ToolID: def.ID, State: lebro.ToolExecutionInvalidInput, Err: err})
-			}
-		}
-		result := execute(ctx, lebro.ToolExecutionRequest{Arguments: arguments})
-		if result.State == lebro.ToolExecutionSucceeded && validators != nil && validators.output != nil {
-			if err := validators.output.Validate(result.Output); err != nil {
-				result = lebro.ToolExecutionResult{ToolID: def.ID, State: lebro.ToolExecutionInvalidOutput, Err: err}
-			}
-		}
-		return toolResultToMCP(result)
+		return toolResultToMCP(executeAdapterTool(ctx, def.ID, arguments, execute, validators))
 	})
 	return nil
+}
+
+func executeAdapterTool(ctx context.Context, id lebro.ToolID, arguments json.RawMessage, execute func(context.Context, lebro.ToolExecutionRequest) lebro.ToolExecutionResult, validators *toolValidators) (result lebro.ToolExecutionResult) {
+	if ctx == nil {
+		return lebro.ToolExecutionResult{ToolID: id, State: lebro.ToolExecutionHandlerError, Err: errors.New("lebro/mcp: tool context is nil")}
+	}
+	if err := ctx.Err(); err != nil {
+		return lebro.ToolExecutionResult{ToolID: id, State: lebro.ToolExecutionCancelled, Err: err}
+	}
+	if validators != nil {
+		if err := validators.input.Validate(arguments); err != nil {
+			return lebro.ToolExecutionResult{ToolID: id, State: lebro.ToolExecutionInvalidInput, Err: err}
+		}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = lebro.ToolExecutionResult{ToolID: id, State: lebro.ToolExecutionPanicked, Err: &lebro.ToolPanicError{Value: recovered}}
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			result = lebro.ToolExecutionResult{ToolID: id, State: lebro.ToolExecutionCancelled, Err: err}
+			return
+		}
+		result.ToolID = id
+		if result.State == lebro.ToolExecutionSucceeded && validators != nil && validators.output != nil {
+			if err := validators.output.Validate(result.Output); err != nil {
+				result = lebro.ToolExecutionResult{ToolID: id, State: lebro.ToolExecutionInvalidOutput, Err: err}
+			}
+		}
+	}()
+	return execute(ctx, lebro.ToolExecutionRequest{Arguments: arguments})
 }

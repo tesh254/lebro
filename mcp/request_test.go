@@ -49,7 +49,7 @@ func TestRequestScopedExposure_IsolatedConcurrentAndRevocable(t *testing.T) {
 	defer httpServer.Close()
 
 	for _, caller := range []string{"alpha", "beta"} {
-		body := requestScopedRPC(t, httpServer.URL, "tools/list", map[string]any{}, caller)
+		body := mustRequestScopedRPC(t, httpServer.URL, "tools/list", map[string]any{}, caller)
 		if !strings.Contains(body, `"tenant.`+caller+`"`) || strings.Contains(body, "tenant."+otherCaller(caller)) {
 			t.Fatalf("tools/list for %q = %s", caller, body)
 		}
@@ -59,7 +59,11 @@ func TestRequestScopedExposure_IsolatedConcurrentAndRevocable(t *testing.T) {
 	for _, caller := range []string{"alpha", "beta"} {
 		caller := caller
 		wg.Go(func() {
-			body := requestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": "tenant." + caller, "arguments": map[string]any{}}, caller)
+			body, err := requestScopedRPC(httpServer.URL, "tools/call", map[string]any{"name": "tenant." + caller, "arguments": map[string]any{}}, caller)
+			if err != nil {
+				t.Errorf("tools/call for %q: %v", caller, err)
+				return
+			}
 			if !strings.Contains(body, `"caller":"`+caller+`"`) {
 				t.Errorf("tools/call for %q = %s", caller, body)
 			}
@@ -70,7 +74,7 @@ func TestRequestScopedExposure_IsolatedConcurrentAndRevocable(t *testing.T) {
 		t.Fatalf("calls = %d, want 2", got)
 	}
 
-	if body := requestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": "tenant.alpha", "arguments": map[string]any{}}, "denied"); !strings.Contains(body, "error") {
+	if body := mustRequestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": "tenant.alpha", "arguments": map[string]any{}}, "denied"); !strings.Contains(body, "error") {
 		t.Fatalf("denied tools/call = %s, want error", body)
 	}
 	if got := calls.Load(); got != 2 {
@@ -78,7 +82,7 @@ func TestRequestScopedExposure_IsolatedConcurrentAndRevocable(t *testing.T) {
 	}
 
 	revoked.Store(true)
-	if body := requestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": "tenant.alpha", "arguments": map[string]any{}}, "alpha"); !strings.Contains(body, "error") {
+	if body := mustRequestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": "tenant.alpha", "arguments": map[string]any{}}, "alpha"); !strings.Contains(body, "error") {
 		t.Fatalf("revoked tools/call = %s, want error", body)
 	}
 	if got := calls.Load(); got != 2 {
@@ -95,7 +99,10 @@ func TestRequestResolver_PublicError(t *testing.T) {
 	})
 	httpServer := httptest.NewServer(server.StreamableHTTPHandler(nil))
 	defer httpServer.Close()
-	response := requestScopedResponse(t, httpServer.URL, "tools/list", map[string]any{}, "")
+	response, err := requestScopedResponse(httpServer.URL, "tools/list", map[string]any{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
@@ -103,6 +110,94 @@ func TestRequestResolver_PublicError(t *testing.T) {
 	}
 	if response.StatusCode != http.StatusUnauthorized || string(body) != "invalid access token\n" {
 		t.Fatalf("response = %d %q", response.StatusCode, body)
+	}
+}
+
+func TestRequestScopedExposure_AgentAndWorkflowRevocation(t *testing.T) {
+	var agentCalls, workflowCalls atomic.Int64
+	var revoked atomic.Bool
+	server := mcp.NewServer(mcp.ServerConfig{
+		Implementation: &mcpsdk.Implementation{Name: "request-scoped-runs", Version: "test"},
+		RequestResolver: func(r *http.Request) (mcp.RequestExposure, error) {
+			caller, _ := r.Context().Value(callerContextKey{}).(string)
+			if revoked.Load() || caller == "denied" {
+				return mcp.RequestExposure{}, nil
+			}
+			return mcp.RequestExposure{
+				Agents: []mcp.AgentAdapter{{
+					Definition: lebro.WorkflowDefinition{ID: lebro.WorkflowID("published-agent-" + caller), Description: "Published agent"},
+					Run: func(ctx context.Context, _ lebro.RunInput) (lebro.RunResult, error) {
+						if got, _ := ctx.Value(callerContextKey{}).(string); got != caller {
+							return lebro.RunResult{}, context.Canceled
+						}
+						agentCalls.Add(1)
+						return lebro.RunResult{Messages: []lebro.Message{{Role: lebro.RoleAssistant, Content: caller}}}, nil
+					},
+				}},
+				Workflows: []mcp.WorkflowAdapter{{
+					Definition: lebro.WorkflowDefinition{ID: lebro.WorkflowID("published-workflow-" + caller), Description: "Published workflow"},
+					Run: func(ctx context.Context, _ lebro.WorkflowRunInput) (lebro.WorkflowRunResult, error) {
+						if got, _ := ctx.Value(callerContextKey{}).(string); got != caller {
+							return lebro.WorkflowRunResult{}, context.Canceled
+						}
+						workflowCalls.Add(1)
+						return lebro.WorkflowRunResult{Output: json.RawMessage(`{"caller":"` + caller + `"}`)}, nil
+					},
+				}},
+			}, nil
+		},
+	})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller := r.Header.Get("X-Caller")
+		server.StreamableHTTPHandler(nil).ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), callerContextKey{}, caller)))
+	})
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	for _, caller := range []string{"alpha", "beta"} {
+		body := mustRequestScopedRPC(t, httpServer.URL, "tools/list", map[string]any{}, caller)
+		for _, name := range []string{"agent.published-agent-" + caller, "workflow.published-workflow-" + caller} {
+			if !strings.Contains(body, name) {
+				t.Fatalf("tools/list for %q missing %q: %s", caller, name, body)
+			}
+		}
+	}
+
+	var wg sync.WaitGroup
+	for _, call := range []struct {
+		caller, name string
+		arguments    map[string]any
+	}{
+		{"alpha", "agent.published-agent-alpha", map[string]any{"messages": []map[string]string{{"content": "hello"}}}},
+		{"beta", "workflow.published-workflow-beta", map[string]any{}},
+	} {
+		call := call
+		wg.Go(func() {
+			if _, err := requestScopedRPC(httpServer.URL, "tools/call", map[string]any{"name": call.name, "arguments": call.arguments}, call.caller); err != nil {
+				t.Errorf("tools/call %q: %v", call.name, err)
+			}
+		})
+	}
+	wg.Wait()
+	if agentCalls.Load() != 1 || workflowCalls.Load() != 1 {
+		t.Fatalf("calls = agent:%d workflow:%d", agentCalls.Load(), workflowCalls.Load())
+	}
+
+	for _, name := range []string{"agent.published-agent-alpha", "workflow.published-workflow-alpha"} {
+		body := mustRequestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": name, "arguments": map[string]any{}}, "denied")
+		if !strings.Contains(body, "error") {
+			t.Fatalf("denied %q = %s", name, body)
+		}
+	}
+	revoked.Store(true)
+	for _, name := range []string{"agent.published-agent-alpha", "workflow.published-workflow-alpha"} {
+		body := mustRequestScopedRPC(t, httpServer.URL, "tools/call", map[string]any{"name": name, "arguments": map[string]any{}}, "alpha")
+		if !strings.Contains(body, "error") {
+			t.Fatalf("revoked %q = %s", name, body)
+		}
+	}
+	if agentCalls.Load() != 1 || workflowCalls.Load() != 1 {
+		t.Fatalf("denied/revoked calls ran adapters: agent:%d workflow:%d", agentCalls.Load(), workflowCalls.Load())
 	}
 }
 
@@ -135,19 +230,29 @@ func TestExposeToolAdapter_ValidatesSchemaBoundary(t *testing.T) {
 	}
 }
 
-func requestScopedRPC(t *testing.T, url, method string, params map[string]any, caller string) string {
+func mustRequestScopedRPC(t *testing.T, url, method string, params map[string]any, caller string) string {
 	t.Helper()
-	response := requestScopedResponse(t, url, method, params, caller)
-	defer func() { _ = response.Body.Close() }()
-	body, err := io.ReadAll(response.Body)
+	body, err := requestScopedRPC(url, method, params, caller)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(body)
+	return body
 }
 
-func requestScopedResponse(t *testing.T, url, method string, params map[string]any, caller string) *http.Response {
-	t.Helper()
+func requestScopedRPC(url, method string, params map[string]any, caller string) (string, error) {
+	response, err := requestScopedResponse(url, method, params, caller)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(body), nil
+}
+
+func requestScopedResponse(url, method string, params map[string]any, caller string) (*http.Response, error) {
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": method,
 		"params": map[string]any{
@@ -159,11 +264,11 @@ func requestScopedResponse(t *testing.T, url, method string, params map[string]a
 		},
 	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	requestParams := request["params"].(map[string]any)
 	for key, value := range params {
@@ -171,11 +276,11 @@ func requestScopedResponse(t *testing.T, url, method string, params map[string]a
 	}
 	body, err = json.Marshal(request)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -187,9 +292,9 @@ func requestScopedResponse(t *testing.T, url, method string, params map[string]a
 	req.Header.Set("X-Caller", caller)
 	response, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return nil, err
 	}
-	return response
+	return response, nil
 }
 
 func otherCaller(caller string) string {
