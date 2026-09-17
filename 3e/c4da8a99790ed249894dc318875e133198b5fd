@@ -1,0 +1,30 @@
+mcp/tasks.go
+  s_93c95d74d3bd35::t_ddd437dfbfe783 270-272,295-297,306-308,316-318,352-354,366-368
+  s_93c95d74d3bd35::t_d23af5987ecde6 10,87-89,136-137,237,241,244-245,248,258-259,269,358
+mcp/workflows.go
+  s_93c95d74d3bd35::t_d23af5987ecde6 180,204,212
+  s_93c95d74d3bd35::t_e7ecfdfb40190b 205-211
+mcp/tasks_test.go
+  s_93c95d74d3bd35::t_53ee0ae8ef51f8 79-82,148,167,192,199
+  s_93c95d74d3bd35::t_b2eea0a1a38833 11,172-176,180-181,195
+  s_93c95d74d3bd35::t_5e9f4a4641dd08 177-179
+mcp/agents.go
+  s_93c95d74d3bd35::t_e7ecfdfb40190b 171-177
+  s_93c95d74d3bd35::t_d23af5987ecde6 147,170,178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "3ec4da8a99790ed249894dc318875e133198b5fd",
+  "prompts": {},
+  "sessions": {
+    "s_93c95d74d3bd35": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0b101-1810-7061-8af3-dc1b80c18b14",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
