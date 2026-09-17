@@ -56,7 +56,11 @@ type TaskRecord struct {
 	LastUpdatedAt  time.Time              `json:"lastUpdatedAt"`
 	TTLMs          *int64                 `json:"ttlMs"`
 	PollIntervalMs int64                  `json:"pollIntervalMs"`
-	Version        int64                  `json:"-"`
+	// LeaseUntil bounds the execution claim held by the process running the
+	// task; the zero time means unclaimed. Stores should persist it so
+	// concurrent server instances honor the claim. Not exposed to MCP clients.
+	LeaseUntil time.Time `json:"-"`
+	Version    int64     `json:"-"`
 }
 
 // TaskStore persists task identity and terminal results. Update must reject a
@@ -93,6 +97,11 @@ type TaskConfig struct {
 	// SyncTimeout bounds fallback calls for optional entries when a client did
 	// not negotiate Tasks. Zero leaves fallback calls unbounded.
 	SyncTimeout time.Duration
+	// Lease bounds the execution claim a process holds on a working task so
+	// concurrent server instances never run the same recovered task twice.
+	// The executing process renews the claim while its run is in flight. Zero
+	// uses 30 seconds.
+	Lease time.Duration
 	// OnConflict observes a completion or failure that could not be persisted
 	// after retries, including non-conflict store errors. Applications should
 	// alert and reconcile the durable run.
@@ -106,8 +115,8 @@ func (c *TaskConfig) validate() error {
 	if c.Identity == nil || c.Context == nil || c.Authorize == nil {
 		return errors.New("lebro/mcp: Tasks.Identity, Context, and Authorize are required")
 	}
-	if c.TTL < 0 || c.PollInterval < 0 || c.SyncTimeout < 0 {
-		return errors.New("lebro/mcp: task TTL and poll interval must not be negative")
+	if c.TTL < 0 || c.PollInterval < 0 || c.SyncTimeout < 0 || c.Lease < 0 {
+		return errors.New("lebro/mcp: task TTL, poll interval, sync timeout, and lease must not be negative")
 	}
 	return nil
 }
@@ -235,8 +244,9 @@ func (s *taskService) create(ctx context.Context, entryID string, arguments json
 // recoverWorking re-launches execution for tasks that were still working when
 // the previous process stopped. Only records whose entry is exposed in this
 // process are re-launched; a record left behind by an unexposed entry stays
-// working until TTL expiry. Concurrent server instances may recover the same
-// record; finish's ErrTaskConflict retry elects a single terminal result.
+// working until TTL expiry. execute claims each record before running, so
+// concurrent server instances recovering the same record elect a single
+// claimant and never run it concurrently.
 func (s *taskService) recoverWorking(ctx context.Context) error {
 	lister, ok := s.config.Store.(WorkingTaskLister)
 	if !ok {
@@ -267,6 +277,19 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	s.cancels[record.ID] = cancel
 	s.mu.Unlock()
 	defer func() { cancel(); s.mu.Lock(); delete(s.cancels, record.ID); s.mu.Unlock() }()
+	won, err := s.claim(ctx, record)
+	if err != nil {
+		slog.Error("lebro/mcp: task execution claim failed", "task_id", record.ID)
+		if s.config.OnConflict != nil {
+			s.config.OnConflict(ctx, record)
+		}
+		return
+	}
+	if !won {
+		return
+	}
+	renewDone := s.renewLease(ctx, record.ID)
+	defer func() { cancel(); <-renewDone }()
 	current, err := s.config.Store.GetTask(ctx, record.ID)
 	if err != nil || current.Status != TaskWorking {
 		return
@@ -289,6 +312,99 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	s.finish(ctx, record, result, err, "task execution failed")
 }
 
+// claim takes the execution lease for a working record. It returns true when
+// this process may launch the task, false when another instance holds an
+// unexpired claim or the record left the working state, and an error when the
+// store keeps failing. The version conflict retry elects one claimant, so two
+// instances recovering the same record never run it concurrently.
+func (s *taskService) claim(ctx context.Context, record TaskRecord) (bool, error) {
+	for attempts := 0; attempts < 3; attempts++ {
+		current, err := s.config.Store.GetTask(ctx, record.ID)
+		if err != nil {
+			if attempts == 2 {
+				return false, fmt.Errorf("lebro/mcp: claim task %s: %w", record.ID, err)
+			}
+			continue
+		}
+		if current.Status != TaskWorking || s.leaseHeld(current) {
+			return false, nil
+		}
+		current.LeaseUntil = s.now().Add(s.lease())
+		current.LastUpdatedAt = s.now()
+		err = s.config.Store.UpdateTask(ctx, current)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, ErrTaskConflict) {
+			return false, fmt.Errorf("lebro/mcp: claim task %s: %w", record.ID, err)
+		}
+	}
+	return false, nil
+}
+
+// renewLease keeps the execution claim alive while the run is in flight,
+// extending it at half-lease intervals until the run's context ends. Without
+// renewal, a long-running task would outlive its claim and become recoverable
+// by another instance mid-run.
+func (s *taskService) renewLease(ctx context.Context, id string) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		interval := s.lease() / 2
+		if interval <= 0 {
+			interval = time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !s.extendLease(id) {
+					return
+				}
+			}
+		}
+	}()
+	return done
+}
+
+// extendLease pushes the claim forward once. It returns false when the record
+// went terminal, stopping renewal; transient store failures leave renewal
+// running for the next tick.
+func (s *taskService) extendLease(id string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), s.lease())
+	defer cancel()
+	for attempts := 0; attempts < 3; attempts++ {
+		current, err := s.config.Store.GetTask(ctx, id)
+		if err != nil {
+			continue
+		}
+		if current.Status != TaskWorking {
+			return false
+		}
+		current.LeaseUntil = s.now().Add(s.lease())
+		current.LastUpdatedAt = s.now()
+		if err := s.config.Store.UpdateTask(ctx, current); errors.Is(err, ErrTaskConflict) {
+			continue
+		}
+		return true
+	}
+	return true
+}
+
+func (s *taskService) leaseHeld(record TaskRecord) bool {
+	return !record.LeaseUntil.IsZero() && s.now().Before(record.LeaseUntil)
+}
+
+func (s *taskService) lease() time.Duration {
+	if s.config.Lease > 0 {
+		return s.config.Lease
+	}
+	return 30 * time.Second
+}
+
 // RecoverTasks re-launches execution for tasks that were still working when
 // the previous process stopped. Call it after the async entries are exposed
 // and before serving traffic. The TaskStore must implement WorkingTaskLister;
@@ -308,6 +424,7 @@ func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcp
 			return
 		}
 		current.LastUpdatedAt = s.now()
+		current.LeaseUntil = time.Time{}
 		if runErr != nil {
 			if errors.Is(runErr, context.Canceled) {
 				current.Status = TaskCancelled
@@ -388,6 +505,7 @@ func (s *taskService) cancel(ctx context.Context, _ *mcpsdk.ServerSession, param
 			return &taskAck{ResultType: "complete"}, nil
 		}
 		record.Status, record.StatusMessage, record.LastUpdatedAt = TaskCancelled, "cancelled", s.now()
+		record.LeaseUntil = time.Time{}
 		if err := s.config.Store.UpdateTask(ctx, record); errors.Is(err, ErrTaskConflict) {
 			continue
 		} else if err != nil {

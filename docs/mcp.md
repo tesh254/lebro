@@ -57,8 +57,10 @@ propagation. Do not expose every registry tool: `ExposeTool`, `ExposeAgent`, and
 
 Use MCP Tasks for an entrypoint that may outlive one HTTP request. The
 application owns `TaskStore`: persist the opaque caller identity with every
-task, reconstruct a runtime context in `Context`, and authorize every poll or
-cancellation in `Authorize`. Do not store bearer credentials in `Identity`.
+task, persist the execution lease (`TaskRecord.LeaseUntil`) so concurrent
+server instances honor claims, reconstruct a runtime context in `Context`,
+and authorize every poll or cancellation in `Authorize`. Do not store bearer
+credentials in `Identity`.
 
 ```go
 server := mcp.NewServer(mcp.ServerConfig{
@@ -103,11 +105,15 @@ if err := server.RecoverTasks(ctx); err != nil { return err }
 
 The `TaskStore` must implement `mcp.WorkingTaskLister` (an optional interface
 listing `working` records); otherwise recovery is a no-op. Records whose entry
-is not exposed in the restarted process are left until TTL expiry. Concurrent
-server instances may recover the same record; the version conflict retry in
-the store elects a single terminal result. If completion still cannot be
-persisted, `TaskConfig.OnConflict` observes the record so the application can
-reconcile its durable run.
+is not exposed in the restarted process are left until TTL expiry. Before
+launching a run, `execute` claims the record with a time-bounded lease and
+renews it while the run is in flight, so concurrent server instances
+recovering the same record elect a single claimant and never execute it
+twice. The server's `ErrTaskConflict` retry elects a single terminal result.
+If completion still cannot be persisted, `TaskConfig.OnConflict` observes the
+record so the application can reconcile its durable run. Configure
+`TaskConfig.Lease` to bound the claim; the default is 30 seconds, and a
+crashed process's claim lapses after the lease elapses.
 
 ## Client for an external server
 

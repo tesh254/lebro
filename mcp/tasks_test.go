@@ -65,6 +65,12 @@ func (s *memoryTaskStore) ListWorkingTasks(_ context.Context) ([]TaskRecord, err
 	return working, nil
 }
 
+type failingReadStore struct{ *memoryTaskStore }
+
+func (s *failingReadStore) GetTask(context.Context, string) (TaskRecord, error) {
+	return TaskRecord{}, errors.New("store down")
+}
+
 func cloneTask(record TaskRecord) TaskRecord {
 	record.Arguments = cloneRaw(record.Arguments)
 	record.Identity = cloneRaw(record.Identity)
@@ -349,3 +355,134 @@ func TestTaskRestartRecoveryResumesWorkingRun(t *testing.T) {
 		t.Fatalf("orphaned status = %q, want working", orphaned.Status)
 	}
 }
+
+func TestTaskClaimLeasePreventsDoubleExecution(t *testing.T) {
+	store := newMemoryTaskStore()
+	now := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	var clock time.Time
+	clock = now
+	tasks := newTasks(store, func() time.Time { return clock }, func(context.Context, TaskRecord) error { return nil })
+	record := TaskRecord{ID: "task-1", EntryID: "agent.a", Status: TaskWorking, CreatedAt: now, LastUpdatedAt: now, Version: 1}
+	if err := store.CreateTask(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	won, err := tasks.claim(context.Background(), record)
+	if err != nil || !won {
+		t.Fatalf("first claim: won=%v err=%v", won, err)
+	}
+	held, err := store.GetTask(context.Background(), "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tasks.leaseHeld(held) {
+		t.Fatal("lease not recorded")
+	}
+	if won, err := tasks.claim(context.Background(), held); won || err != nil {
+		t.Fatalf("second claim: won=%v err=%v", won, err)
+	}
+	clock = now.Add(31 * time.Second)
+	held, err = store.GetTask(context.Background(), "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if won, err := tasks.claim(context.Background(), held); !won || err != nil {
+		t.Fatalf("claim after lease expiry: won=%v err=%v", won, err)
+	}
+}
+
+func TestTaskExecutionClaimFailureNotifiesConflict(t *testing.T) {
+	tasks := newTasks(&failingReadStore{newMemoryTaskStore()}, time.Now, func(context.Context, TaskRecord) error { return nil })
+	observed := make(chan string, 1)
+	tasks.config.OnConflict = func(_ context.Context, record TaskRecord) { observed <- record.ID }
+	tasks.execute(TaskRecord{ID: "task-1", EntryID: "agent.a", Status: TaskWorking}, taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) { return nil, nil }})
+	select {
+	case id := <-observed:
+		if id != "task-1" {
+			t.Fatalf("observed = %q", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OnConflict not called")
+	}
+}
+
+func TestTaskLeaseRenewsWhileRunInFlight(t *testing.T) {
+	store := newMemoryTaskStore()
+	tasks := newTasks(store, time.Now, func(context.Context, TaskRecord) error { return nil })
+	tasks.config.Lease = 30 * time.Millisecond
+	release := make(chan struct{})
+	started := make(chan struct{})
+	if _, err := tasks.create(context.Background(), "agent.a", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		close(started)
+		<-release
+		return &mcpsdk.CallToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	time.Sleep(60 * time.Millisecond)
+	record, err := store.GetTask(context.Background(), "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.LeaseUntil.After(time.Now()) {
+		t.Fatalf("lease not renewed: %v", record.LeaseUntil)
+	}
+	close(release)
+	deadline := time.After(time.Second)
+	for {
+		record, err := store.GetTask(context.Background(), "task-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status.terminal() {
+			if !record.LeaseUntil.IsZero() {
+				t.Fatal("terminal record still leased")
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("task did not finish")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestServerRecoverTasksRelaunchesWorkingRecord(t *testing.T) {
+	store := newMemoryTaskStore()
+	now := time.Now()
+	done := make(chan struct{})
+	server := NewServer(ServerConfig{Implementation: &mcpsdk.Implementation{Name: "t", Version: "1"}, Tasks: &TaskConfig{Store: store, Identity: func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{}`), nil }, Context: func(ctx context.Context, _ TaskRecord) (context.Context, error) { return ctx, nil }, Authorize: func(context.Context, TaskRecord) error { return nil }, PollInterval: time.Millisecond}})
+	if err := server.tasks.register("agent.a", taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		defer close(done)
+		return &mcpsdk.CallToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(context.Background(), TaskRecord{ID: "task-1", EntryID: "agent.a", Status: TaskWorking, CreatedAt: now, LastUpdatedAt: now, Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.RecoverTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("recovered run did not start")
+	}
+	if err := NewServer(ServerConfig{Implementation: &mcpsdk.Implementation{Name: "t", Version: "1"}}).RecoverTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	bare := NewServer(ServerConfig{Implementation: &mcpsdk.Implementation{Name: "t", Version: "1"}, Tasks: &TaskConfig{Store: noListStore{}, Identity: func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{}`), nil }, Context: func(ctx context.Context, _ TaskRecord) (context.Context, error) { return ctx, nil }, Authorize: func(context.Context, TaskRecord) error { return nil }}})
+	if err := bare.RecoverTasks(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type noListStore struct{}
+
+func (noListStore) CreateTask(context.Context, TaskRecord) error { return nil }
+func (noListStore) GetTask(context.Context, string) (TaskRecord, error) {
+	return TaskRecord{}, ErrTaskNotFound
+}
+func (noListStore) UpdateTask(context.Context, TaskRecord) error { return nil }
