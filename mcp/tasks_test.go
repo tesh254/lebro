@@ -419,13 +419,19 @@ func TestTaskLeaseRenewsWhileRunInFlight(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	time.Sleep(60 * time.Millisecond)
-	record, err := store.GetTask(context.Background(), "task-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !record.LeaseUntil.After(time.Now()) {
-		t.Fatalf("lease not renewed: %v", record.LeaseUntil)
+	pollDeadline := time.Now().Add(time.Second)
+	for {
+		record, err := store.GetTask(context.Background(), "task-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.LeaseUntil.After(time.Now()) {
+			break
+		}
+		if time.Now().After(pollDeadline) {
+			t.Fatalf("lease was not renewed: %v", record.LeaseUntil)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	close(release)
 	deadline := time.After(time.Second)

@@ -57,10 +57,12 @@ propagation. Do not expose every registry tool: `ExposeTool`, `ExposeAgent`, and
 
 Use MCP Tasks for an entrypoint that may outlive one HTTP request. The
 application owns `TaskStore`: persist the opaque caller identity with every
-task, persist the execution lease (`TaskRecord.LeaseUntil`) so concurrent
-server instances honor claims, reconstruct a runtime context in `Context`,
-and authorize every poll or cancellation in `Authorize`. Do not store bearer
-credentials in `Identity`.
+task, reconstruct a runtime context in `Context`, and authorize every poll or
+cancellation in `Authorize`. Do not store bearer credentials in `Identity`.
+`TaskRecord.LeaseUntil` and `TaskRecord.Version` are excluded from the JSON
+wire encoding sent to MCP clients, so a store that only serializes
+`json.Marshal(record)` drops them; persist each as an explicit column so
+concurrent server instances honor claims and version conflicts.
 
 ```go
 server := mcp.NewServer(mcp.ServerConfig{
