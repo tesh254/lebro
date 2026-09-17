@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -201,7 +202,7 @@ func (f *legacyHTTPFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "initialize":
 		f.mu.Lock()
 		f.nextID++
-		id := "legacy-session-" + string(rune('0'+f.nextID))
+		id := "legacy-session-" + strconv.Itoa(f.nextID)
 		f.sessions[id] = true
 		f.mu.Unlock()
 		w.Header().Set("Mcp-Session-Id", id)

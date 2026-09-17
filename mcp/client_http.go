@@ -28,9 +28,11 @@ const (
 	ConnectionModeStateful ConnectionMode = "stateful"
 )
 
-// ConnectionHealth is a safe snapshot of a Streamable HTTP connection. It
-// deliberately reports only whether a session exists: session identifiers stay
-// inside the SDK transport and must not be used as application identity.
+// ConnectionHealth is a safe snapshot of the current Streamable HTTP
+// connection. A successful Reconnect starts a new snapshot and clears
+// SessionLost. It deliberately reports only whether a session exists: session
+// identifiers stay inside the SDK transport and must not be used as application
+// identity.
 type ConnectionHealth struct {
 	ProtocolVersion string
 	Mode            ConnectionMode
@@ -45,8 +47,10 @@ type ConnectionHealth struct {
 // authentication, tenant/principal partitioning, and one Client per isolated
 // connection; this package never derives identity from an MCP session ID.
 type StreamableHTTPConfig struct {
-	Endpoint             string
-	HTTPClient           *http.Client
+	Endpoint   string
+	HTTPClient *http.Client
+	// MaxRetries is passed to the SDK transport to control its SSE reconnect
+	// attempts. Zero uses the SDK default; a negative value disables retries.
 	MaxRetries           int
 	DisableStandaloneSSE bool
 	// IdleTimeout bounds a retained legacy session. A zero value leaves its
@@ -58,6 +62,7 @@ type streamableHTTPState struct {
 	config    StreamableHTTPConfig
 	health    ConnectionHealth
 	idleTimer *time.Timer
+	closing   bool
 }
 
 // ErrRemoteSessionLost marks a legacy HTTP session that the server has
@@ -109,19 +114,27 @@ func (c *Client) ConnectStreamableHTTP(ctx context.Context, config StreamableHTT
 		return err
 	}
 
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
 	session := c.Session()
+	if session == nil {
+		return errors.New("lebro/mcp: client closed while establishing Streamable HTTP connection")
+	}
 	health := ConnectionHealth{Mode: ConnectionModeUnknown, Connected: true}
 	if initialized := session.InitializeResult(); initialized != nil {
 		health.ProtocolVersion = initialized.ProtocolVersion
 	}
 	health.HasSession = session.ID() != ""
-	if health.HasSession && health.ProtocolVersion < "2026-07-28" {
+	if health.HasSession && !usesModernStreamableProtocol(health.ProtocolVersion) {
 		health.Mode = ConnectionModeStateful
 	} else {
 		health.Mode = ConnectionModeStateless
 	}
 
 	c.mu.Lock()
+	if c.streamable != nil && c.streamable.idleTimer != nil {
+		c.streamable.idleTimer.Stop()
+	}
 	c.streamable = &streamableHTTPState{config: config, health: health}
 	c.resetIdleTimerLocked()
 	c.mu.Unlock()
@@ -184,6 +197,7 @@ func (c *Client) resetIdleTimerLocked() {
 		}
 		c.streamable.health.Connected = false
 		c.streamable.health.Closed = true
+		c.streamable.closing = true
 		c.mu.Unlock()
 		_ = c.Close()
 	})
@@ -195,9 +209,20 @@ func (c *Client) classifyStreamableError(err error) error {
 	}
 	c.mu.Lock()
 	if c.streamable != nil {
+		if c.streamable.idleTimer != nil {
+			c.streamable.idleTimer.Stop()
+		}
 		c.streamable.health.Connected = false
 		c.streamable.health.SessionLost = true
 	}
 	c.mu.Unlock()
 	return &RemoteSessionLostError{Err: err}
+}
+
+func usesModernStreamableProtocol(version string) bool {
+	parsed, err := time.Parse("2006-01-02", version)
+	if err != nil {
+		return false
+	}
+	return !parsed.Before(time.Date(2026, time.July, 28, 0, 0, 0, 0, time.UTC))
 }

@@ -96,13 +96,19 @@ func (c *Client) Close() error {
 	if c == nil {
 		return nil
 	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
 	c.mu.Lock()
 	session := c.session
 	c.session = nil
 	if c.streamable != nil {
-		if c.streamable.idleTimer != nil {
+		// The idle timer marks closing before it calls Close. Avoid stopping the
+		// timer from its own callback; besides being unnecessary, this makes the
+		// lifecycle explicit if the callback grows more complex later.
+		if c.streamable.idleTimer != nil && !c.streamable.closing {
 			c.streamable.idleTimer.Stop()
 		}
+		c.streamable.closing = true
 		c.streamable.health.Connected = false
 		c.streamable.health.Closed = true
 	}
@@ -135,6 +141,9 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]lebro.Tool, error) {
 	if c == nil {
 		return nil, &RemoteDiscoveryError{Err: errors.New("lebro/mcp: client is nil")}
 	}
+	c.requestMu.Lock()
+	defer c.requestMu.Unlock()
+	c.touchStreamable()
 	session := c.Session()
 	if session == nil {
 		return nil, &RemoteDiscoveryError{
@@ -142,9 +151,6 @@ func (c *Client) DiscoverTools(ctx context.Context) ([]lebro.Tool, error) {
 			Err:        errors.New("lebro/mcp: client is not connected"),
 		}
 	}
-	c.requestMu.Lock()
-	defer c.requestMu.Unlock()
-	c.touchStreamable()
 
 	var (
 		tools  []lebro.Tool
