@@ -41,6 +41,8 @@ type Model struct {
 var _ lebro.Model = (*Model)(nil)
 var _ lebro.StreamingModel = (*Model)(nil)
 
+func (*Model) ProviderID() lebro.ProviderID { return providerName }
+
 // New creates an Anthropic adapter safe for concurrent use.
 func New(config Config) (*Model, error) {
 	if config.APIKey == "" {
@@ -336,7 +338,7 @@ func (m *Model) response(request lebro.ModelRequest, result *claude.Message) (le
 		}
 		message.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(message.Content))
 	}
-	response := lebro.ModelResponse{Message: message, FinishReason: mapFinish(result.StopReason), Usage: lebro.ModelUsage{InputTokens: result.Usage.InputTokens, OutputTokens: result.Usage.OutputTokens, ReasoningTokens: result.Usage.OutputTokensDetails.ThinkingTokens, TotalTokens: result.Usage.InputTokens + result.Usage.OutputTokens}}
+	response := lebro.ModelResponse{Message: message, FinishReason: mapFinish(result.StopReason), Usage: mapUsage(result.Usage), Accounting: unavailableAccounting(result.ID, result.Usage)}
 	if result.ID != "" {
 		response.Extension, _ = json.Marshal(map[string]string{"anthropic_id": result.ID, "anthropic_model": string(result.Model)})
 	}
@@ -344,6 +346,24 @@ func (m *Model) response(request lebro.ModelRequest, result *claude.Message) (le
 		return lebro.ModelResponse{}, m.malformed(err)
 	}
 	return response, nil
+}
+
+func mapUsage(usage claude.Usage) lebro.ModelUsage {
+	cacheWrite := usage.CacheCreationInputTokens
+	return lebro.ModelUsage{
+		InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens,
+		ReasoningTokens: usage.OutputTokensDetails.ThinkingTokens,
+		CacheReadTokens: usage.CacheReadInputTokens, CacheWriteTokens: cacheWrite,
+		CacheWrite1hTokens: usage.CacheCreation.Ephemeral1hInputTokens,
+		TotalTokens:        usage.InputTokens + cacheWrite + usage.CacheReadInputTokens + usage.OutputTokens,
+	}
+}
+
+func unavailableAccounting(id string, usage claude.Usage) lebro.ModelAccounting {
+	return lebro.ModelAccounting{
+		ProviderRequestID: id, ServiceTier: string(usage.ServiceTier), Region: usage.InferenceGeo,
+		Costs: []lebro.ModelCost{lebro.UnavailableModelCost(lebro.PricingDomainAnthropic, lebro.CostUnavailableProviderOmitted)},
+	}
 }
 
 func mapFinish(reason claude.StopReason) lebro.FinishReason {
@@ -438,9 +458,13 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 		var text strings.Builder
 		var finish = lebro.FinishReasonStop
 		var usage lebro.ModelUsage
+		var accounting lebro.ModelAccounting
 		for r.stream.Next() {
 			event := r.stream.Current()
 			switch event.Type {
+			case "message_start":
+				usage = mapUsage(event.Message.Usage)
+				accounting = unavailableAccounting(event.Message.ID, event.Message.Usage)
 			case "content_block_start":
 				if event.ContentBlock.Type == "tool_use" {
 					tools[event.Index] = &lebro.ModelToolCall{ID: event.ContentBlock.ID, ToolID: lebro.ToolID(event.ContentBlock.Name)}
@@ -507,14 +531,16 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 				}
 			case "message_delta":
 				finish = mapFinish(event.Delta.StopReason)
-				usage = lebro.ModelUsage{InputTokens: event.Usage.InputTokens, OutputTokens: event.Usage.OutputTokens, ReasoningTokens: event.Usage.OutputTokensDetails.ThinkingTokens, TotalTokens: event.Usage.InputTokens + event.Usage.OutputTokens}
+				usage.OutputTokens = event.Usage.OutputTokens
+				usage.ReasoningTokens = event.Usage.OutputTokensDetails.ThinkingTokens
+				usage.TotalTokens = usage.InputTokens + usage.CacheWriteTokens + usage.CacheReadTokens + usage.OutputTokens
 			}
 		}
 		if err := r.stream.Err(); err != nil {
 			r.send(lebro.StreamDelta{Err: r.errorFn(ctx, err)})
 			return
 		}
-		terminal := lebro.StreamDelta{FinishReason: finish, Usage: usage}
+		terminal := lebro.StreamDelta{FinishReason: finish, Usage: usage, Accounting: accounting.Clone()}
 		if request.OutputSchema != nil && json.Valid([]byte(text.String())) {
 			terminal.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(text.String()))
 		}

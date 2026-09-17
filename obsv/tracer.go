@@ -487,6 +487,28 @@ func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 	}
 	run.model = nil
 	span.Usage = event.Usage
+	span.Accounting = event.Accounting.Clone()
+	if event.Accounting.ProviderRequestID != "" {
+		span.setAttr(AttrRequestID, event.Accounting.ProviderRequestID)
+	}
+	var selected *lebro.ModelCost
+	for i := range event.Accounting.Costs {
+		if event.Accounting.Costs[i].Source != lebro.CostUnavailable {
+			selected = &event.Accounting.Costs[i]
+			break
+		}
+	}
+	if selected == nil && len(event.Accounting.Costs) > 0 {
+		selected = &event.Accounting.Costs[0]
+	}
+	if selected != nil {
+		span.setAttr(AttrCostSource, string(selected.Source))
+		span.setAttr(AttrCostDomain, string(selected.Domain))
+		if selected.Currency != "" {
+			span.setAttr(AttrCostCurrency, selected.Currency)
+			span.setAttr(AttrCostAmount, string(selected.Amount))
+		}
+	}
 	if event.FinishReason != "" {
 		span.setAttr(AttrFinishReason, string(event.FinishReason))
 	}
@@ -501,6 +523,9 @@ func (t *Tracer) closeModel(run *runTrace, event lebro.RunEvent) {
 	run.root.Usage.OutputTokens += event.Usage.OutputTokens
 	run.root.Usage.ReasoningTokens += event.Usage.ReasoningTokens
 	run.root.Usage.TotalTokens += event.Usage.TotalTokens
+	run.root.Usage.CacheReadTokens += event.Usage.CacheReadTokens
+	run.root.Usage.CacheWriteTokens += event.Usage.CacheWriteTokens
+	run.root.Usage.CacheWrite1hTokens += event.Usage.CacheWrite1hTokens
 	t.end(span, event, statusForError(event.Error))
 }
 

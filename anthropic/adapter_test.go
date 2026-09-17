@@ -136,6 +136,9 @@ func TestResponseMapsTextToolsAndStructuredOutput(t *testing.T) {
 		if response.Usage.ReasoningTokens != 5 {
 			t.Fatalf("usage = %#v", response.Usage)
 		}
+		if cost := response.Accounting.Costs[0]; cost.Source != lebro.CostUnavailable || cost.Domain != lebro.PricingDomainAnthropic || cost.UnavailableReason != lebro.CostUnavailableProviderOmitted {
+			t.Fatalf("accounting = %#v", response.Accounting)
+		}
 	})
 }
 

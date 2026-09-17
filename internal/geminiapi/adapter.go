@@ -43,6 +43,13 @@ type Model struct {
 var _ lebro.Model = (*Model)(nil)
 var _ lebro.StreamingModel = (*Model)(nil)
 
+func (m *Model) ProviderID() lebro.ProviderID {
+	if m == nil {
+		return ""
+	}
+	return lebro.ProviderID(m.provider)
+}
+
 // New creates a shared adapter safe for concurrent use. It fails when the
 // client is missing so misuse surfaces at construction instead of panicking
 // on the first call.
@@ -336,8 +343,9 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 	}
 	response := lebro.ModelResponse{Message: message, FinishReason: finish}
 	if result.UsageMetadata != nil {
-		response.Usage = lebro.ModelUsage{InputTokens: int64(result.UsageMetadata.PromptTokenCount), OutputTokens: int64(result.UsageMetadata.CandidatesTokenCount), ReasoningTokens: int64(result.UsageMetadata.ThoughtsTokenCount), TotalTokens: int64(result.UsageMetadata.TotalTokenCount)}
+		response.Usage = modelUsage(result.UsageMetadata)
 	}
+	response.Accounting = unavailableAccounting(m.provider, result.ResponseID, result.UsageMetadata)
 	if result.ResponseID != "" {
 		response.Extension, _ = json.Marshal(map[string]string{"gemini_response_id": result.ResponseID, "gemini_model": result.ModelVersion})
 	}
@@ -345,6 +353,35 @@ func (m *Model) response(request lebro.ModelRequest, result *genai.GenerateConte
 		return lebro.ModelResponse{}, m.malformed(err)
 	}
 	return response, nil
+}
+
+func modelUsage(usage *genai.GenerateContentResponseUsageMetadata) lebro.ModelUsage {
+	if usage == nil {
+		return lebro.ModelUsage{}
+	}
+	return lebro.ModelUsage{
+		InputTokens: int64(usage.PromptTokenCount), OutputTokens: int64(usage.CandidatesTokenCount),
+		ReasoningTokens: int64(usage.ThoughtsTokenCount), TotalTokens: int64(usage.TotalTokenCount),
+		CacheReadTokens: int64(usage.CachedContentTokenCount),
+	}
+}
+
+func unavailableAccounting(provider, id string, usage *genai.GenerateContentResponseUsageMetadata) lebro.ModelAccounting {
+	domain := lebro.PricingDomainGemini
+	if provider == "vertexai" {
+		domain = lebro.PricingDomainVertexAI
+	}
+	serviceTier := ""
+	if usage != nil {
+		switch strings.ToLower(string(usage.TrafficType)) {
+		case "", "traffic_type_unspecified":
+		case "on_demand":
+			serviceTier = "standard"
+		default:
+			serviceTier = strings.ToLower(string(usage.TrafficType))
+		}
+	}
+	return lebro.ModelAccounting{ProviderRequestID: id, ServiceTier: serviceTier, Costs: []lebro.ModelCost{lebro.UnavailableModelCost(domain, lebro.CostUnavailableProviderOmitted)}}
 }
 
 func geminiReasoningText(details []geminiReasoningDetail) string {
@@ -451,6 +488,7 @@ func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence f
 	hasToolCalls := false
 	finish := lebro.FinishReasonStop
 	var usage lebro.ModelUsage
+	var accounting lebro.ModelAccounting
 	sequence(func(result *genai.GenerateContentResponse, err error) bool {
 		if err != nil {
 			r.send(lebro.StreamDelta{Err: r.errorFn(ctx, err)})
@@ -461,8 +499,9 @@ func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence f
 			return true
 		}
 		if result.UsageMetadata != nil {
-			usage = lebro.ModelUsage{InputTokens: int64(result.UsageMetadata.PromptTokenCount), OutputTokens: int64(result.UsageMetadata.CandidatesTokenCount), ReasoningTokens: int64(result.UsageMetadata.ThoughtsTokenCount), TotalTokens: int64(result.UsageMetadata.TotalTokenCount)}
+			usage = modelUsage(result.UsageMetadata)
 		}
+		accounting = unavailableAccounting(r.provider, result.ResponseID, result.UsageMetadata)
 		for _, candidate := range result.Candidates {
 			if candidate.FinishReason != "" {
 				finish = mapFinish(candidate.FinishReason)
@@ -503,7 +542,7 @@ func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence f
 	if failed {
 		return
 	}
-	terminal := lebro.StreamDelta{FinishReason: finish, Usage: usage}
+	terminal := lebro.StreamDelta{FinishReason: finish, Usage: usage, Accounting: accounting.Clone()}
 	if hasToolCalls {
 		terminal.FinishReason = lebro.FinishReasonToolCalls
 	}

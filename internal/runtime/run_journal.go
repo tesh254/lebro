@@ -91,6 +91,7 @@ func (j *runJournal) OnRunEvent(event RunEvent) {
 		Status:          event.Status,
 		FinishReason:    event.FinishReason,
 		Usage:           event.Usage,
+		Accounting:      event.Accounting.Clone(),
 		DurationNanos:   int64(event.Duration),
 	}
 	record.ErrorKind, record.ErrorMessage = classifyRunError(event.Error)
@@ -211,7 +212,7 @@ func (j *runJournal) completeModelAttempt(attempt ModelAttempt) {
 // was cancelled without its observer completing (direct model calls land
 // here); on success the final attempt is the routed winner and receives the
 // response usage and finish reason.
-func (j *runJournal) finishModelCall(usage ModelUsage, finishReason FinishReason, err error) {
+func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccounting, finishReason FinishReason, err error) {
 	if j == nil {
 		return
 	}
@@ -248,8 +249,34 @@ func (j *runJournal) finishModelCall(usage ModelUsage, finishReason FinishReason
 	if err == nil && len(j.attempts) > 0 {
 		winner := &j.attempts[len(j.attempts)-1]
 		winner.Usage = usage
+		winner.Accounting = accounting.Clone()
+		winner.ProviderRequestID = accounting.ProviderRequestID
 		winner.FinishReason = finishReason
 	}
+}
+
+// costResolutionAttempt returns the content-free identity visible to a cost
+// resolver before the final record is persisted.
+func (j *runJournal) costResolutionAttempt(usage ModelUsage, accounting ModelAccounting) ModelAttemptRecord {
+	if j == nil {
+		return ModelAttemptRecord{Usage: usage, Accounting: accounting.Clone()}
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if len(j.attempts) > 0 {
+		attempt := j.attempts[len(j.attempts)-1]
+		attempt.Usage = usage
+		attempt.Accounting = accounting.Clone()
+		attempt.ProviderRequestID = accounting.ProviderRequestID
+		attempt.Metadata = nil
+		return attempt
+	}
+	attempt := ModelAttemptRecord{ID: fmt.Sprintf("%s-attempt-%d", j.runID, len(j.attempts)+1), RunID: j.runID, ThreadID: j.threadID, Namespace: j.scope.Namespace, OwnerID: j.scope.OwnerID, Index: len(j.attempts) + 1, Status: ModelAttemptSuccess, Usage: usage, Accounting: accounting.Clone(), ProviderRequestID: accounting.ProviderRequestID}
+	if len(j.open) > 0 {
+		attempt.Provider, attempt.Model, attempt.StartedAt = j.open[0].provider, j.open[0].model, j.open[0].start
+	}
+	attempt.FinishedAt = j.clock.Now()
+	return attempt
 }
 
 // linkProducedMessages attaches produced transcript message IDs to the
@@ -330,11 +357,14 @@ func (j *runJournal) snapshotLocked() ([]RunEventRecord, []ModelAttemptRecord, [
 	events := make([]RunEventRecord, len(j.events))
 	for i, event := range j.events {
 		event.Metadata = mergeMetadata(j.base, event.Metadata)
+		event.Accounting = event.Accounting.Clone()
 		events[i] = event
 	}
 	attempts := make([]ModelAttemptRecord, len(j.attempts))
 	for i, attempt := range j.attempts {
 		attempt.Metadata = mergeMetadata(j.base, attempt.Metadata)
+		attempt.Accounting = attempt.Accounting.Clone()
+		attempt.ProducedMessageIDs = append([]string(nil), attempt.ProducedMessageIDs...)
 		attempts[i] = attempt
 	}
 	tools := make([]ToolExecutionRecord, len(j.tools))

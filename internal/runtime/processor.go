@@ -187,6 +187,7 @@ func (r ProcessorModelResponseRequest) Clone() ProcessorModelResponseRequest {
 	r.Run = r.Run.Clone()
 	r.Request = ProcessorModelRequest{Request: r.Request}.Clone().Request
 	r.Response.Extension = cloneRawMessage(r.Response.Extension)
+	r.Response.Accounting = r.Response.Accounting.Clone()
 	return r
 }
 
@@ -197,6 +198,7 @@ type ProcessorModelResponseResult struct {
 
 func (r ProcessorModelResponseResult) Clone() ProcessorModelResponseResult {
 	r.Response.Extension = cloneRawMessage(r.Response.Extension)
+	r.Response.Accounting = r.Response.Accounting.Clone()
 	return r
 }
 

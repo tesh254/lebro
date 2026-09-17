@@ -147,6 +147,7 @@ type RunEvent struct {
 	Duration              time.Duration
 	FinishReason          FinishReason
 	Usage                 ModelUsage
+	Accounting            ModelAccounting
 	ToolCallID            string
 	ToolID                ToolID
 	ToolState             ToolExecutionState
@@ -436,6 +437,7 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 		ToolID:                toolID,
 		FinishReason:          delta.FinishReason,
 		Usage:                 delta.Usage,
+		Accounting:            delta.Accounting.Clone(),
 		Error:                 delta.Err,
 	})
 }
@@ -447,7 +449,7 @@ func (e *runEmitter) emitProcessor(runID RunID, step int, stepID StepID, phase P
 	e.dispatch(RunEvent{Type: RunEventProcessor, RunID: runID, StepID: stepID, Step: step, Timestamp: e.clock.Now(), ProcessorPhase: phase, ProcessorAction: action})
 }
 
-func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, start time.Time, finishReason FinishReason, usage ModelUsage, err error) {
+func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, start time.Time, finishReason FinishReason, usage ModelUsage, accounting ModelAccounting, err error) {
 	if !e.enabled() {
 		return
 	}
@@ -461,6 +463,7 @@ func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, sta
 		Duration:     now.Sub(start),
 		FinishReason: finishReason,
 		Usage:        usage,
+		Accounting:   accounting.Clone(),
 		Error:        err,
 	})
 }

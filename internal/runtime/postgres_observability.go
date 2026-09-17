@@ -49,14 +49,16 @@ func (r *postgresRepositories) AppendRunEvents(ctx context.Context, vs []RunEven
 				tool_call_id, tool_id, provider, provider_model,
 				attempt_status, processor_phase, processor_action,
 				status, finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens,
+				cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
 				duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) ON CONFLICT (run_id, id) DO NOTHING`,
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39) ON CONFLICT (run_id, id) DO NOTHING`,
 				v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Sequence, v.Type, v.Timestamp.UTC(),
 				v.Step, v.StepID, v.ParentRunID, v.ParentStepID, v.Branch,
 				v.ToolCallID, string(v.ToolID), string(v.Provider), v.ProviderModel,
 				string(v.AttemptStatus), string(v.ProcessorPhase), string(v.ProcessorAction),
 				string(v.Status), string(v.FinishReason),
 				v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.ReasoningTokens, v.Usage.TotalTokens,
+				v.Usage.CacheReadTokens, v.Usage.CacheWriteTokens, v.Usage.CacheWrite1hTokens, obsAccountingJSON(v.Accounting),
 				v.DurationNanos, v.ErrorKind, v.ErrorMessage, payload,
 				pluginID, pluginVersion, pluginAction, pluginOutcome,
 				obsMetadataJSON(v.Metadata),
@@ -117,7 +119,8 @@ func (r *postgresRepositories) ListRunEvents(ctx context.Context, filter RunEven
 		`SELECT id, run_id, thread_id, namespace, owner_id, seq, type, timestamp, step, step_id, parent_run_id, parent_step_id,
 		 branch, tool_call_id, tool_id, provider, provider_model, attempt_status, processor_phase,
 		 processor_action, status, finish_reason, input_tokens, output_tokens, reasoning_tokens,
-		 total_tokens, duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
+		 total_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
+		 duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
 		 FROM run_events `+where+fmt.Sprintf(` ORDER BY run_id, seq LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2),
 		append(args, postgresFetchLimit(limit), offset)...)
 	if err != nil {
@@ -134,6 +137,7 @@ func (r *postgresRepositories) ListRunEvents(ctx context.Context, filter RunEven
 			pluginAct   sql.NullString
 			pluginOut   sql.NullString
 			annotations sql.NullString
+			accounting  sql.NullString
 		)
 		if err := rows.Scan(
 			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Sequence, &v.Type, &v.Timestamp,
@@ -142,6 +146,7 @@ func (r *postgresRepositories) ListRunEvents(ctx context.Context, filter RunEven
 			&v.AttemptStatus, &v.ProcessorPhase, &v.ProcessorAction,
 			&v.Status, &v.FinishReason,
 			&v.Usage.InputTokens, &v.Usage.OutputTokens, &v.Usage.ReasoningTokens, &v.Usage.TotalTokens,
+			&v.Usage.CacheReadTokens, &v.Usage.CacheWriteTokens, &v.Usage.CacheWrite1hTokens, &accounting,
 			&v.DurationNanos, &v.ErrorKind, &v.ErrorMessage, &payload,
 			&pluginID, &pluginVers, &pluginAct, &pluginOut, &annotations,
 		); err != nil {
@@ -162,6 +167,10 @@ func (r *postgresRepositories) ListRunEvents(ctx context.Context, filter RunEven
 			return page, merr
 		}
 		v.Metadata = m
+		v.Accounting, merr = obsParseAccounting(accounting)
+		if merr != nil {
+			return page, merr
+		}
 		page.Records = append(page.Records, v)
 	}
 	if err := rows.Err(); err != nil {
@@ -193,12 +202,14 @@ func (r *postgresRepositories) SaveModelAttempts(ctx context.Context, vs []Model
 				id, run_id, thread_id, namespace, owner_id, step, step_id, idx,
 				provider, model, routed_model, status, finish_reason,
 				input_tokens, output_tokens, reasoning_tokens, total_tokens,
+				cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
 				started_at, finished_at, message_ids,
 				error_kind, error_message, provider_request_id, cost_micros, currency, annotations
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) ON CONFLICT (run_id, id) DO NOTHING`,
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30) ON CONFLICT (run_id, id) DO NOTHING`,
 				v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Step, v.StepID, v.Index,
 				string(v.Provider), v.Model, v.RoutedModel, string(v.Status), string(v.FinishReason),
 				v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.ReasoningTokens, v.Usage.TotalTokens,
+				v.Usage.CacheReadTokens, v.Usage.CacheWriteTokens, v.Usage.CacheWrite1hTokens, obsAccountingJSON(v.Accounting),
 				v.StartedAt.UTC(), v.FinishedAt.UTC(), messageIDs,
 				v.ErrorKind, v.ErrorMessage, v.ProviderRequestID, v.CostMicros, v.Currency,
 				obsMetadataJSON(v.Metadata),
@@ -213,6 +224,9 @@ func (r *postgresRepositories) SaveModelAttempts(ctx context.Context, vs []Model
 func (r *postgresRepositories) ListModelAttempts(ctx context.Context, filter ModelAttemptFilter, p PageRequest) (Page[ModelAttemptRecord], error) {
 	if err := ctx.Err(); err != nil {
 		return Page[ModelAttemptRecord]{}, err
+	}
+	if !validCostSource(filter.CostSource) {
+		return Page[ModelAttemptRecord]{}, fmt.Errorf("lebro: invalid model attempt cost source %q", filter.CostSource)
 	}
 	offset, limit, err := sqlPageBounds(p)
 	if err != nil {
@@ -239,8 +253,20 @@ func (r *postgresRepositories) ListModelAttempts(ctx context.Context, filter Mod
 	if filter.Provider != "" {
 		appendClause("provider = $%d", filter.Provider)
 	}
+	if filter.Model != "" {
+		appendClause("model = $%d", filter.Model)
+	}
 	if filter.Status != "" {
 		appendClause("status = $%d", filter.Status)
+	}
+	if !filter.From.IsZero() {
+		appendClause("started_at >= $%d", filter.From.UTC())
+	}
+	if !filter.To.IsZero() {
+		appendClause("started_at < $%d", filter.To.UTC())
+	}
+	if filter.CostSource != "" {
+		appendClause("EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(accounting->'costs', '[]'::jsonb)) AS cost WHERE cost->>'source' = $%d)", string(filter.CostSource))
 	}
 	where := ""
 	if len(clauses) > 0 {
@@ -248,7 +274,8 @@ func (r *postgresRepositories) ListModelAttempts(ctx context.Context, filter Mod
 	}
 	rows, err := r.q.QueryContext(ctx,
 		`SELECT id, run_id, thread_id, namespace, owner_id, step, step_id, idx, provider, model, routed_model, status,
-		 finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens, started_at,
+		 finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens,
+		 cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting, started_at,
 		 finished_at, message_ids, error_kind, error_message, provider_request_id, cost_micros,
 		 currency, annotations FROM model_attempts `+where+fmt.Sprintf(` ORDER BY run_id, seq LIMIT $%d OFFSET $%d`, len(args)+1, len(args)+2),
 		append(args, postgresFetchLimit(limit), offset)...)
@@ -262,11 +289,13 @@ func (r *postgresRepositories) ListModelAttempts(ctx context.Context, filter Mod
 			v           ModelAttemptRecord
 			messageIDs  sql.NullString
 			annotations sql.NullString
+			accounting  sql.NullString
 		)
 		if err := rows.Scan(
 			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Step, &v.StepID, &v.Index,
 			&v.Provider, &v.Model, &v.RoutedModel, &v.Status, &v.FinishReason,
 			&v.Usage.InputTokens, &v.Usage.OutputTokens, &v.Usage.ReasoningTokens, &v.Usage.TotalTokens,
+			&v.Usage.CacheReadTokens, &v.Usage.CacheWriteTokens, &v.Usage.CacheWrite1hTokens, &accounting,
 			&v.StartedAt, &v.FinishedAt, &messageIDs,
 			&v.ErrorKind, &v.ErrorMessage, &v.ProviderRequestID, &v.CostMicros,
 			&v.Currency, &annotations,
@@ -284,6 +313,13 @@ func (r *postgresRepositories) ListModelAttempts(ctx context.Context, filter Mod
 			return page, merr
 		}
 		v.Metadata = m
+		v.Accounting, merr = obsParseAccounting(accounting)
+		if merr != nil {
+			return page, merr
+		}
+		if v.Accounting.ProviderRequestID == "" {
+			v.Accounting.ProviderRequestID = v.ProviderRequestID
+		}
 		page.Records = append(page.Records, v)
 	}
 	if err := rows.Err(); err != nil {
