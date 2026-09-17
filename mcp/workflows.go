@@ -92,6 +92,9 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 // Use it when the application stores published workflow definitions separately
 // from an in-memory *lebro.LinearWorkflow.
 func (s *Server) ExposeWorkflowAdapter(adapter WorkflowAdapter) error {
+	if s.config.RequestResolver != nil {
+		return errors.New("lebro/mcp: expose adapters through RequestResolver when request-scoped exposure is configured")
+	}
 	if adapter.Run == nil {
 		return errors.New("lebro/mcp: workflow adapter Run is required")
 	}

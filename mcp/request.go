@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -52,7 +53,17 @@ type WorkflowAdapter struct {
 
 type scopedServerContextKey struct{}
 
+type toolValidators struct {
+	input  lebro.CompiledSchema
+	output lebro.CompiledSchema
+}
+
 func (s *Server) requestScopedHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) http.Handler {
+	if s.config.RequestResolver == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "MCP request resolver is required", http.StatusInternalServerError)
+		})
+	}
 	if opts == nil {
 		opts = &mcpsdk.StreamableHTTPOptions{Stateless: true, PropagateRequestCancellation: true}
 	} else {
@@ -63,6 +74,7 @@ func (s *Server) requestScopedHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) ht
 	// later requests to a server created for a previous principal, so this path
 	// is always stateless.
 	opts.Stateless = true
+	opts.PropagateRequestCancellation = true
 	transport := mcpsdk.NewStreamableHTTPHandler(func(r *http.Request) *mcpsdk.Server {
 		server, _ := r.Context().Value(scopedServerContextKey{}).(*mcpsdk.Server)
 		return server
@@ -70,11 +82,13 @@ func (s *Server) requestScopedHTTPHandler(opts *mcpsdk.StreamableHTTPOptions) ht
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		exposure, err := s.config.RequestResolver(r)
 		if err != nil {
+			slog.Error("lebro/mcp: resolve request-scoped capabilities", "error", err)
 			writeResolutionError(w, err)
 			return
 		}
 		server, err := s.serverForExposure(exposure)
 		if err != nil {
+			slog.Error("lebro/mcp: build request-scoped server", "error", err)
 			http.Error(w, "MCP capability resolution failed", http.StatusInternalServerError)
 			return
 		}
@@ -110,11 +124,10 @@ type RequestResolutionError struct {
 func (e *RequestResolutionError) Error() string { return e.Message }
 
 func (s *Server) serverForExposure(exposure RequestExposure) (*mcpsdk.Server, error) {
-	server := NewServer(ServerConfig{
-		Implementation: s.config.Implementation,
-		Instructions:   s.config.Instructions,
-		PageSize:       s.config.PageSize,
-	})
+	config := s.config
+	config.RequestResolver = nil
+	server := NewServer(config)
+	server.validators = s.validators
 	for _, adapter := range exposure.Tools {
 		if err := server.ExposeToolAdapter(adapter); err != nil {
 			return nil, err
@@ -133,14 +146,56 @@ func (s *Server) serverForExposure(exposure RequestExposure) (*mcpsdk.Server, er
 	return server.mcpServer, nil
 }
 
+// ExposeToolAdapter registers a context-aware tool execution adapter. Use it
+// when the application stores the capability separately from a ToolRegistry.
 func (s *Server) ExposeToolAdapter(adapter ToolAdapter) error {
+	if s.config.RequestResolver != nil {
+		return errors.New("lebro/mcp: expose adapters through RequestResolver when request-scoped exposure is configured")
+	}
 	if adapter.Execute == nil {
 		return errors.New("lebro/mcp: tool adapter Execute is required")
 	}
-	return s.exposeTool(adapter.Definition, adapter.Execute)
+	validators, err := s.toolAdapterValidators(adapter.Definition)
+	if err != nil {
+		return err
+	}
+	return s.exposeTool(adapter.Definition, adapter.Execute, validators)
 }
 
-func (s *Server) exposeTool(def lebro.ToolDefinition, execute func(context.Context, lebro.ToolExecutionRequest) lebro.ToolExecutionResult) error {
+func (s *Server) toolAdapterValidators(def lebro.ToolDefinition) (*toolValidators, error) {
+	inputSchema, err := normalizeInputSchema(def.InputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("lebro/mcp: tool %q: %w", def.ID, err)
+	}
+	var outputSchema json.RawMessage
+	if len(def.OutputSchema) > 0 {
+		outputSchema, err = normalizeOutputSchema(def.OutputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("lebro/mcp: tool %q: %w", def.ID, err)
+		}
+	}
+	key := string(def.ID) + "\x00" + string(inputSchema) + "\x00" + string(outputSchema)
+	if validators, ok := s.validators.Load(key); ok {
+		return validators.(*toolValidators), nil
+	}
+	compiler := lebrojsonschema.NewCompiler()
+	inputValidator, err := compiler.Compile(inputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("lebro/mcp: tool %q: compile input schema: %w", def.ID, err)
+	}
+	var outputValidator lebro.CompiledSchema
+	if len(outputSchema) > 0 {
+		outputValidator, err = compiler.Compile(outputSchema)
+		if err != nil {
+			return nil, fmt.Errorf("lebro/mcp: tool %q: compile output schema: %w", def.ID, err)
+		}
+	}
+	validators := &toolValidators{input: inputValidator, output: outputValidator}
+	actual, _ := s.validators.LoadOrStore(key, validators)
+	return actual.(*toolValidators), nil
+}
+
+func (s *Server) exposeTool(def lebro.ToolDefinition, execute func(context.Context, lebro.ToolExecutionRequest) lebro.ToolExecutionResult, validators *toolValidators) error {
 	inputSchema, err := normalizeInputSchema(def.InputSchema)
 	if err != nil {
 		return fmt.Errorf("lebro/mcp: tool %q: %w", def.ID, err)
@@ -152,18 +207,6 @@ func (s *Server) exposeTool(def lebro.ToolDefinition, execute func(context.Conte
 			return fmt.Errorf("lebro/mcp: tool %q: %w", def.ID, err)
 		}
 	}
-	compiler := lebrojsonschema.NewCompiler()
-	inputValidator, err := compiler.Compile(inputSchema)
-	if err != nil {
-		return fmt.Errorf("lebro/mcp: tool %q: compile input schema: %w", def.ID, err)
-	}
-	var outputValidator lebro.CompiledSchema
-	if len(outputSchema) > 0 {
-		outputValidator, err = compiler.Compile(outputSchema)
-		if err != nil {
-			return fmt.Errorf("lebro/mcp: tool %q: compile output schema: %w", def.ID, err)
-		}
-	}
 	if err := s.registerName(string(def.ID)); err != nil {
 		return err
 	}
@@ -173,12 +216,14 @@ func (s *Server) exposeTool(def lebro.ToolDefinition, execute func(context.Conte
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		if err := inputValidator.Validate(arguments); err != nil {
-			return toolResultToMCP(lebro.ToolExecutionResult{ToolID: def.ID, State: lebro.ToolExecutionInvalidInput, Err: err})
+		if validators != nil {
+			if err := validators.input.Validate(arguments); err != nil {
+				return toolResultToMCP(lebro.ToolExecutionResult{ToolID: def.ID, State: lebro.ToolExecutionInvalidInput, Err: err})
+			}
 		}
 		result := execute(ctx, lebro.ToolExecutionRequest{Arguments: arguments})
-		if result.State == lebro.ToolExecutionSucceeded && outputValidator != nil {
-			if err := outputValidator.Validate(result.Output); err != nil {
+		if result.State == lebro.ToolExecutionSucceeded && validators != nil && validators.output != nil {
+			if err := validators.output.Validate(result.Output); err != nil {
 				result = lebro.ToolExecutionResult{ToolID: def.ID, State: lebro.ToolExecutionInvalidOutput, Err: err}
 			}
 		}

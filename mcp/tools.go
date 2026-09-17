@@ -18,7 +18,7 @@ func (s *Server) ExposeTool(tool *lebro.RegisteredTool) error {
 	if tool == nil {
 		return errors.New("lebro/mcp: tool is nil")
 	}
-	return s.exposeTool(tool.Definition(), tool.Execute)
+	return s.exposeTool(tool.Definition(), tool.Execute, nil)
 }
 
 // toolResultToMCP converts a lebro ToolExecutionResult to an MCP CallToolResult.

@@ -52,10 +52,11 @@ type ServerConfig struct {
 // server. Only explicitly registered primitives are visible to MCP clients.
 // The zero value is not usable; construct one with NewServer.
 type Server struct {
-	mcpServer *mcpsdk.Server
-	mu        sync.Mutex
-	exposed   map[string]struct{}
-	config    ServerConfig
+	mcpServer  *mcpsdk.Server
+	mu         sync.Mutex
+	exposed    map[string]struct{}
+	config     ServerConfig
+	validators *sync.Map
 }
 
 // NewServer creates an MCP server that exposes lebro primitives. The server
@@ -77,9 +78,10 @@ func NewServer(config ServerConfig) *Server {
 		opts.PageSize = config.PageSize
 	}
 	return &Server{
-		mcpServer: mcpsdk.NewServer(config.Implementation, opts),
-		exposed:   make(map[string]struct{}),
-		config:    config,
+		mcpServer:  mcpsdk.NewServer(config.Implementation, opts),
+		exposed:    make(map[string]struct{}),
+		config:     config,
+		validators: &sync.Map{},
 	}
 }
 
