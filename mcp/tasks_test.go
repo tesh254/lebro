@@ -179,6 +179,32 @@ func TestTaskMethodsRequireNegotiatedCapability(t *testing.T) {
 	}
 }
 
+func TestTaskPanicRecordsStableFailure(t *testing.T) {
+	store := newMemoryTaskStore()
+	tasks := newTasks(store, time.Now, func(context.Context, TaskRecord) error { return nil })
+	if _, err := tasks.create(context.Background(), "agent.panic", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) { panic("model panic") }}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		record, err := store.GetTask(context.Background(), "task-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status == TaskFailed {
+			if string(record.Failure) != `{"code":-32603,"message":"task execution failed"}` {
+				t.Fatalf("failure = %s", record.Failure)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("task did not fail")
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func TestTaskExpiryAndRestartRecovery(t *testing.T) {
 	store := newMemoryTaskStore()
 	now := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)

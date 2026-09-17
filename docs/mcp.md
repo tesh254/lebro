@@ -85,7 +85,8 @@ if err := server.ExposeWorkflowAsync(workflow, mcp.AsyncEntryOptions{
 
 The server advertises `io.modelcontextprotocol/tasks`. A client that declares
 that extension receives `resultType: "task"`, then uses `tasks/get` and
-`tasks/cancel`; terminal tool output and `isError` results remain available
+`tasks/update` (to acknowledge task input when supported), and `tasks/cancel`;
+terminal tool output and `isError` results remain available
 until TTL expiry. With `RequireTasks`, clients lacking the extension receive
 MCP error `-32021`. Optional entries retain synchronous fallback; set
 `TaskConfig.SyncTimeout` to bound it.

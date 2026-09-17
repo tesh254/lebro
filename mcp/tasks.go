@@ -21,7 +21,8 @@ var (
 	// ErrTaskNotFound is returned when a task is absent or its retention period elapsed.
 	ErrTaskNotFound = errors.New("lebro/mcp: task not found")
 	// ErrTaskConflict is returned when a task update loses a concurrent state transition.
-	ErrTaskConflict = errors.New("lebro/mcp: task conflict")
+	ErrTaskConflict          = errors.New("lebro/mcp: task conflict")
+	errTaskExecutionPanicked = errors.New("lebro/mcp: task execution panicked")
 )
 
 // TaskStatus is an MCP Tasks lifecycle state.
@@ -237,7 +238,15 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 		s.finish(ctx, record, nil, err, "restore task execution context failed")
 		return
 	}
-	result, err := entry.run(ctx, cloneRaw(record.Arguments))
+	var result *mcpsdk.CallToolResult
+	func() {
+		defer func() {
+			if recover() != nil {
+				err = errTaskExecutionPanicked
+			}
+		}()
+		result, err = entry.run(ctx, cloneRaw(record.Arguments))
+	}()
 	s.finish(ctx, record, result, err, "task execution failed")
 }
 
