@@ -53,6 +53,18 @@ func (s *memoryTaskStore) UpdateTask(_ context.Context, record TaskRecord) error
 	return nil
 }
 
+func (s *memoryTaskStore) ListWorkingTasks(_ context.Context) ([]TaskRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var working []TaskRecord
+	for _, record := range s.records {
+		if record.Status == TaskWorking {
+			working = append(working, cloneTask(record))
+		}
+	}
+	return working, nil
+}
+
 func cloneTask(record TaskRecord) TaskRecord {
 	record.Arguments = cloneRaw(record.Arguments)
 	record.Identity = cloneRaw(record.Identity)
@@ -136,9 +148,11 @@ func TestTaskCancelAndRevokedAccess(t *testing.T) {
 		return nil
 	})
 	started := make(chan struct{})
+	cancelled := make(chan struct{})
 	_, err := tasks.create(context.Background(), "workflow.a", json.RawMessage(`{}`), taskEntry{run: func(ctx context.Context, _ json.RawMessage) (*mcpsdk.CallToolResult, error) {
 		close(started)
 		<-ctx.Done()
+		close(cancelled)
 		return nil, ctx.Err()
 	}})
 	if err != nil {
@@ -147,6 +161,11 @@ func TestTaskCancelAndRevokedAccess(t *testing.T) {
 	<-started
 	if _, err := tasks.cancel(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"}); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("run did not observe cancellation")
 	}
 	deadline := time.After(time.Second)
 	for {
@@ -224,5 +243,109 @@ func TestTaskExpiryAndRestartRecovery(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	if _, err := tasks.get(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"}); err == nil {
 		t.Fatalf("expiry error = %v", err)
+	}
+}
+
+func TestTaskRunFailureRecordsFailedStatus(t *testing.T) {
+	store := newMemoryTaskStore()
+	tasks := newTasks(store, time.Now, func(context.Context, TaskRecord) error { return nil })
+	if _, err := tasks.create(context.Background(), "agent.a", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		return nil, errors.New("model exploded")
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		record, err := store.GetTask(context.Background(), "task-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status == TaskFailed {
+			if record.StatusMessage != "task execution failed" {
+				t.Fatalf("status message = %q", record.StatusMessage)
+			}
+			if string(record.Failure) != `{"code":-32603,"message":"task execution failed"}` {
+				t.Fatalf("failure = %s", record.Failure)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("task status = %q, want failed", record.Status)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestTaskUpdateAcknowledgement(t *testing.T) {
+	store := newMemoryTaskStore()
+	tasks := newTasks(store, time.Now, func(context.Context, TaskRecord) error { return nil })
+	done := make(chan struct{})
+	if _, err := tasks.create(context.Background(), "agent.a", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		defer close(done)
+		return &mcpsdk.CallToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	ack, err := tasks.update(context.Background(), nil, &taskUpdateParams{ParamsBase: taskMeta(), TaskID: "task-1", InputResponses: mcpsdk.InputResponseMap{"req-1": &mcpsdk.ElicitResult{Action: "accept"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.ResultType != "complete" {
+		t.Fatalf("ack = %#v", ack)
+	}
+	if _, err := tasks.update(context.Background(), nil, &taskUpdateParams{ParamsBase: taskMeta(), TaskID: "missing"}); err == nil {
+		t.Fatal("update for missing task succeeded")
+	}
+}
+
+func TestTaskRestartRecoveryResumesWorkingRun(t *testing.T) {
+	store := newMemoryTaskStore()
+	now := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	if err := store.CreateTask(context.Background(), TaskRecord{ID: "resumable", EntryID: "agent.a", Status: TaskWorking, CreatedAt: now, LastUpdatedAt: now, Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(context.Background(), TaskRecord{ID: "orphaned", EntryID: "agent.gone", Status: TaskWorking, CreatedAt: now, LastUpdatedAt: now, Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newTasks(store, clock, func(context.Context, TaskRecord) error { return nil })
+	done := make(chan struct{})
+	if err := restarted.register("agent.a", taskEntry{run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		defer close(done)
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: string(arguments)}}}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.recoverWorking(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("recovered run did not start")
+	}
+	deadline := time.After(time.Second)
+	for {
+		record, err := store.GetTask(context.Background(), "resumable")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status == TaskCompleted {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("recovered status = %q", record.Status)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	orphaned, err := store.GetTask(context.Background(), "orphaned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orphaned.Status != TaskWorking {
+		t.Fatalf("orphaned status = %q, want working", orphaned.Status)
 	}
 }

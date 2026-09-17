@@ -135,7 +135,8 @@ func (s *Server) ExposeAgentAsync(agent *lebro.Agent, options AsyncEntryOptions)
 
 // ExposeAgentAdapterAsync exposes an agent through MCP Tasks. A client that
 // negotiated io.modelcontextprotocol/tasks receives a durable task handle;
-// other clients get the bounded synchronous behavior unless RequireTasks is set.
+// other clients use the configured synchronous fallback unless RequireTasks is
+// set.
 func (s *Server) ExposeAgentAdapterAsync(adapter AgentAdapter, options AsyncEntryOptions) error {
 	if s.tasks == nil {
 		return errors.New("lebro/mcp: ServerConfig.Tasks is required for asynchronous entries")

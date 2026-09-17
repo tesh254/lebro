@@ -91,6 +91,24 @@ until TTL expiry. With `RequireTasks`, clients lacking the extension receive
 MCP error `-32021`. Optional entries retain synchronous fallback; set
 `TaskConfig.SyncTimeout` to bound it.
 
+### Restart recovery
+
+A crash between task creation and completion leaves a durable record in the
+`working` state. After the process restarts, expose the async entries again and
+call `RecoverTasks` to re-launch execution for those records:
+
+```go
+if err := server.RecoverTasks(ctx); err != nil { return err }
+```
+
+The `TaskStore` must implement `mcp.WorkingTaskLister` (an optional interface
+listing `working` records); otherwise recovery is a no-op. Records whose entry
+is not exposed in the restarted process are left until TTL expiry. Concurrent
+server instances may recover the same record; the version conflict retry in
+the store elects a single terminal result. If completion still cannot be
+persisted, `TaskConfig.OnConflict` observes the record so the application can
+reconcile its durable run.
+
 ## Client for an external server
 
 `mcp.Client` discovers remote tools and adapts each to `lebro.Tool`. Register

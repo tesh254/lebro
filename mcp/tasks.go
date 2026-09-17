@@ -67,6 +67,13 @@ type TaskStore interface {
 	UpdateTask(context.Context, TaskRecord) error
 }
 
+// WorkingTaskLister is an optional TaskStore capability for restart recovery.
+// When the store implements it, Server.RecoverTasks re-launches execution for
+// records that were still working when the previous process stopped.
+type WorkingTaskLister interface {
+	ListWorkingTasks(context.Context) ([]TaskRecord, error)
+}
+
 // TaskConfig connects MCP task lifecycle to application-owned durability and
 // authorization. Identity and Context restore caller identity for background
 // execution; Authorize runs on every get, update, and cancel request.
@@ -85,8 +92,9 @@ type TaskConfig struct {
 	// SyncTimeout bounds fallback calls for optional entries when a client did
 	// not negotiate Tasks. Zero leaves fallback calls unbounded.
 	SyncTimeout time.Duration
-	// OnConflict observes a completion that could not be persisted after
-	// retries. Applications should alert and reconcile the durable run.
+	// OnConflict observes a completion or failure that could not be persisted
+	// after retries, including non-conflict store errors. Applications should
+	// alert and reconcile the durable run.
 	OnConflict func(context.Context, TaskRecord)
 }
 
@@ -223,6 +231,35 @@ func (s *taskService) create(ctx context.Context, entryID string, arguments json
 	return &taskResult{ResultBase: mcpsdk.ResultBase{}, ResultType: "task", TaskRecord: record}, nil
 }
 
+// recoverWorking re-launches execution for tasks that were still working when
+// the previous process stopped. Only records whose entry is exposed in this
+// process are re-launched; a record left behind by an unexposed entry stays
+// working until TTL expiry. Concurrent server instances may recover the same
+// record; finish's ErrTaskConflict retry elects a single terminal result.
+func (s *taskService) recoverWorking(ctx context.Context) error {
+	lister, ok := s.config.Store.(WorkingTaskLister)
+	if !ok {
+		return nil
+	}
+	records, err := lister.ListWorkingTasks(ctx)
+	if err != nil {
+		return fmt.Errorf("lebro/mcp: list working tasks: %w", err)
+	}
+	for _, record := range records {
+		if s.expired(record) {
+			continue
+		}
+		s.mu.RLock()
+		entry, ok := s.entries[record.EntryID]
+		s.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		go s.execute(record, entry)
+	}
+	return nil
+}
+
 func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
@@ -250,6 +287,17 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	s.finish(ctx, record, result, err, "task execution failed")
 }
 
+// RecoverTasks re-launches execution for tasks that were still working when
+// the previous process stopped. Call it after the async entries are exposed
+// and before serving traffic. The TaskStore must implement WorkingTaskLister;
+// otherwise RecoverTasks returns nil and recovery is a no-op.
+func (s *Server) RecoverTasks(ctx context.Context) error {
+	if s.tasks == nil {
+		return nil
+	}
+	return s.tasks.recoverWorking(ctx)
+}
+
 func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcpsdk.CallToolResult, runErr error, failureMessage string) {
 	ctx = context.WithoutCancel(ctx)
 	for attempts := 0; attempts < 3; attempts++ {
@@ -271,11 +319,15 @@ func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcp
 			current.Status = TaskCompleted
 			current.Result = result
 		}
-		if err := s.config.Store.UpdateTask(ctx, current); !errors.Is(err, ErrTaskConflict) {
+		err = s.config.Store.UpdateTask(ctx, current)
+		if err == nil {
 			return
 		}
+		if !errors.Is(err, ErrTaskConflict) {
+			break
+		}
 	}
-	slog.Error("lebro/mcp: task completion conflict", "task_id", record.ID)
+	slog.Error("lebro/mcp: task completion not persisted", "task_id", record.ID)
 	if s.config.OnConflict != nil {
 		s.config.OnConflict(ctx, record)
 	}
