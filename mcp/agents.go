@@ -144,10 +144,7 @@ func (s *Server) ExposeAgentAdapterAsync(adapter AgentAdapter, options AsyncEntr
 		return errors.New("lebro/mcp: agent adapter Run and definition ID are required")
 	}
 	name := "agent." + string(adapter.Definition.ID)
-	if err := s.ExposeAgentAdapter(adapter); err != nil {
-		return err
-	}
-	return s.tasks.register(name, taskEntry{require: options.RequireTasks, run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
+	entry := taskEntry{require: options.RequireTasks, run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
@@ -170,7 +167,15 @@ func (s *Server) ExposeAgentAdapterAsync(adapter AgentAdapter, options AsyncEntr
 			return toolError("agent execution failed"), nil
 		}
 		return agentResultToMCP(result), nil
-	}})
+	}}
+	if err := s.tasks.register(name, entry); err != nil {
+		return err
+	}
+	if err := s.ExposeAgentAdapter(adapter); err != nil {
+		s.tasks.unregister(name)
+		return err
+	}
+	return nil
 }
 
 // agentResultToMCP converts a lebro RunResult to an MCP CallToolResult. The

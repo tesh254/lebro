@@ -177,10 +177,7 @@ func (s *Server) ExposeWorkflowAdapterAsync(adapter WorkflowAdapter, options Asy
 		return errors.New("lebro/mcp: workflow adapter Run and definition ID are required")
 	}
 	name := "workflow." + string(adapter.Definition.ID)
-	if err := s.ExposeWorkflowAdapter(adapter); err != nil {
-		return err
-	}
-	return s.tasks.register(name, taskEntry{require: options.RequireTasks, run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
+	entry := taskEntry{require: options.RequireTasks, run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
 		if len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
@@ -204,7 +201,15 @@ func (s *Server) ExposeWorkflowAdapterAsync(adapter WorkflowAdapter, options Asy
 			return toolError("workflow execution failed"), nil
 		}
 		return workflowResultToMCP(result), nil
-	}})
+	}}
+	if err := s.tasks.register(name, entry); err != nil {
+		return err
+	}
+	if err := s.ExposeWorkflowAdapter(adapter); err != nil {
+		s.tasks.unregister(name)
+		return err
+	}
+	return nil
 }
 
 func validateWorkflowAdapterSchema(schema json.RawMessage) error {

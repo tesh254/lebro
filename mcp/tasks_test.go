@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	mcpjsonrpc "github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -75,6 +76,10 @@ func newTasks(store TaskStore, now func() time.Time, authorize func(context.Cont
 
 type taskIdentityKey struct{}
 
+func taskMeta() mcpsdk.ParamsBase {
+	return mcpsdk.ParamsBase{Meta: mcpsdk.Meta{"io.modelcontextprotocol/clientCapabilities": map[string]any{"extensions": map[string]any{tasksExtension: map[string]any{}}}}}
+}
+
 func TestTaskCompletesAndKeepsResult(t *testing.T) {
 	store := newMemoryTaskStore()
 	now := time.Now
@@ -140,7 +145,7 @@ func TestTaskCancelAndRevokedAccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-started
-	if _, err := tasks.cancel(context.Background(), nil, &taskParams{TaskID: "task-1"}); err != nil {
+	if _, err := tasks.cancel(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.After(time.Second)
@@ -159,8 +164,18 @@ func TestTaskCancelAndRevokedAccess(t *testing.T) {
 		}
 	}
 	allow = false
-	if _, err := tasks.get(context.Background(), nil, &taskParams{TaskID: "task-1"}); err == nil {
+	if _, err := tasks.get(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"}); err == nil {
 		t.Fatal("revoked get succeeded")
+	}
+}
+
+func TestTaskMethodsRequireNegotiatedCapability(t *testing.T) {
+	store := newMemoryTaskStore()
+	tasks := newTasks(store, time.Now, func(context.Context, TaskRecord) error { return nil })
+	_, err := tasks.get(context.Background(), nil, &taskParams{TaskID: "missing"})
+	var protocol *mcpjsonrpc.Error
+	if !errors.As(err, &protocol) || protocol.Code != -32021 {
+		t.Fatalf("error = %#v", err)
 	}
 }
 
@@ -174,14 +189,14 @@ func TestTaskExpiryAndRestartRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted := newTasks(store, clock, func(context.Context, TaskRecord) error { return nil })
-	if _, err := restarted.get(context.Background(), nil, &taskParams{TaskID: "recovered"}); err != nil {
+	if _, err := restarted.get(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "recovered"}); err != nil {
 		t.Fatalf("restart get: %v", err)
 	}
-	if _, err := tasks.create(context.Background(), "workflow.a", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) { return nil, nil }}); err != nil {
+	if err := store.CreateTask(context.Background(), TaskRecord{ID: "task-1", EntryID: "workflow.a", Status: TaskWorking, CreatedAt: now, LastUpdatedAt: now, TTLMs: func() *int64 { ttl := int64(time.Minute / time.Millisecond); return &ttl }(), Version: 1}); err != nil {
 		t.Fatal(err)
 	}
 	now = now.Add(2 * time.Minute)
-	if _, err := tasks.get(context.Background(), nil, &taskParams{TaskID: "task-1"}); !errors.Is(err, ErrTaskNotFound) {
+	if _, err := tasks.get(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"}); err == nil {
 		t.Fatalf("expiry error = %v", err)
 	}
 }

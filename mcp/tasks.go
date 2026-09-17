@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -83,6 +84,9 @@ type TaskConfig struct {
 	// SyncTimeout bounds fallback calls for optional entries when a client did
 	// not negotiate Tasks. Zero leaves fallback calls unbounded.
 	SyncTimeout time.Duration
+	// OnConflict observes a completion that could not be persisted after
+	// retries. Applications should alert and reconcile the durable run.
+	OnConflict func(context.Context, TaskRecord)
 }
 
 func (c *TaskConfig) validate() error {
@@ -128,6 +132,8 @@ func (s *taskService) register(name string, entry taskEntry) error {
 	s.entries[name] = entry
 	return nil
 }
+
+func (s *taskService) unregister(name string) { s.mu.Lock(); delete(s.entries, name); s.mu.Unlock() }
 
 func (s *taskService) install(server *mcpsdk.Server) {
 	server.AddReceivingMiddleware(s.middleware)
@@ -228,17 +234,18 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	}
 	ctx, err = s.config.Context(ctx, record)
 	if err != nil {
-		s.finish(ctx, record, nil, err)
+		s.finish(ctx, record, nil, err, "restore task execution context failed")
 		return
 	}
 	result, err := entry.run(ctx, cloneRaw(record.Arguments))
-	s.finish(ctx, record, result, err)
+	s.finish(ctx, record, result, err, "task execution failed")
 }
 
-func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcpsdk.CallToolResult, runErr error) {
+func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcpsdk.CallToolResult, runErr error, failureMessage string) {
+	ctx = context.WithoutCancel(ctx)
 	for attempts := 0; attempts < 3; attempts++ {
 		current, err := s.config.Store.GetTask(ctx, record.ID)
-		if err != nil || current.Status == TaskCancelled || current.Status.terminal() {
+		if err != nil || current.Status.terminal() {
 			return
 		}
 		current.LastUpdatedAt = s.now()
@@ -248,7 +255,8 @@ func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcp
 				current.StatusMessage = "cancelled"
 			} else {
 				current.Status = TaskFailed
-				current.Failure = json.RawMessage(`{"code":-32603,"message":"task execution failed"}`)
+				current.StatusMessage = failureMessage
+				current.Failure = json.RawMessage(`{"code":-32603,"message":"` + failureMessage + `"}`)
 			}
 		} else {
 			current.Status = TaskCompleted
@@ -257,6 +265,10 @@ func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcp
 		if err := s.config.Store.UpdateTask(ctx, current); !errors.Is(err, ErrTaskConflict) {
 			return
 		}
+	}
+	slog.Error("lebro/mcp: task completion conflict", "task_id", record.ID)
+	if s.config.OnConflict != nil {
+		s.config.OnConflict(ctx, record)
 	}
 }
 
@@ -280,6 +292,9 @@ type taskAck struct {
 }
 
 func (s *taskService) get(ctx context.Context, _ *mcpsdk.ServerSession, params *taskParams) (*taskResult, error) {
+	if !tasksNegotiated(params.GetMeta()) {
+		return nil, missingTasksCapability()
+	}
 	record, err := s.loadAuthorized(ctx, params.TaskID)
 	if err != nil {
 		return nil, err
@@ -288,6 +303,9 @@ func (s *taskService) get(ctx context.Context, _ *mcpsdk.ServerSession, params *
 }
 
 func (s *taskService) update(ctx context.Context, _ *mcpsdk.ServerSession, params *taskUpdateParams) (*taskAck, error) {
+	if !tasksNegotiated(params.GetMeta()) {
+		return nil, missingTasksCapability()
+	}
 	if _, err := s.loadAuthorized(ctx, params.TaskID); err != nil {
 		return nil, err
 	}
@@ -295,6 +313,9 @@ func (s *taskService) update(ctx context.Context, _ *mcpsdk.ServerSession, param
 }
 
 func (s *taskService) cancel(ctx context.Context, _ *mcpsdk.ServerSession, params *taskParams) (*taskAck, error) {
+	if !tasksNegotiated(params.GetMeta()) {
+		return nil, missingTasksCapability()
+	}
 	for attempts := 0; attempts < 3; attempts++ {
 		record, err := s.loadAuthorized(ctx, params.TaskID)
 		if err != nil {
@@ -328,15 +349,22 @@ func (s *taskService) cancel(ctx context.Context, _ *mcpsdk.ServerSession, param
 func (s *taskService) loadAuthorized(ctx context.Context, id string) (TaskRecord, error) {
 	record, err := s.config.Store.GetTask(ctx, id)
 	if err != nil {
+		if errors.Is(err, ErrTaskNotFound) {
+			return TaskRecord{}, invalidTaskID("Task not found")
+		}
 		return TaskRecord{}, err
 	}
 	if s.expired(record) {
-		return TaskRecord{}, ErrTaskNotFound
+		return TaskRecord{}, invalidTaskID("Task has expired")
 	}
 	if err := s.config.Authorize(ctx, record); err != nil {
 		return TaskRecord{}, err
 	}
 	return record, nil
+}
+
+func invalidTaskID(message string) error {
+	return &mcpjsonrpc.Error{Code: -32602, Message: "Failed to retrieve task: " + message}
 }
 
 func (s *taskService) expired(record TaskRecord) bool {
