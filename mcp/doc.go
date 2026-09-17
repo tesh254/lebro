@@ -38,6 +38,26 @@
 // Agents and workflows are exposed as MCP tools so clients can list and invoke
 // them through the standard tools/list and tools/call methods.
 //
+// # Request-scoped HTTP exposure
+//
+// StreamableHTTPHandler can resolve an allow-list for each inbound request.
+// Set ServerConfig.RequestResolver after authenticating at the application
+// boundary. It returns only the caller's current grants, and is invoked again
+// for tools/call, so a list response never authorizes a later invocation.
+// ToolAdapter, AgentAdapter, and WorkflowAdapter carry persisted definitions
+// and context-aware callbacks without requiring in-memory lebro runtime
+// objects. Authentication, tenant identity, and policy remain application
+// concerns; the mcp package enforces only the supplied exposure boundary.
+//
+//	server := mcp.NewServer(mcp.ServerConfig{
+//	    Implementation: &mcpsdk.Implementation{Name: "cloud", Version: "1"},
+//	    RequestResolver: func(r *http.Request) (mcp.RequestExposure, error) {
+//	        return grantsFor(r.Context())
+//	    },
+//	})
+//	// handler is stateless by default and propagates request cancellation.
+//	handler := server.StreamableHTTPHandler(nil)
+//
 // # Consuming a remote MCP server
 //
 // Client discovers tools on a remote server and adapts them to lebro.Tool, so

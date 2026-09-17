@@ -80,12 +80,30 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 	if wf == nil {
 		return errors.New("lebro/mcp: workflow is nil")
 	}
-	def := wf.Definition()
+	return s.ExposeWorkflowAdapter(WorkflowAdapter{
+		Definition:    wf.Definition(),
+		InputSchema:   wf.InputSchema(),
+		ValidateInput: wf.ValidateInput,
+		Run:           wf.Run,
+	})
+}
+
+// ExposeWorkflowAdapter registers a workflow execution adapter as an MCP tool.
+// Use it when the application stores published workflow definitions separately
+// from an in-memory *lebro.LinearWorkflow.
+func (s *Server) ExposeWorkflowAdapter(adapter WorkflowAdapter) error {
+	if adapter.Run == nil {
+		return errors.New("lebro/mcp: workflow adapter Run is required")
+	}
+	if len(adapter.InputSchema) > 0 && adapter.ValidateInput == nil {
+		return errors.New("lebro/mcp: workflow adapter ValidateInput is required when InputSchema is set")
+	}
+	def := adapter.Definition
 	toolName := "workflow." + string(def.ID)
 	if err := s.registerName(toolName); err != nil {
 		return err
 	}
-	inputSchema := workflowToolInputSchema(toolName, wf.InputSchema())
+	inputSchema := workflowToolInputSchema(toolName, adapter.InputSchema)
 
 	mcpTool := &mcpsdk.Tool{
 		Name:        toolName,
@@ -109,15 +127,17 @@ func (s *Server) ExposeWorkflow(wf *lebro.LinearWorkflow) error {
 			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow arguments: %w", err))
 			return mcpResult, nil
 		}
-		if err := wf.ValidateInput(input.Input); err != nil {
-			mcpResult := &mcpsdk.CallToolResult{}
-			mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow input: %w", err))
-			return mcpResult, nil
+		if adapter.ValidateInput != nil {
+			if err := adapter.ValidateInput(input.Input); err != nil {
+				mcpResult := &mcpsdk.CallToolResult{}
+				mcpResult.SetError(fmt.Errorf("lebro/mcp: invalid workflow input: %w", err))
+				return mcpResult, nil
+			}
 		}
 		runInput := lebro.WorkflowRunInput{
 			Input: input.Input,
 		}
-		result, err := wf.Run(ctx, runInput)
+		result, err := adapter.Run(ctx, runInput)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
