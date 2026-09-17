@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -278,7 +279,8 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	var result *mcpsdk.CallToolResult
 	func() {
 		defer func() {
-			if recover() != nil {
+			if r := recover(); r != nil {
+				slog.Error("lebro/mcp: task run panicked", "task_id", record.ID, "panic", r, "stack", string(debug.Stack()))
 				err = errTaskExecutionPanicked
 			}
 		}()
