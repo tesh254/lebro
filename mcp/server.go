@@ -46,6 +46,10 @@ type ServerConfig struct {
 	// ExposeAgent, and ExposeWorkflow are not included. Applications own
 	// authentication and policy and should return only grants for the caller.
 	RequestResolver RequestResolver
+	// Tasks configures the MCP Tasks extension for explicitly asynchronous
+	// agent and workflow entries. Nil leaves existing synchronous behavior
+	// unchanged.
+	Tasks *TaskConfig
 }
 
 // Server exposes selected lebro tools, agents, and workflows through an MCP
@@ -57,6 +61,7 @@ type Server struct {
 	exposed    map[string]struct{}
 	config     ServerConfig
 	validators *sync.Map
+	tasks      *taskService
 }
 
 // NewServer creates an MCP server that exposes lebro primitives. The server
@@ -71,18 +76,32 @@ func NewServer(config ServerConfig) *Server {
 			Tools: &mcpsdk.ToolCapabilities{ListChanged: true},
 		},
 	}
+	if config.Tasks != nil {
+		if err := config.Tasks.validate(); err != nil {
+			panic(err)
+		}
+		if opts.Capabilities == nil {
+			opts.Capabilities = &mcpsdk.ServerCapabilities{}
+		}
+		opts.Capabilities.AddExtension(tasksExtension, nil)
+	}
 	if config.PageSize < 0 {
 		panic(fmt.Errorf("lebro/mcp: PageSize must not be negative, got %d", config.PageSize))
 	}
 	if config.PageSize > 0 {
 		opts.PageSize = config.PageSize
 	}
-	return &Server{
+	server := &Server{
 		mcpServer:  mcpsdk.NewServer(config.Implementation, opts),
 		exposed:    make(map[string]struct{}),
 		config:     config,
 		validators: &sync.Map{},
 	}
+	if config.Tasks != nil {
+		server.tasks = newTaskService(config.Tasks)
+		server.tasks.install(server.mcpServer)
+	}
+	return server
 }
 
 func toolError(message string) *mcpsdk.CallToolResult {

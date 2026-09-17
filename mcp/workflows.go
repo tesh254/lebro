@@ -158,6 +158,55 @@ func (s *Server) ExposeWorkflowAdapter(adapter WorkflowAdapter) error {
 	return nil
 }
 
+// ExposeWorkflowAsync exposes an in-memory workflow through MCP Tasks.
+func (s *Server) ExposeWorkflowAsync(wf *lebro.LinearWorkflow, options AsyncEntryOptions) error {
+	if wf == nil {
+		return errors.New("lebro/mcp: workflow is nil")
+	}
+	return s.ExposeWorkflowAdapterAsync(WorkflowAdapter{Definition: wf.Definition(), InputSchema: wf.InputSchema(), ValidateInput: wf.ValidateInput, Run: wf.Run}, options)
+}
+
+// ExposeWorkflowAdapterAsync exposes a workflow through MCP Tasks. Task IDs
+// are application-durable through ServerConfig.Tasks.Store and do not depend on
+// the original MCP HTTP request remaining open.
+func (s *Server) ExposeWorkflowAdapterAsync(adapter WorkflowAdapter, options AsyncEntryOptions) error {
+	if s.tasks == nil {
+		return errors.New("lebro/mcp: ServerConfig.Tasks is required for asynchronous entries")
+	}
+	if adapter.Run == nil || adapter.Definition.ID == "" {
+		return errors.New("lebro/mcp: workflow adapter Run and definition ID are required")
+	}
+	name := "workflow." + string(adapter.Definition.ID)
+	if err := s.ExposeWorkflowAdapter(adapter); err != nil {
+		return err
+	}
+	return s.tasks.register(name, taskEntry{require: options.RequireTasks, run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		if len(arguments) == 0 {
+			arguments = json.RawMessage(`{}`)
+		}
+		if err := workflowCallInputCompiled.Validate(arguments); err != nil {
+			return toolError("invalid workflow arguments"), nil
+		}
+		var input workflowCallInput
+		if err := json.Unmarshal(arguments, &input); err != nil {
+			return toolError("invalid workflow arguments"), nil
+		}
+		if adapter.ValidateInput != nil {
+			if err := adapter.ValidateInput(input.Input); err != nil {
+				return toolError("invalid workflow input"), nil
+			}
+		}
+		result, err := adapter.Run(ctx, lebro.WorkflowRunInput{Input: input.Input})
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			return toolError("workflow execution failed"), nil
+		}
+		return workflowResultToMCP(result), nil
+	}})
+}
+
 func validateWorkflowAdapterSchema(schema json.RawMessage) error {
 	if len(schema) == 0 {
 		return nil

@@ -125,6 +125,54 @@ func (s *Server) ExposeAgentAdapter(adapter AgentAdapter) error {
 	return nil
 }
 
+// ExposeAgentAsync exposes an in-memory agent through MCP Tasks.
+func (s *Server) ExposeAgentAsync(agent *lebro.Agent, options AsyncEntryOptions) error {
+	if agent == nil {
+		return errors.New("lebro/mcp: agent is nil")
+	}
+	return s.ExposeAgentAdapterAsync(AgentAdapter{Definition: agent.Definition(), Run: agent.Run}, options)
+}
+
+// ExposeAgentAdapterAsync exposes an agent through MCP Tasks. A client that
+// negotiated io.modelcontextprotocol/tasks receives a durable task handle;
+// other clients get the bounded synchronous behavior unless RequireTasks is set.
+func (s *Server) ExposeAgentAdapterAsync(adapter AgentAdapter, options AsyncEntryOptions) error {
+	if s.tasks == nil {
+		return errors.New("lebro/mcp: ServerConfig.Tasks is required for asynchronous entries")
+	}
+	if adapter.Run == nil || adapter.Definition.ID == "" {
+		return errors.New("lebro/mcp: agent adapter Run and definition ID are required")
+	}
+	name := "agent." + string(adapter.Definition.ID)
+	if err := s.ExposeAgentAdapter(adapter); err != nil {
+		return err
+	}
+	return s.tasks.register(name, taskEntry{require: options.RequireTasks, run: func(ctx context.Context, arguments json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		if len(arguments) == 0 {
+			arguments = json.RawMessage(`{}`)
+		}
+		if err := agentInputCompiled.Validate(arguments); err != nil {
+			return toolError("invalid agent arguments"), nil
+		}
+		var input agentCallInput
+		if err := json.Unmarshal(arguments, &input); err != nil {
+			return toolError("invalid agent arguments"), nil
+		}
+		messages := make([]lebro.Message, 0, len(input.Messages))
+		for _, message := range input.Messages {
+			messages = append(messages, lebro.Message{Role: lebro.RoleUser, Content: message.Content})
+		}
+		result, err := adapter.Run(ctx, lebro.RunInput{Messages: messages})
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err
+			}
+			return toolError("agent execution failed"), nil
+		}
+		return agentResultToMCP(result), nil
+	}})
+}
+
 // agentResultToMCP converts a lebro RunResult to an MCP CallToolResult. The
 // terminal assistant message content is returned as text content, and when
 // structured output is present it is included as structured content.

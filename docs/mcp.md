@@ -53,6 +53,43 @@ return http.ListenAndServe(":8080", handler)
 propagation. Do not expose every registry tool: `ExposeTool`, `ExposeAgent`, and
 `ExposeWorkflow` are an allow-list.
 
+### Durable agent and workflow tasks
+
+Use MCP Tasks for an entrypoint that may outlive one HTTP request. The
+application owns `TaskStore`: persist the opaque caller identity with every
+task, reconstruct a runtime context in `Context`, and authorize every poll or
+cancellation in `Authorize`. Do not store bearer credentials in `Identity`.
+
+```go
+server := mcp.NewServer(mcp.ServerConfig{
+	Implementation: &mcpsdk.Implementation{Name: "jobs", Version: "1.0.0"},
+	Tasks: &mcp.TaskConfig{
+		Store:        taskStore, // durable application implementation
+		TTL:          time.Hour,
+		PollInterval: 2 * time.Second,
+		Identity: func(ctx context.Context) (json.RawMessage, error) {
+			return callerIdentity(ctx) // stable subject/tenant reference only
+		},
+		Context: func(ctx context.Context, task mcp.TaskRecord) (context.Context, error) {
+			return contextForIdentity(ctx, task.Identity)
+		},
+		Authorize: func(ctx context.Context, task mcp.TaskRecord) error {
+			return mayAccessTask(ctx, task)
+		},
+	},
+})
+if err := server.ExposeWorkflowAsync(workflow, mcp.AsyncEntryOptions{
+	RequireTasks: true,
+}); err != nil { return err }
+```
+
+The server advertises `io.modelcontextprotocol/tasks`. A client that declares
+that extension receives `resultType: "task"`, then uses `tasks/get` and
+`tasks/cancel`; terminal tool output and `isError` results remain available
+until TTL expiry. With `RequireTasks`, clients lacking the extension receive
+MCP error `-32021`. Optional entries retain synchronous fallback; set
+`TaskConfig.SyncTimeout` to bound it.
+
 ## Client for an external server
 
 `mcp.Client` discovers remote tools and adapts each to `lebro.Tool`. Register
