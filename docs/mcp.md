@@ -53,6 +53,70 @@ return http.ListenAndServe(":8080", handler)
 propagation. Do not expose every registry tool: `ExposeTool`, `ExposeAgent`, and
 `ExposeWorkflow` are an allow-list.
 
+### Durable agent and workflow tasks
+
+Use MCP Tasks for an entrypoint that may outlive one HTTP request. The
+application owns `TaskStore`: persist the opaque caller identity with every
+task, reconstruct a runtime context in `Context`, and authorize every poll or
+cancellation in `Authorize`. Do not store bearer credentials in `Identity`.
+`TaskRecord.LeaseUntil` and `TaskRecord.Version` are excluded from the JSON
+wire encoding sent to MCP clients, so a store that only serializes
+`json.Marshal(record)` drops them; persist each as an explicit column so
+concurrent server instances honor claims and version conflicts.
+
+```go
+server := mcp.NewServer(mcp.ServerConfig{
+	Implementation: &mcpsdk.Implementation{Name: "jobs", Version: "1.0.0"},
+	Tasks: &mcp.TaskConfig{
+		Store:        taskStore, // durable application implementation
+		TTL:          time.Hour,
+		PollInterval: 2 * time.Second,
+		Identity: func(ctx context.Context) (json.RawMessage, error) {
+			return callerIdentity(ctx) // stable subject/tenant reference only
+		},
+		Context: func(ctx context.Context, task mcp.TaskRecord) (context.Context, error) {
+			return contextForIdentity(ctx, task.Identity)
+		},
+		Authorize: func(ctx context.Context, task mcp.TaskRecord) error {
+			return mayAccessTask(ctx, task)
+		},
+	},
+})
+if err := server.ExposeWorkflowAsync(workflow, mcp.AsyncEntryOptions{
+	RequireTasks: true,
+}); err != nil { return err }
+```
+
+The server advertises `io.modelcontextprotocol/tasks`. A client that declares
+that extension receives `resultType: "task"`, then uses `tasks/get` and
+`tasks/update` (to acknowledge task input when supported), and `tasks/cancel`;
+terminal tool output and `isError` results remain available
+until TTL expiry. With `RequireTasks`, clients lacking the extension receive
+MCP error `-32021`. Optional entries retain synchronous fallback; set
+`TaskConfig.SyncTimeout` to bound it.
+
+### Restart recovery
+
+A crash between task creation and completion leaves a durable record in the
+`working` state. After the process restarts, expose the async entries again and
+call `RecoverTasks` to re-launch execution for those records:
+
+```go
+if err := server.RecoverTasks(ctx); err != nil { return err }
+```
+
+The `TaskStore` must implement `mcp.WorkingTaskLister` (an optional interface
+listing `working` records); otherwise recovery is a no-op. Records whose entry
+is not exposed in the restarted process are left until TTL expiry. Before
+launching a run, `execute` claims the record with a time-bounded lease and
+renews it while the run is in flight, so concurrent server instances
+recovering the same record elect a single claimant and never execute it
+twice. The server's `ErrTaskConflict` retry elects a single terminal result.
+If completion still cannot be persisted, `TaskConfig.OnConflict` observes the
+record so the application can reconcile its durable run. Configure
+`TaskConfig.Lease` to bound the claim; the default is 30 seconds, and a
+crashed process's claim lapses after the lease elapses.
+
 ## Client for an external server
 
 `mcp.Client` discovers remote tools and adapts each to `lebro.Tool`. Register
