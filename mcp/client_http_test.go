@@ -102,6 +102,9 @@ func TestConnectStreamableHTTP_SessionLossIsRecoverable(t *testing.T) {
 	if health := client.ConnectionHealth(); !health.Connected || health.SessionLost {
 		t.Errorf("health after reconnect = %+v", health)
 	}
+	if _, err := client.DiscoverTools(context.Background()); err != nil {
+		t.Fatalf("DiscoverTools after reconnect: %v", err)
+	}
 }
 
 func TestConnectStreamableHTTP_ExpiresIdleSession(t *testing.T) {
@@ -168,7 +171,6 @@ type legacyHTTPFixture struct {
 	nextID   int
 	sessions map[string]bool
 	seen     []string
-	lose     bool
 }
 
 func newLegacyHTTPFixture(t *testing.T) *legacyHTTPFixture {
@@ -216,7 +218,7 @@ func (f *legacyHTTPFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		id := r.Header.Get("Mcp-Session-Id")
 		f.mu.Lock()
-		lost := f.lose || !f.sessions[id]
+		lost := !f.sessions[id]
 		if !lost {
 			f.seen = append(f.seen, id)
 		}
@@ -239,7 +241,12 @@ func (f *legacyHTTPFixture) sessionIDs() []string {
 
 func (f *legacyHTTPFixture) loseSession() {
 	f.mu.Lock()
-	f.lose = true
+	// Remove only sessions that exist now. A later initialize from Reconnect
+	// receives a fresh valid session so this fixture verifies recovery, not
+	// merely that the reconnect handshake completed.
+	for id := range f.sessions {
+		delete(f.sessions, id)
+	}
 	f.mu.Unlock()
 }
 
