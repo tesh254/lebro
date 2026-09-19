@@ -1,0 +1,25 @@
+mcp/tasks.go
+  s_d404026f0765b5::t_b5f4f134f6f3b1 166-171
+  s_d404026f0765b5::t_e9f1656302cbe4 338-340
+  s_d404026f0765b5::t_7a6011d0c13835 667-669
+  s_d404026f0765b5::t_91f9a6cc109462 159-161
+mcp/tasks_test.go
+  s_d404026f0765b5::t_d8347682ec0b60 690-691,695-702,711-716,722-747
+  s_d404026f0765b5::t_d65f8fa57ff88f 660-687
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "c367e9511eb6bebb4841d84cb42f3c940112b070",
+  "prompts": {},
+  "sessions": {
+    "s_d404026f0765b5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f485c402dffeSuSpR50eQYy6LB",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
