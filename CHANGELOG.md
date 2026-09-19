@@ -12,6 +12,19 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Request-scoped MCP exposures can now register durable task entries:
+  `RequestExposure` accepts `AsyncAgents` and `AsyncWorkflows`, each wrapping
+  the synchronous adapter with `AsyncEntryOptions`. The per-request server
+  registers them through the existing Tasks extension, so stateless HTTP
+  deployments get the same long-running task handles as statically exposed
+  servers. The new fields require `ServerConfig.Tasks` to be configured —
+  resolving an exposure that uses them without it fails the request. Unlike
+  statically exposed entries, task records left working by a stopped process
+  are not re-launched by `RecoverTasks` (entries register per request, so
+  there is nothing to recover against at boot); applications should reconcile
+  working records from their own durable execution on the next
+  `tasks/get`, or bound the gap with `TaskConfig.TTL`.
+
 - Streamable HTTP MCP client lifecycle support. `mcp.Client` now offers
   `ConnectStreamableHTTP`, `ConnectionHealth`, and `Reconnect`, negotiating
   modern 2026-07-28 stateless servers and legacy initialized sessions through
