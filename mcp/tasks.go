@@ -664,8 +664,9 @@ func (s *taskService) loadAuthorized(ctx context.Context, id string) (TaskRecord
 		if errors.Is(err, ErrTaskNotFound) {
 			return TaskRecord{}, invalidTaskID("Task not found")
 		}
-		// Store internals stay out of the JSON-RPC response; get, update,
-		// and cancel all report the same generic internal error.
+		// Keep the client payload generic, but record the underlying cause
+		// server-side so a store outage is diagnosable from the logs.
+		slog.Error("lebro/mcp: task store read failed", "task_id", id, "error", err)
 		return TaskRecord{}, &mcpjsonrpc.Error{Code: -32603, Message: "Failed to retrieve task: the task store is unavailable"}
 	}
 	if s.expired(record) {

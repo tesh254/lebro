@@ -658,8 +658,10 @@ func TestRecoverTasksBoundsConcurrentRuns(t *testing.T) {
 }
 
 // TestRecoverTasksConcurrentIsRaceFree pins that concurrent RecoverTasks
-// calls share the pre-initialized recovery semaphore without a data race; the
-// semaphore must never be lazily created inside recoverWorking.
+// calls share the pre-initialized recovery semaphore without a data race, and
+// that the recovered entry actually runs exactly once. Both callers are
+// released from a barrier so their recoverWorking calls overlap the sensitive
+// window instead of running sequentially.
 func TestRecoverTasksConcurrentIsRaceFree(t *testing.T) {
 	store := newMemoryTaskStore()
 	now := time.Now()
@@ -667,22 +669,39 @@ func TestRecoverTasksConcurrentIsRaceFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := NewServer(ServerConfig{Implementation: &mcpsdk.Implementation{Name: "t", Version: "1"}, Tasks: &TaskConfig{Store: store, Identity: func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{}`), nil }, Context: func(ctx context.Context, _ TaskRecord) (context.Context, error) { return ctx, nil }, Authorize: func(context.Context, TaskRecord) error { return nil }, PollInterval: time.Millisecond}})
+	var runs atomic.Int64
 	if err := server.tasks.register("agent.a", taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		runs.Add(1)
 		return &mcpsdk.CallToolResult{}, nil
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	barrier := make(chan struct{})
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			<-barrier
 			if err := server.RecoverTasks(context.Background()); err != nil {
 				t.Error(err)
 			}
 		}()
 	}
+	close(barrier)
 	wg.Wait()
+	deadline := time.After(2 * time.Second)
+	for runs.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("recovered entry never ran")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("recovered entry ran %d times, want exactly 1", got)
+	}
 }
 
 // TestTaskPostClaimReadFailureNotifiesConflict proves a store read that fails
