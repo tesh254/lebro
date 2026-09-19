@@ -698,7 +698,12 @@ func TestRecoverTasksConcurrentIsRaceFree(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	time.Sleep(20 * time.Millisecond)
+	// The execute goroutines are fire-and-forget, so the loser's claim cannot
+	// be joined — but it settles microseconds after the winner's, released
+	// from the same barrier. A buggy double execution would surface on that
+	// first claim attempt; a quarter-second observation window still catches
+	// it under -race scheduling delays.
+	time.Sleep(250 * time.Millisecond)
 	if got := runs.Load(); got != 1 {
 		t.Fatalf("recovered entry ran %d times, want exactly 1", got)
 	}
