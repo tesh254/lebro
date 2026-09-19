@@ -18,6 +18,26 @@ import (
 
 const tasksExtension = "io.modelcontextprotocol/tasks"
 
+const (
+	// taskResultTypeTask is the resultType of task envelopes that carry the
+	// task record (create and get).
+	taskResultTypeTask = "task"
+	// taskResultTypeComplete is the resultType of acknowledgements (update
+	// and cancel) and terminal get responses.
+	taskResultTypeComplete = "complete"
+)
+
+// taskRetryBackoff spaces out store retries inside claim and extendLease so a
+// persistently failing store is not hammered in a tight loop.
+const taskRetryBackoff = 50 * time.Millisecond
+
+// maxConcurrentRecoveredTasks bounds how many recovered runs execute
+// concurrently after a restart. A store holding thousands of stale working
+// records otherwise launches every one of them against the application's Run
+// adapters at boot. Records beyond the bound wait on a slot; nothing is
+// dropped.
+const maxConcurrentRecoveredTasks = 32
+
 var (
 	// ErrTaskNotFound is returned when a task is absent or its retention period elapsed.
 	ErrTaskNotFound = errors.New("lebro/mcp: task not found")
@@ -136,10 +156,19 @@ type taskService struct {
 	mu      sync.RWMutex
 	entries map[string]taskEntry
 	cancels map[string]context.CancelFunc
+	// recoverySlots bounds concurrent recovered runs. It is created once in
+	// newTaskService: a lazily initialized channel field would race under
+	// concurrent RecoverTasks calls.
+	recoverySlots chan struct{}
 }
 
 func newTaskService(config *TaskConfig) *taskService {
-	return &taskService{config: config, entries: make(map[string]taskEntry), cancels: make(map[string]context.CancelFunc)}
+	return &taskService{
+		config:        config,
+		entries:       make(map[string]taskEntry),
+		cancels:       make(map[string]context.CancelFunc),
+		recoverySlots: make(chan struct{}, maxConcurrentRecoveredTasks),
+	}
 }
 
 func (s *taskService) register(name string, entry taskEntry) error {
@@ -238,7 +267,7 @@ func (s *taskService) create(ctx context.Context, entryID string, arguments json
 	}
 	// Creation is durable before this response. Do not inherit request cancellation.
 	go s.execute(record, entry)
-	return &taskResult{ResultBase: mcpsdk.ResultBase{}, ResultType: "task", TaskRecord: record}, nil
+	return &taskResult{ResultBase: mcpsdk.ResultBase{}, ResultType: taskResultTypeTask, TaskRecord: record}, nil
 }
 
 // recoverWorking re-launches execution for tasks that were still working when
@@ -266,7 +295,13 @@ func (s *taskService) recoverWorking(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		go s.execute(record, entry)
+		go func() {
+			// The bounded slot wait happens on this goroutine, so
+			// RecoverTasks itself is never delayed by recovery volume.
+			s.recoverySlots <- struct{}{}
+			defer func() { <-s.recoverySlots }()
+			s.execute(record, entry)
+		}()
 	}
 	return nil
 }
@@ -288,28 +323,46 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	if !won {
 		return
 	}
-	renewDone := s.renewLease(ctx, record.ID)
-	defer func() { cancel(); <-renewDone }()
+	renewDone := s.renewLease(ctx, record.ID, cancel)
+	// stopRenewal joins the lease renewer before any terminal write: a
+	// renewal tick landing between finish's read and write bumps the record
+	// version and burns finish's conflict retries.
+	stopRenewal := func() { cancel(); <-renewDone }
 	current, err := s.config.Store.GetTask(ctx, record.ID)
-	if err != nil || current.Status != TaskWorking {
+	if err != nil {
+		// The claim already wrote a lease; a failed re-read leaves the
+		// record working with a live claim and nothing executing it. Say so.
+		stopRenewal()
+		slog.Error("lebro/mcp: task state read failed after claim", "task_id", record.ID, "error", err)
+		if s.config.OnConflict != nil {
+			// stopRenewal cancelled the run context; reconciliation needs a
+			// context it can still use for store and network work.
+			s.config.OnConflict(context.WithoutCancel(ctx), record)
+		}
 		return
 	}
-	ctx, err = s.config.Context(ctx, record)
+	if current.Status != TaskWorking {
+		stopRenewal()
+		return
+	}
+	ctx, err = s.config.Context(ctx, current)
 	if err != nil {
-		s.finish(ctx, record, nil, err, "restore task execution context failed")
+		stopRenewal()
+		s.finish(ctx, current, nil, err, "restore task execution context failed")
 		return
 	}
 	var result *mcpsdk.CallToolResult
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("lebro/mcp: task run panicked", "task_id", record.ID, "panic", r, "stack", string(debug.Stack()))
+				slog.Error("lebro/mcp: task run panicked", "task_id", current.ID, "panic", r, "stack", string(debug.Stack()))
 				err = errTaskExecutionPanicked
 			}
 		}()
-		result, err = entry.run(ctx, cloneRaw(record.Arguments))
+		result, err = entry.run(ctx, cloneRaw(current.Arguments))
 	}()
-	s.finish(ctx, record, result, err, "task execution failed")
+	stopRenewal()
+	s.finish(ctx, current, result, err, "task execution failed")
 }
 
 // claim takes the execution lease for a working record. It returns true when
@@ -323,6 +376,13 @@ func (s *taskService) claim(ctx context.Context, record TaskRecord) (bool, error
 		if err != nil {
 			if attempts == 2 {
 				return false, fmt.Errorf("lebro/mcp: claim task %s: %w", record.ID, err)
+			}
+			// Back off between attempts: retrying immediately against a
+			// failing store just spins.
+			select {
+			case <-ctx.Done():
+				return false, nil
+			case <-time.After(taskRetryBackoff):
 			}
 			continue
 		}
@@ -342,11 +402,34 @@ func (s *taskService) claim(ctx context.Context, record TaskRecord) (bool, error
 	return false, nil
 }
 
+// taskLeaseOutcome distinguishes the ways one renewal attempt can end. The
+// renewer reacts differently to each: keep going, stop cleanly, or stop and
+// cancel the run.
+type taskLeaseOutcome int
+
+const (
+	leaseRenewed taskLeaseOutcome = iota
+	// leaseTerminal means the record left the working state — completed,
+	// failed, or cancelled, possibly by another instance. Renewal stops and
+	// the local run is cancelled so it observes the durable decision.
+	leaseTerminal
+	// leaseUnreachable means the store could not confirm the extension this
+	// tick. A single unreachable tick may be transient; the renewer counts
+	// consecutive ones.
+	leaseUnreachable
+)
+
 // renewLease keeps the execution claim alive while the run is in flight,
 // extending it at half-lease intervals until the run's context ends. Without
 // renewal, a long-running task would outlive its claim and become recoverable
 // by another instance mid-run.
-func (s *taskService) renewLease(ctx context.Context, id string) <-chan struct{} {
+//
+// Two consecutive unreachable ticks span a full lease with no confirmed
+// extension, so the claim is dead and another instance may re-claim the
+// record; the renewer cancels the run instead of racing it. A terminal record
+// also cancels the run: this is how a cancellation recorded by any instance
+// (local or peer) reaches the executing process within one renewal tick.
+func (s *taskService) renewLease(ctx context.Context, id string, cancel context.CancelFunc) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -356,13 +439,26 @@ func (s *taskService) renewLease(ctx context.Context, id string) <-chan struct{}
 		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		unreachable := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !s.extendLease(id) {
+				switch s.extendLease(id) {
+				case leaseRenewed:
+					unreachable = 0
+				case leaseTerminal:
+					slog.Info("lebro/mcp: task no longer working, cancelling run", "task_id", id)
+					cancel()
 					return
+				case leaseUnreachable:
+					unreachable++
+					if unreachable >= 2 {
+						slog.Error("lebro/mcp: task lease renewal lost, cancelling run", "task_id", id)
+						cancel()
+						return
+					}
 				}
 			}
 		}
@@ -370,28 +466,43 @@ func (s *taskService) renewLease(ctx context.Context, id string) <-chan struct{}
 	return done
 }
 
-// extendLease pushes the claim forward once. It returns false when the record
-// went terminal, stopping renewal; transient store failures leave renewal
-// running for the next tick.
-func (s *taskService) extendLease(id string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), s.lease())
+// extendLease pushes the claim forward once. See taskLeaseOutcome for the
+// outcomes. A non-conflict store failure is unreachable, not renewed: claiming
+// success while the store refused the write would let the lease lapse under a
+// running task.
+func (s *taskService) extendLease(id string) taskLeaseOutcome {
+	// A hung store must not consume the whole lease before the next tick
+	// fires; bound the attempt window to a quarter of the lease.
+	timeout := s.lease() / 4
+	if timeout <= 0 {
+		timeout = time.Millisecond
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	for attempts := 0; attempts < 3; attempts++ {
 		current, err := s.config.Store.GetTask(ctx, id)
 		if err != nil {
+			select {
+			case <-ctx.Done():
+				return leaseUnreachable
+			case <-time.After(taskRetryBackoff):
+			}
 			continue
 		}
 		if current.Status != TaskWorking {
-			return false
+			return leaseTerminal
 		}
 		current.LeaseUntil = s.now().Add(s.lease())
 		current.LastUpdatedAt = s.now()
-		if err := s.config.Store.UpdateTask(ctx, current); errors.Is(err, ErrTaskConflict) {
+		if err := s.config.Store.UpdateTask(ctx, current); err != nil {
+			if !errors.Is(err, ErrTaskConflict) {
+				return leaseUnreachable
+			}
 			continue
 		}
-		return true
+		return leaseRenewed
 	}
-	return true
+	return leaseUnreachable
 }
 
 func (s *taskService) leaseHeld(record TaskRecord) bool {
@@ -418,6 +529,20 @@ func (s *Server) RecoverTasks(ctx context.Context) error {
 
 func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcpsdk.CallToolResult, runErr error, failureMessage string) {
 	ctx = context.WithoutCancel(ctx)
+	// failureMessage lands inside a JSON string literal, so marshal it
+	// instead of interpolating: a message with a quote or backslash must not
+	// emit invalid JSON.
+	var failurePayload json.RawMessage
+	if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		raw, err := json.Marshal(struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}{Code: -32603, Message: failureMessage})
+		if err != nil {
+			raw = json.RawMessage(`{"code":-32603,"message":"task execution failed"}`)
+		}
+		failurePayload = raw
+	}
 	for attempts := 0; attempts < 3; attempts++ {
 		current, err := s.config.Store.GetTask(ctx, record.ID)
 		if err != nil || current.Status.terminal() {
@@ -432,7 +557,7 @@ func (s *taskService) finish(ctx context.Context, record TaskRecord, result *mcp
 			} else {
 				current.Status = TaskFailed
 				current.StatusMessage = failureMessage
-				current.Failure = json.RawMessage(`{"code":-32603,"message":"` + failureMessage + `"}`)
+				current.Failure = failurePayload
 			}
 		} else {
 			current.Status = TaskCompleted
@@ -479,7 +604,7 @@ func (s *taskService) get(ctx context.Context, _ *mcpsdk.ServerSession, params *
 	if err != nil {
 		return nil, err
 	}
-	return &taskResult{ResultType: "complete", TaskRecord: record}, nil
+	return &taskResult{ResultType: taskResultTypeComplete, TaskRecord: record}, nil
 }
 
 func (s *taskService) update(ctx context.Context, _ *mcpsdk.ServerSession, params *taskUpdateParams) (*taskAck, error) {
@@ -489,7 +614,7 @@ func (s *taskService) update(ctx context.Context, _ *mcpsdk.ServerSession, param
 	if _, err := s.loadAuthorized(ctx, params.TaskID); err != nil {
 		return nil, err
 	}
-	return &taskAck{ResultType: "complete"}, nil
+	return &taskAck{ResultType: taskResultTypeComplete}, nil
 }
 
 func (s *taskService) cancel(ctx context.Context, _ *mcpsdk.ServerSession, params *taskParams) (*taskAck, error) {
@@ -502,15 +627,21 @@ func (s *taskService) cancel(ctx context.Context, _ *mcpsdk.ServerSession, param
 			return nil, err
 		}
 		if record.Status.terminal() {
-			return &taskAck{ResultType: "complete"}, nil
+			return &taskAck{ResultType: taskResultTypeComplete}, nil
 		}
 		record.Status, record.StatusMessage, record.LastUpdatedAt = TaskCancelled, "cancelled", s.now()
 		record.LeaseUntil = time.Time{}
 		if err := s.config.Store.UpdateTask(ctx, record); errors.Is(err, ErrTaskConflict) {
 			continue
 		} else if err != nil {
-			return nil, err
+			// Store internals stay out of the JSON-RPC response; the client
+			// sees a generic internal error and can retry.
+			return nil, &mcpjsonrpc.Error{Code: -32603, Message: "Failed to cancel task: the task store is unavailable"}
 		}
+		// Cancel the local run when this process owns it. On a multi-instance
+		// deployment the executing instance is a peer: it stops within one
+		// lease-renewal tick, when its extendLease observes the terminal
+		// status and cancels the run.
 		s.mu.RLock()
 		cancel := s.cancels[record.ID]
 		s.mu.RUnlock()
@@ -522,7 +653,7 @@ func (s *taskService) cancel(ctx context.Context, _ *mcpsdk.ServerSession, param
 				return nil, err
 			}
 		}
-		return &taskAck{ResultType: "complete"}, nil
+		return &taskAck{ResultType: taskResultTypeComplete}, nil
 	}
 	return nil, ErrTaskConflict
 }
@@ -533,7 +664,10 @@ func (s *taskService) loadAuthorized(ctx context.Context, id string) (TaskRecord
 		if errors.Is(err, ErrTaskNotFound) {
 			return TaskRecord{}, invalidTaskID("Task not found")
 		}
-		return TaskRecord{}, err
+		// Keep the client payload generic, but record the underlying cause
+		// server-side so a store outage is diagnosable from the logs.
+		slog.Error("lebro/mcp: task store read failed", "task_id", id, "error", err)
+		return TaskRecord{}, &mcpjsonrpc.Error{Code: -32603, Message: "Failed to retrieve task: the task store is unavailable"}
 	}
 	if s.expired(record) {
 		return TaskRecord{}, invalidTaskID("Task has expired")
