@@ -1,0 +1,19 @@
+mcp/tasks_test.go
+  s_d404026f0765b5::t_c52a691e267d11 661-664,672,674,679,685,691,693-704
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "2a6f3615b17a7c370ddf58145d93688dcdb7f8d0",
+  "prompts": {},
+  "sessions": {
+    "s_d404026f0765b5": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f485c402dffeSuSpR50eQYy6LB",
+        "model": "z-ai/glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
