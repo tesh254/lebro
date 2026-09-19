@@ -1,0 +1,27 @@
+CHANGELOG.md
+  s_0979a911fa322c::t_697ca8ff94c155 20-26
+mcp/request.go
+  s_0979a911fa322c::t_849f3ae44204e7 24-28,36-37
+mcp/request_test.go
+  s_0979a911fa322c::t_e3d17cc83b2947 239-244
+  s_0979a911fa322c::t_1aff049702f3e3 309
+  s_0979a911fa322c::t_ec137c81ed3cc3 377-429
+  s_0979a911fa322c::t_5a128c176f8dbb 480-482,485
+  s_0979a911fa322c::t_d1d46677abb797 545-555,562,593
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a540cd288ce4b3da795f290d33815720bf564217",
+  "prompts": {},
+  "sessions": {
+    "s_0979a911fa322c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f47e69257ffeWRNI456zj9vAv1",
+        "model": "accounts/fireworks/models/glm-5p3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
