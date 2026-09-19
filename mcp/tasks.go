@@ -348,6 +348,11 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 	ctx, err = s.config.Context(ctx, current)
 	if err != nil {
 		stopRenewal()
+		// An application hook may return a nil context with its error; the
+		// terminal write still needs a usable one.
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		s.finish(ctx, current, nil, err, "restore task execution context failed")
 		return
 	}
