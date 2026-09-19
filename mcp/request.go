@@ -19,6 +19,22 @@ import (
 // Authentication and tenant policy remain application responsibilities.
 type RequestResolver func(*http.Request) (RequestExposure, error)
 
+// AsyncAgentAdapter wraps an AgentAdapter for request-scoped exposure through
+// the MCP Tasks extension. The wrapped agent is additionally exposed as a
+// synchronous tool, matching ExposeAgentAdapterAsync.
+type AsyncAgentAdapter struct {
+	Adapter AgentAdapter
+	Options AsyncEntryOptions
+}
+
+// AsyncWorkflowAdapter wraps a WorkflowAdapter for request-scoped exposure
+// through the MCP Tasks extension. The wrapped workflow is additionally
+// exposed as a synchronous tool, matching ExposeWorkflowAdapterAsync.
+type AsyncWorkflowAdapter struct {
+	Adapter WorkflowAdapter
+	Options AsyncEntryOptions
+}
+
 // RequestExposure is the complete allow-list for one inbound HTTP request.
 // Each adapter is independent from an in-memory lebro runtime object, allowing
 // applications to dispatch to persisted published definitions.
@@ -26,6 +42,10 @@ type RequestExposure struct {
 	Tools     []ToolAdapter
 	Agents    []AgentAdapter
 	Workflows []WorkflowAdapter
+	// AsyncAgents and AsyncWorkflows require ServerConfig.Tasks to be set;
+	// resolving an exposure that uses them without it fails the request.
+	AsyncAgents    []AsyncAgentAdapter
+	AsyncWorkflows []AsyncWorkflowAdapter
 }
 
 // ToolAdapter describes and executes one persisted or remote tool. Execute
@@ -140,6 +160,16 @@ func (s *Server) serverForExposure(exposure RequestExposure) (*mcpsdk.Server, er
 	}
 	for _, adapter := range exposure.Workflows {
 		if err := server.ExposeWorkflowAdapter(adapter); err != nil {
+			return nil, err
+		}
+	}
+	for _, adapter := range exposure.AsyncAgents {
+		if err := server.ExposeAgentAdapterAsync(adapter.Adapter, adapter.Options); err != nil {
+			return nil, err
+		}
+	}
+	for _, adapter := range exposure.AsyncWorkflows {
+		if err := server.ExposeWorkflowAdapterAsync(adapter.Adapter, adapter.Options); err != nil {
 			return nil, err
 		}
 	}
