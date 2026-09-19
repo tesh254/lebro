@@ -657,14 +657,49 @@ func TestRecoverTasksBoundsConcurrentRuns(t *testing.T) {
 	}
 }
 
+// TestRecoverTasksConcurrentIsRaceFree pins that concurrent RecoverTasks
+// calls share the pre-initialized recovery semaphore without a data race; the
+// semaphore must never be lazily created inside recoverWorking.
+func TestRecoverTasksConcurrentIsRaceFree(t *testing.T) {
+	store := newMemoryTaskStore()
+	now := time.Now()
+	if err := store.CreateTask(context.Background(), TaskRecord{ID: "task-1", EntryID: "agent.a", Status: TaskWorking, CreatedAt: now, LastUpdatedAt: now, Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(ServerConfig{Implementation: &mcpsdk.Implementation{Name: "t", Version: "1"}, Tasks: &TaskConfig{Store: store, Identity: func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{}`), nil }, Context: func(ctx context.Context, _ TaskRecord) (context.Context, error) { return ctx, nil }, Authorize: func(context.Context, TaskRecord) error { return nil }, PollInterval: time.Millisecond}})
+	if err := server.tasks.register("agent.a", taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := server.RecoverTasks(context.Background()); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // TestTaskPostClaimReadFailureNotifiesConflict proves a store read that fails
 // after the claim write is not silently dropped: OnConflict fires so the
-// application can reconcile the leased, unexecuted record.
+// application can reconcile the leased, unexecuted record, with a context
+// that is still usable for store and network work.
 func TestTaskPostClaimReadFailureNotifiesConflict(t *testing.T) {
 	store := &postClaimReadFailureStore{memoryTaskStore: newMemoryTaskStore()}
 	tasks := newTasks(store, time.Now, func(context.Context, TaskRecord) error { return nil })
-	observed := make(chan string, 1)
-	tasks.config.OnConflict = func(_ context.Context, record TaskRecord) { observed <- record.ID }
+	type observation struct {
+		id      string
+		ctxLive bool
+	}
+	observed := make(chan observation, 1)
+	tasks.config.OnConflict = func(ctx context.Context, record TaskRecord) {
+		observed <- observation{id: record.ID, ctxLive: ctx.Err() == nil}
+	}
 	// The record must exist so the claim succeeds and only the post-claim
 	// read fails; otherwise OnConflict fires from the claim path instead.
 	now := time.Now()
@@ -673,11 +708,42 @@ func TestTaskPostClaimReadFailureNotifiesConflict(t *testing.T) {
 	}
 	tasks.execute(TaskRecord{ID: "task-1", EntryID: "agent.a", Status: TaskWorking}, taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) { return nil, nil }})
 	select {
-	case id := <-observed:
-		if id != "task-1" {
-			t.Fatalf("observed = %q", id)
+	case o := <-observed:
+		if o.id != "task-1" {
+			t.Fatalf("observed = %q", o.id)
+		}
+		if !o.ctxLive {
+			t.Fatal("OnConflict must receive a context that is not cancelled")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("OnConflict not called after post-claim read failure")
+	}
+}
+
+// TestTaskStoreDownReturnsGenericInternalError proves a store outage during
+// tasks/get, tasks/update, or tasks/cancel is reported as a generic JSON-RPC
+// internal error, not as a leaked store error.
+func TestTaskStoreDownReturnsGenericInternalError(t *testing.T) {
+	tasks := newTasks(&failingReadStore{newMemoryTaskStore()}, time.Now, func(context.Context, TaskRecord) error { return nil })
+	calls := map[string]func() error{
+		"get": func() error {
+			_, err := tasks.get(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"})
+			return err
+		},
+		"update": func() error {
+			_, err := tasks.update(context.Background(), nil, &taskUpdateParams{ParamsBase: taskMeta(), TaskID: "task-1"})
+			return err
+		},
+		"cancel": func() error {
+			_, err := tasks.cancel(context.Background(), nil, &taskParams{ParamsBase: taskMeta(), TaskID: "task-1"})
+			return err
+		},
+	}
+	for name, call := range calls {
+		err := call()
+		var protocol *mcpjsonrpc.Error
+		if !errors.As(err, &protocol) || protocol.Code != -32603 {
+			t.Fatalf("%s: want generic -32603, got %#v", name, err)
+		}
 	}
 }

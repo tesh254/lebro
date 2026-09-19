@@ -156,12 +156,19 @@ type taskService struct {
 	mu      sync.RWMutex
 	entries map[string]taskEntry
 	cancels map[string]context.CancelFunc
-	// recoverySlots bounds concurrent recovered runs; created lazily.
+	// recoverySlots bounds concurrent recovered runs. It is created once in
+	// newTaskService: a lazily initialized channel field would race under
+	// concurrent RecoverTasks calls.
 	recoverySlots chan struct{}
 }
 
 func newTaskService(config *TaskConfig) *taskService {
-	return &taskService{config: config, entries: make(map[string]taskEntry), cancels: make(map[string]context.CancelFunc)}
+	return &taskService{
+		config:        config,
+		entries:       make(map[string]taskEntry),
+		cancels:       make(map[string]context.CancelFunc),
+		recoverySlots: make(chan struct{}, maxConcurrentRecoveredTasks),
+	}
 }
 
 func (s *taskService) register(name string, entry taskEntry) error {
@@ -278,9 +285,6 @@ func (s *taskService) recoverWorking(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("lebro/mcp: list working tasks: %w", err)
 	}
-	if s.recoverySlots == nil {
-		s.recoverySlots = make(chan struct{}, maxConcurrentRecoveredTasks)
-	}
 	for _, record := range records {
 		if s.expired(record) {
 			continue
@@ -331,7 +335,9 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 		stopRenewal()
 		slog.Error("lebro/mcp: task state read failed after claim", "task_id", record.ID, "error", err)
 		if s.config.OnConflict != nil {
-			s.config.OnConflict(ctx, record)
+			// stopRenewal cancelled the run context; reconciliation needs a
+			// context it can still use for store and network work.
+			s.config.OnConflict(context.WithoutCancel(ctx), record)
 		}
 		return
 	}
@@ -658,7 +664,9 @@ func (s *taskService) loadAuthorized(ctx context.Context, id string) (TaskRecord
 		if errors.Is(err, ErrTaskNotFound) {
 			return TaskRecord{}, invalidTaskID("Task not found")
 		}
-		return TaskRecord{}, err
+		// Store internals stay out of the JSON-RPC response; get, update,
+		// and cancel all report the same generic internal error.
+		return TaskRecord{}, &mcpjsonrpc.Error{Code: -32603, Message: "Failed to retrieve task: the task store is unavailable"}
 	}
 	if s.expired(record) {
 		return TaskRecord{}, invalidTaskID("Task has expired")
