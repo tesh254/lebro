@@ -236,6 +236,12 @@ func TestExposeToolAdapter_ValidatesSchemaBoundary(t *testing.T) {
 func TestRequestScopedExposure_AsyncAgentTasks(t *testing.T) {
 	store := newRequestScopedTaskStore()
 	release := make(chan struct{})
+	// The background task goroutine blocks on release until the test has
+	// observed the working state; the once-guard keeps a fatal assertion
+	// before the mid-test close from turning the deferred close into a panic.
+	var once sync.Once
+	closeRelease := func() { once.Do(func() { close(release) }) }
+	defer closeRelease()
 	var runs atomic.Int64
 	server := mcp.NewServer(mcp.ServerConfig{
 		Implementation: &mcpsdk.Implementation{Name: "request-scoped-tasks", Version: "test"},
@@ -300,7 +306,7 @@ func TestRequestScopedExposure_AsyncAgentTasks(t *testing.T) {
 		t.Fatalf("tasks/get while working = %s", working)
 	}
 
-	close(release)
+	closeRelease()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	var completed string
@@ -368,6 +374,59 @@ func TestRequestScopedExposure_AsyncFallbackAndRequireTasks(t *testing.T) {
 	}
 }
 
+func TestRequestScopedExposure_AsyncWorkflowTasks(t *testing.T) {
+	store := newRequestScopedTaskStore()
+	var runs atomic.Int64
+	server := mcp.NewServer(mcp.ServerConfig{
+		Implementation: &mcpsdk.Implementation{Name: "request-scoped-workflows", Version: "test"},
+		Tasks: &mcp.TaskConfig{
+			Store:        store,
+			Identity:     func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{}`), nil },
+			Context:      func(ctx context.Context, _ mcp.TaskRecord) (context.Context, error) { return ctx, nil },
+			Authorize:    func(context.Context, mcp.TaskRecord) error { return nil },
+			PollInterval: time.Millisecond,
+		},
+		RequestResolver: func(*http.Request) (mcp.RequestExposure, error) {
+			return mcp.RequestExposure{AsyncWorkflows: []mcp.AsyncWorkflowAdapter{{
+				Adapter: mcp.WorkflowAdapter{
+					Definition: lebro.WorkflowDefinition{ID: "async-workflow", Description: "Async workflow"},
+					Run: func(_ context.Context, in lebro.WorkflowRunInput) (lebro.WorkflowRunResult, error) {
+						runs.Add(1)
+						return lebro.WorkflowRunResult{Output: json.RawMessage(`{"input":` + string(in.Input) + `}`)}, nil
+					},
+				},
+			}}}, nil
+		},
+	})
+	httpServer := httptest.NewServer(server.StreamableHTTPHandler(nil))
+	defer httpServer.Close()
+
+	body := mustRequestScopedRPC(t, httpServer.URL, "tools/list", map[string]any{}, "alpha")
+	if !strings.Contains(body, "workflow.async-workflow") {
+		t.Fatalf("tools/list missing async workflow: %s", body)
+	}
+
+	created := mustTasksRPC(t, httpServer.URL, "tools/call", map[string]any{"name": "workflow.async-workflow", "arguments": map[string]any{"input": json.RawMessage(`"hello"`)}}, "alpha", true)
+	taskID := requestScopedTaskID(t, created)
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var completed string
+	for i := 0; i < 500; i++ {
+		completed = mustTasksRPC(t, httpServer.URL, "tasks/get", map[string]any{"taskId": taskID}, "alpha", true)
+		if strings.Contains(completed, `"status":"completed"`) {
+			break
+		}
+		<-ticker.C
+	}
+	if !strings.Contains(completed, `"status":"completed"`) || !strings.Contains(completed, `"input":"hello"`) {
+		t.Fatalf("final tasks/get = %s", completed)
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("workflow ran %d times, want 1", runs.Load())
+	}
+}
+
 type requestScopedTaskStore struct {
 	mu      sync.Mutex
 	records map[string]mcp.TaskRecord
@@ -418,37 +477,12 @@ func (s *requestScopedTaskStore) UpdateTask(_ context.Context, record mcp.TaskRe
 	return nil
 }
 
-// mustTasksRPC issues one stateless JSON-RPC request with the 2026-07-28
-// protocol metadata, optionally negotiating the Tasks extension. It returns
-// the raw response body so tests assert on the wire shape.
+// mustTasksRPC issues one JSON-RPC request that optionally negotiates the
+// Tasks extension and returns the raw response body so tests assert on the
+// wire shape.
 func mustTasksRPC(t *testing.T, url, method string, params map[string]any, caller string, tasks bool) string {
 	t.Helper()
-	capabilities := map[string]any{}
-	if tasks {
-		capabilities["extensions"] = map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}}
-	}
-	meta := map[string]any{
-		"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
-		"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "test", "version": "test"},
-		"io.modelcontextprotocol/clientCapabilities": capabilities,
-	}
-	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": mergeRequestScopedParams(params, meta)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("Mcp-Protocol-Version", "2026-07-28")
-	req.Header.Set("Mcp-Method", method)
-	if name, ok := params["name"].(string); ok {
-		req.Header.Set("Mcp-Name", name)
-	}
-	req.Header.Set("X-Caller", caller)
-	response, err := http.DefaultClient.Do(req)
+	response, err := requestScopedResponseWithTasks(url, method, params, caller, tasks)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,15 +492,6 @@ func mustTasksRPC(t *testing.T, url, method string, params map[string]any, calle
 		t.Fatal(err)
 	}
 	return string(raw)
-}
-
-func mergeRequestScopedParams(params, meta map[string]any) map[string]any {
-	merged := make(map[string]any, len(params)+1)
-	for key, value := range params {
-		merged[key] = value
-	}
-	merged["_meta"] = meta
-	return merged
 }
 
 func requestScopedTaskID(t *testing.T, body string) string {
@@ -517,13 +542,24 @@ func requestScopedRPC(url, method string, params map[string]any, caller string) 
 }
 
 func requestScopedResponse(url, method string, params map[string]any, caller string) (*http.Response, error) {
+	return requestScopedResponseWithTasks(url, method, params, caller, false)
+}
+
+// requestScopedResponseWithTasks issues one stateless JSON-RPC request with
+// the 2026-07-28 protocol metadata, optionally negotiating the Tasks
+// extension. Task flows read the raw body, so callers close the response.
+func requestScopedResponseWithTasks(url, method string, params map[string]any, caller string, tasks bool) (*http.Response, error) {
+	capabilities := map[string]any{}
+	if tasks {
+		capabilities["extensions"] = map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}}
+	}
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": method,
 		"params": map[string]any{
 			"_meta": map[string]any{
 				"io.modelcontextprotocol/protocolVersion":    "2026-07-28",
 				"io.modelcontextprotocol/clientInfo":         map[string]any{"name": "test", "version": "test"},
-				"io.modelcontextprotocol/clientCapabilities": map[string]any{},
+				"io.modelcontextprotocol/clientCapabilities": capabilities,
 			},
 		},
 	})
@@ -554,11 +590,7 @@ func requestScopedResponse(url, method string, params map[string]any, caller str
 		req.Header.Set("Mcp-Name", name)
 	}
 	req.Header.Set("X-Caller", caller)
-	response, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	return response, nil
+	return http.DefaultClient.Do(req)
 }
 
 func otherCaller(caller string) string {
