@@ -153,6 +153,7 @@ func (r ProcessorModelRequest) Clone() ProcessorModelRequest {
 	r.Request.Messages = cloneMessages(r.Request.Messages)
 	r.Request.Tools = cloneToolDefinitions(r.Request.Tools)
 	r.Request.OutputSchema = cloneModelOutputSchema(r.Request.OutputSchema)
+	// MaxOutputTokens is scalar and safe to copy with the request.
 	r.Request.Extension = cloneRawMessage(r.Request.Extension)
 	return r
 }

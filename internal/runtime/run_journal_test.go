@@ -567,6 +567,10 @@ func TestRunEventPayloadAllowlist(t *testing.T) {
 	if got := runEventPayload(RunEvent{Type: RunEventRouteSelected, DeltaText: "not json"}); got != nil {
 		t.Fatalf("invalid route payload = %s, want nil", got)
 	}
+	compaction := runEventPayload(RunEvent{Type: RunEventContextCompactionStarted, DeltaText: "estimated_input_tokens=2048"})
+	if string(compaction) != `{"estimate":"estimated_input_tokens=2048"}` {
+		t.Fatalf("compaction payload = %s", compaction)
+	}
 	for _, typ := range []RunEventType{RunEventStarted, RunEventModelFinished, RunEventToolFinished, RunEventSucceeded} {
 		if got := runEventPayload(RunEvent{Type: typ}); got != nil {
 			t.Fatalf("payload for %s = %s, want nil", typ, got)

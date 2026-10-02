@@ -105,8 +105,11 @@ func (m *Model) params(request lebro.ModelRequest) (claude.MessageNewParams, err
 		return claude.MessageNewParams{}, m.invalid(errors.New("lebro: model is required"))
 	}
 	params := claude.MessageNewParams{Model: claude.Model(model), MaxTokens: m.maxTokens}
+	if request.MaxOutputTokens > 0 {
+		params.MaxTokens = request.MaxOutputTokens
+	}
 	replayThinking := false
-	if thinking, err := m.reasoningParams(request.Reasoning); err != nil {
+	if thinking, err := m.reasoningParams(request.Reasoning, params.MaxTokens); err != nil {
 		return claude.MessageNewParams{}, m.invalid(err)
 	} else if thinking != nil {
 		params.Thinking = *thinking
@@ -220,7 +223,7 @@ func anthropicUserBlocks(message lebro.Message) ([]claude.ContentBlockParamUnion
 
 // reasoningParams maps neutral effort to Anthropic's token-budget mechanism.
 // Every enabled budget must be at least 1024 and strictly below max_tokens.
-func (m *Model) reasoningParams(config lebro.ReasoningConfig) (*claude.ThinkingConfigParamUnion, error) {
+func (m *Model) reasoningParams(config lebro.ReasoningConfig, maxTokens int64) (*claude.ThinkingConfigParamUnion, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
@@ -231,7 +234,7 @@ func (m *Model) reasoningParams(config lebro.ReasoningConfig) (*claude.ThinkingC
 		disabled := claude.NewThinkingConfigDisabledParam()
 		return &claude.ThinkingConfigParamUnion{OfDisabled: &disabled}, nil
 	}
-	if m.maxTokens <= 1024 {
+	if maxTokens <= 1024 {
 		return nil, errors.New("lebro: Anthropic reasoning requires max tokens greater than 1024")
 	}
 	budget := config.BudgetTokens
@@ -240,17 +243,17 @@ func (m *Model) reasoningParams(config lebro.ReasoningConfig) (*claude.ThinkingC
 		case lebro.ReasoningMinimal, lebro.ReasoningLow:
 			budget = 1024
 		case lebro.ReasoningMedium:
-			budget = m.maxTokens / 2
+			budget = maxTokens / 2
 		case lebro.ReasoningHigh:
-			budget = (m.maxTokens * 3) / 4
+			budget = (maxTokens * 3) / 4
 		case lebro.ReasoningXHigh, lebro.ReasoningMax:
-			budget = m.maxTokens - 1
+			budget = maxTokens - 1
 		default:
 			return nil, fmt.Errorf("lebro: Anthropic does not support reasoning effort %q", config.Effort)
 		}
 	}
-	if budget < 1024 || budget >= m.maxTokens {
-		return nil, fmt.Errorf("lebro: Anthropic reasoning budget %d must be at least 1024 and less than max tokens %d", budget, m.maxTokens)
+	if budget < 1024 || budget >= maxTokens {
+		return nil, fmt.Errorf("lebro: Anthropic reasoning budget %d must be at least 1024 and less than max tokens %d", budget, maxTokens)
 	}
 	return &claude.ThinkingConfigParamUnion{OfEnabled: &claude.ThinkingConfigEnabledParam{BudgetTokens: budget}}, nil
 }

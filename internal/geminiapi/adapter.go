@@ -98,6 +98,13 @@ func (m *Model) params(request lebro.ModelRequest) (string, []*genai.Content, *g
 		return "", nil, nil, m.invalid(errors.New("lebro: model is required"))
 	}
 	config := &genai.GenerateContentConfig{}
+	if request.MaxOutputTokens > 0 {
+		maxOutput := request.MaxOutputTokens
+		if maxOutput > 1<<31-1 {
+			maxOutput = 1<<31 - 1
+		}
+		config.MaxOutputTokens = int32(maxOutput)
+	}
 	if thinking, err := geminiThinkingConfig(model, request.Reasoning); err != nil {
 		return "", nil, nil, m.invalid(err)
 	} else {
