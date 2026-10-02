@@ -132,6 +132,7 @@ type RunInput struct {
 	// this run only.
 	Memory         *MemoryProcessorConfig
 	memoryRecalled bool
+	priorMessages  []MessageRecord
 }
 
 // ObservabilityScope is retained for source compatibility. It is the same

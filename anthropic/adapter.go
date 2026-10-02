@@ -105,6 +105,9 @@ func (m *Model) params(request lebro.ModelRequest) (claude.MessageNewParams, err
 		return claude.MessageNewParams{}, m.invalid(errors.New("lebro: model is required"))
 	}
 	params := claude.MessageNewParams{Model: claude.Model(model), MaxTokens: m.maxTokens}
+	if request.MaxOutputTokens > 0 {
+		params.MaxTokens = request.MaxOutputTokens
+	}
 	replayThinking := false
 	if thinking, err := m.reasoningParams(request.Reasoning); err != nil {
 		return claude.MessageNewParams{}, m.invalid(err)

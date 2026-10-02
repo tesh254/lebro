@@ -18,8 +18,12 @@ type ModelRequest struct {
 	Model        string
 	Tools        []ToolDefinition
 	OutputSchema *ModelOutputSchema
-	Reasoning    ReasoningConfig
-	Extension    json.RawMessage
+	// MaxOutputTokens bounds this individual request. Zero retains the
+	// adapter's configured default. The runtime uses it for context budgeting
+	// and bounded maintenance calls such as conversation compaction.
+	MaxOutputTokens int64
+	Reasoning       ReasoningConfig
+	Extension       json.RawMessage
 }
 
 // ReasoningEffort controls how much internal reasoning a reasoning-capable
@@ -447,6 +451,9 @@ var _ StreamReader = (*StreamReaderFunc)(nil)
 
 // Validate checks the provider-neutral invariants adapters can rely on.
 func (r ModelRequest) Validate() error {
+	if r.MaxOutputTokens < 0 {
+		return errors.New("lebro: model request max output tokens must not be negative")
+	}
 	if err := r.Reasoning.Validate(); err != nil {
 		return err
 	}

@@ -218,6 +218,9 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 	}
 
 	body := map[string]any{"model": model, "messages": messages}
+	if request.MaxOutputTokens > 0 {
+		body["max_tokens"] = request.MaxOutputTokens
+	}
 	if len(request.Tools) > 0 {
 		body["tools"] = chatTools(request.Tools)
 	}
@@ -344,6 +347,7 @@ var reservedWireKeys = map[string]struct{}{
 	"response_format":   {},
 	"reasoning":         {},
 	"include_reasoning": {},
+	"max_tokens":        {},
 }
 
 func reservedWireKey(key string) bool {

@@ -274,6 +274,10 @@ type AgentConfig struct {
 	// Memory enables working-memory recall and approved fact extraction. It is
 	// appended after Processors so application processors can prepare input first.
 	Memory *MemoryProcessorConfig
+	// ContextCompaction bounds durable conversation history before every model
+	// call. It is opt-in because applications own context limits and summary
+	// publication fencing.
+	ContextCompaction *ContextCompactionConfig
 }
 
 // Agent repeatedly asks a model, executes requested tools, and feeds results
@@ -300,6 +304,7 @@ type Agent struct {
 	instructionsResolver InstructionsResolver
 	modelResolver        ModelResolver
 	costResolver         CostResolver
+	contextCompactor     *contextCompactor
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -398,6 +403,10 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 			return nil, err
 		}
 	}
+	compactor, err := newContextCompactor(config.ContextCompaction, config.Model)
+	if err != nil {
+		return nil, err
+	}
 	return &Agent{
 		definition:           definition,
 		model:                config.Model,
@@ -419,6 +428,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		instructionsResolver: config.InstructionsResolver,
 		modelResolver:        config.ModelResolver,
 		costResolver:         config.CostResolver,
+		contextCompactor:     compactor,
 	}, nil
 }
 
@@ -552,6 +562,14 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
 		} else {
 			request = *decision.Request
+		}
+		if a.contextCompactor != nil {
+			request, err = a.contextCompactor.compact(runCtx, emitter, runID, step, stepID, input.ThreadID, input.priorMessages, request)
+			if err != nil {
+				agentErr := &AgentError{Kind: AgentErrorProcessor, Step: step, Err: err}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+			}
 		}
 		response, attempts, err := a.generateModel(runCtx, runConfig, runID, step, stepID, emitter, newAgentModelAttemptObserver(emitter, a.clock, journal, runID, step, stepID), request)
 		allAttempts = append(allAttempts, attempts...)
@@ -898,6 +916,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		modelName:       runConfig.modelName,
 		reasoning:       input.Reasoning,
 		annotations:     input.Annotations,
+		priorMessages:   input.priorMessages,
 	})
 
 	return run, nil
@@ -939,6 +958,7 @@ type streamRunParams struct {
 	modelName       string
 	reasoning       ReasoningConfig
 	annotations     Metadata
+	priorMessages   []MessageRecord
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -981,6 +1001,16 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			return
 		} else {
 			request = *decision.Request
+		}
+		if a.contextCompactor != nil {
+			compacted, compactErr := a.contextCompactor.compact(p.ctx, p.emitter, p.runID, step, stepID, p.threadID, p.priorMessages, request)
+			if compactErr != nil {
+				agentErr := &AgentError{Kind: AgentErrorProcessor, Step: step, Err: compactErr}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+				return
+			}
+			request = compacted
 		}
 
 		response, attempts, resolved, streamErr := a.consumeStream(p.ctx, p.runID, step, stepID, p.threadID, p.metadata, modelStart, p.emitter, newAgentModelAttemptObserver(p.emitter, a.clock, p.journal, p.runID, step, stepID), p.deltas, request, p.streamingModel)
@@ -1697,6 +1727,7 @@ func cloneRunInput(input RunInput) RunInput {
 	cloned.Metadata = cloneMetadata(input.Metadata)
 	cloned.OutputSchema = cloneModelOutputSchema(input.OutputSchema)
 	cloned.Memory = input.Memory.Clone()
+	cloned.priorMessages = append([]MessageRecord(nil), input.priorMessages...)
 	return cloned
 }
 
@@ -1840,6 +1871,7 @@ func (a *Agent) loadPriorMessages(ctx context.Context, input *RunInput) (int, er
 	for _, record := range page.Records {
 		prior = append(prior, cloneMessage(record.Message))
 	}
+	input.priorMessages = append([]MessageRecord(nil), page.Records...)
 	input.Messages = append(prior, input.Messages...)
 	return len(prior), nil
 }

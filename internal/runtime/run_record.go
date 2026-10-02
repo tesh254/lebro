@@ -89,6 +89,12 @@ const (
 	RunEventModelAttemptFinished RunEventType = "model_attempt_finished"
 	// RunEventProcessor records a processor decision without recording content.
 	RunEventProcessor RunEventType = "processor"
+	// RunEventContextCompactionStarted/Finished/Failed/Skipped record
+	// conversation-maintenance work without exposing summary content.
+	RunEventContextCompactionStarted  RunEventType = "context_compaction_started"
+	RunEventContextCompactionFinished RunEventType = "context_compaction_finished"
+	RunEventContextCompactionFailed   RunEventType = "context_compaction_failed"
+	RunEventContextCompactionSkipped  RunEventType = "context_compaction_skipped"
 	// RunEventPlugin is reserved for runtime plugin lifecycle and decision
 	// events. Plugin hooks land with extensible-runtime work; plugins
 	// integrating today append RunEventRecords of this type through the
@@ -447,6 +453,13 @@ func (e *runEmitter) emitProcessor(runID RunID, step int, stepID StepID, phase P
 		return
 	}
 	e.dispatch(RunEvent{Type: RunEventProcessor, RunID: runID, StepID: stepID, Step: step, Timestamp: e.clock.Now(), ProcessorPhase: phase, ProcessorAction: action})
+}
+
+func (e *runEmitter) emitContextCompaction(runID RunID, step int, stepID StepID, typ RunEventType, estimate int64, duration time.Duration, usage ModelUsage, accounting ModelAccounting, err error) {
+	if !e.enabled() {
+		return
+	}
+	e.dispatch(RunEvent{Type: typ, RunID: runID, Step: step, StepID: stepID, Timestamp: e.clock.Now(), Duration: duration, Usage: usage, Accounting: accounting.Clone(), DeltaText: fmt.Sprintf("estimated_input_tokens=%d", estimate), Error: err})
 }
 
 func (e *runEmitter) emitModelFinished(runID RunID, step int, stepID StepID, start time.Time, finishReason FinishReason, usage ModelUsage, accounting ModelAccounting, err error) {
