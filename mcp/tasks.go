@@ -42,8 +42,13 @@ var (
 	// ErrTaskNotFound is returned when a task is absent or its retention period elapsed.
 	ErrTaskNotFound = errors.New("lebro/mcp: task not found")
 	// ErrTaskConflict is returned when a task update loses a concurrent state transition.
-	ErrTaskConflict          = errors.New("lebro/mcp: task conflict")
+	ErrTaskConflict = errors.New("lebro/mcp: task conflict")
+	// errTaskExecutionPanicked replaces a recovered run panic so the failure
+	// payload carries a stable, non-echoing message.
 	errTaskExecutionPanicked = errors.New("lebro/mcp: task execution panicked")
+	// errTaskContextRestoreFailed marks a Context hook that returned a nil
+	// context without an error: the run cannot proceed without a context.
+	errTaskContextRestoreFailed = errors.New("lebro/mcp: task context hook returned no context")
 )
 
 // TaskStatus is an MCP Tasks lifecycle state.
@@ -345,17 +350,23 @@ func (s *taskService) execute(record TaskRecord, entry taskEntry) {
 		stopRenewal()
 		return
 	}
-	ctx, err = s.config.Context(ctx, current)
-	if err != nil {
+	// An application hook may return a nil context, with or without its
+	// error: running with nil would panic the terminal write, and a plain
+	// Background would drop the run context. Keep the run context instead —
+	// finish strips its cancellation before the terminal write.
+	restored, err := s.config.Context(ctx, current)
+	if err != nil || restored == nil {
 		stopRenewal()
-		// An application hook may return a nil context with its error; the
-		// terminal write still needs a usable one.
-		if ctx == nil {
-			ctx = context.Background()
+		if restored == nil {
+			restored = ctx
 		}
-		s.finish(ctx, current, nil, err, "restore task execution context failed")
+		if err == nil {
+			err = errTaskContextRestoreFailed
+		}
+		s.finish(restored, current, nil, err, "restore task execution context failed")
 		return
 	}
+	ctx = restored
 	var result *mcpsdk.CallToolResult
 	func() {
 		defer func() {

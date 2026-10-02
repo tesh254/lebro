@@ -124,10 +124,39 @@ func cloneTask(record TaskRecord) TaskRecord {
 	return record
 }
 
+// newTasksWithHooks builds a task service from the two overridable
+// application hooks, so tests can drive the Context hook's paths without
+// re-specifying the whole TaskConfig literal.
+func newTasksWithHooks(store TaskStore, now func() time.Time, contextHook func(context.Context, TaskRecord) (context.Context, error), authorize func(context.Context, TaskRecord) error) *taskService {
+	return newTaskService(&TaskConfig{Store: store, Identity: func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{"subject":"ava"}`), nil }, Context: contextHook, Authorize: authorize, NewID: func() (string, error) { return "task-1", nil }, Now: now, PollInterval: time.Millisecond})
+}
+
+// waitForTaskStatus polls the store until the record reaches the wanted
+// status and returns it; the test fails on timeout. Polling replaces hard
+// sleeps: the executor runs on its own goroutine.
+func waitForTaskStatus(t *testing.T, store TaskStore, id string, want TaskStatus) TaskRecord {
+	t.Helper()
+	deadline := time.After(time.Second)
+	for {
+		record, err := store.GetTask(context.Background(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if record.Status == want {
+			return record
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("task status = %q, want %q", record.Status, want)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
 func newTasks(store TaskStore, now func() time.Time, authorize func(context.Context, TaskRecord) error) *taskService {
-	return newTaskService(&TaskConfig{Store: store, Identity: func(context.Context) (json.RawMessage, error) { return json.RawMessage(`{"subject":"ava"}`), nil }, Context: func(ctx context.Context, record TaskRecord) (context.Context, error) {
+	return newTasksWithHooks(store, now, func(ctx context.Context, record TaskRecord) (context.Context, error) {
 		return context.WithValue(ctx, taskIdentityKey{}, string(record.Identity)), nil
-	}, Authorize: authorize, NewID: func() (string, error) { return "task-1", nil }, Now: now, PollInterval: time.Millisecond})
+	}, authorize)
 }
 
 type taskIdentityKey struct{}
@@ -248,23 +277,9 @@ func TestTaskPanicRecordsStableFailure(t *testing.T) {
 	if _, err := tasks.create(context.Background(), "agent.panic", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) { panic("model panic") }}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.After(time.Second)
-	for {
-		record, err := store.GetTask(context.Background(), "task-1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.Status == TaskFailed {
-			if string(record.Failure) != `{"code":-32603,"message":"task execution failed"}` {
-				t.Fatalf("failure = %s", record.Failure)
-			}
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("task did not fail")
-		case <-time.After(time.Millisecond):
-		}
+	record := waitForTaskStatus(t, store, "task-1", TaskFailed)
+	if string(record.Failure) != `{"code":-32603,"message":"task execution failed"}` {
+		t.Fatalf("failure = %s", record.Failure)
 	}
 }
 
@@ -298,26 +313,60 @@ func TestTaskRunFailureRecordsFailedStatus(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.After(time.Second)
-	for {
-		record, err := store.GetTask(context.Background(), "task-1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if record.Status == TaskFailed {
-			if record.StatusMessage != "task execution failed" {
-				t.Fatalf("status message = %q", record.StatusMessage)
-			}
-			if string(record.Failure) != `{"code":-32603,"message":"task execution failed"}` {
-				t.Fatalf("failure = %s", record.Failure)
-			}
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("task status = %q, want failed", record.Status)
-		case <-time.After(time.Millisecond):
-		}
+	record := waitForTaskStatus(t, store, "task-1", TaskFailed)
+	if record.StatusMessage != "task execution failed" {
+		t.Fatalf("status message = %q", record.StatusMessage)
+	}
+	if string(record.Failure) != `{"code":-32603,"message":"task execution failed"}` {
+		t.Fatalf("failure = %s", record.Failure)
+	}
+}
+
+// newTasksWithContext builds a task service whose Context hook returns the
+// given values, so tests can drive the hook's nil-context paths.
+func newTasksWithContext(store TaskStore, now func() time.Time, contextHook func(context.Context, TaskRecord) (context.Context, error)) *taskService {
+	return newTasksWithHooks(store, now, contextHook, func(context.Context, TaskRecord) error { return nil })
+}
+
+func TestTaskContextHookNilWithErrorRecordsFailed(t *testing.T) {
+	store := newMemoryTaskStore()
+	tasks := newTasksWithContext(store, time.Now, func(context.Context, TaskRecord) (context.Context, error) {
+		// A hook returning (nil, err) must fail the task, not pass a nil
+		// context to the run or the terminal write.
+		return nil, errors.New("hook exploded")
+	})
+	if _, err := tasks.create(context.Background(), "agent.a", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	record := waitForTaskStatus(t, store, "task-1", TaskFailed)
+	if record.StatusMessage != "restore task execution context failed" {
+		t.Fatalf("status message = %q", record.StatusMessage)
+	}
+	if string(record.Failure) != `{"code":-32603,"message":"restore task execution context failed"}` {
+		t.Fatalf("failure = %s", record.Failure)
+	}
+}
+
+func TestTaskContextHookNilWithoutErrorRecordsFailed(t *testing.T) {
+	store := newMemoryTaskStore()
+	// (nil, nil) must fail the task rather than run with a nil context:
+	// finish's context.WithoutCancel(nil) panics outside the run's recover.
+	tasks := newTasksWithContext(store, time.Now, func(context.Context, TaskRecord) (context.Context, error) {
+		return nil, nil
+	})
+	if _, err := tasks.create(context.Background(), "agent.a", json.RawMessage(`{}`), taskEntry{run: func(context.Context, json.RawMessage) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	record := waitForTaskStatus(t, store, "task-1", TaskFailed)
+	if record.StatusMessage != "restore task execution context failed" {
+		t.Fatalf("status message = %q", record.StatusMessage)
+	}
+	if string(record.Failure) != `{"code":-32603,"message":"restore task execution context failed"}` {
+		t.Fatalf("failure = %s", record.Failure)
 	}
 }
 
