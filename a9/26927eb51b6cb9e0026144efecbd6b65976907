@@ -1,0 +1,49 @@
+internal/runtime/agent.go
+  s_8b88d0d6ec508e::t_49bef43076e4eb 407-409,1006-1008,1013
+  s_8b88d0d6ec508e::t_a08c8004d761bf 566-573
+  s_8b88d0d6ec508e::t_18d0a2badee10b 919,961
+  s_8b88d0d6ec508e::t_9061d01ec993dc 1874
+  s_8b88d0d6ec508e::t_6d0c2365421988 1730
+  s_8b88d0d6ec508e::t_7252fb51985956 277-280,307,406,431
+  s_8b88d0d6ec508e::t_cbdef4c812f18a 1005,1009-1012,1014
+internal/runtime/model.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 21-26,454-456
+internal/geminiapi/adapter.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 101-103
+api_types.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 90-95
+  s_8b88d0d6ec508e::t_8be44962ede560 474-477
+docs/context-compaction.md
+  s_8b88d0d6ec508e::t_112102f0740e1b 1-29
+internal/runtime/processor.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 156
+internal/runtime/context_compaction_test.go
+  s_8b88d0d6ec508e::t_4ec980911bd721 5,47
+  s_8b88d0d6ec508e::t_85f132d43f0458 1-4,6-46,48-99,102-103,105-106
+openai/adapter.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 221-223,350
+internal/runtime/run_record.go
+  s_8b88d0d6ec508e::t_d838ba1e0a078d 92-97,458-462
+internal/runtime/types.go
+  s_8b88d0d6ec508e::t_6d0c2365421988 135
+internal/runtime/context_compaction.go
+  s_8b88d0d6ec508e::t_41e12e65460e6f 1-91,93-101,105-114,116-121,123-124,126-137,139-141,143-179,181-207,209-217,219-230,232-242,244-262,264-274,276-286,291-292
+anthropic/adapter.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 108-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "a926927eb51b6cb9e0026144efecbd6b65976907",
+  "prompts": {},
+  "sessions": {
+    "s_8b88d0d6ec508e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0fd83-dd76-71e1-a8ef-e22600f5bec0",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
