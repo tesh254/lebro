@@ -1,0 +1,57 @@
+internal/runtime/agent.go
+  s_8b88d0d6ec508e::t_9061d01ec993dc 1874
+  s_8b88d0d6ec508e::t_18d0a2badee10b 919,961
+  s_8b88d0d6ec508e::t_6d0c2365421988 1730
+  s_8b88d0d6ec508e::t_a08c8004d761bf 566-573
+  s_8b88d0d6ec508e::t_49bef43076e4eb 407-409,1006-1008,1013
+  s_8b88d0d6ec508e::t_cbdef4c812f18a 1005,1009-1012,1014
+  s_8b88d0d6ec508e::t_7252fb51985956 277-280,307,406,431
+internal/runtime/run_record.go
+  s_8b88d0d6ec508e::t_e47480c1df90b0 458,462
+  s_8b88d0d6ec508e::t_d838ba1e0a078d 92-97,459-461
+api_types.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 90-95
+  s_8b88d0d6ec508e::t_8be44962ede560 474-477
+internal/runtime/context_compaction_test.go
+  s_8b88d0d6ec508e::t_85f132d43f0458 1-4,6-46,48-106
+  s_8b88d0d6ec508e::t_4ec980911bd721 5,47
+openai/adapter.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 221-223,350
+internal/geminiapi/adapter.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 101-103
+internal/runtime/processor.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 156
+internal/runtime/types.go
+  s_8b88d0d6ec508e::t_6d0c2365421988 135
+anthropic/adapter.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 108-110
+docs/context-compaction.md
+  s_8b88d0d6ec508e::t_112102f0740e1b 1-29
+internal/runtime/context_compaction.go
+  s_8b88d0d6ec508e::t_21f432cbdf8e30 194,226-237,272,282,284-286,288-296,332-367
+  s_8b88d0d6ec508e::t_87d080f0fdba0e 212-214,221-223
+  s_8b88d0d6ec508e::t_8a9349e8ad7c38 283
+  s_8b88d0d6ec508e::t_ce03a1ebba5a3b 193,195-201,203-206
+  s_8b88d0d6ec508e::t_e47480c1df90b0 174,177-179,239,252,264,278
+  s_8b88d0d6ec508e::t_72f17529a95484 279-280
+  s_8b88d0d6ec508e::t_b6ee98897de0e2 166-169,202,281
+  s_8b88d0d6ec508e::t_41e12e65460e6f 1-165,170-173,175-176,180-192,207-211,215-220,224-225,238,240-251,253-263,265-271,273-277,287,297-331,368-369
+internal/runtime/model.go
+  s_8b88d0d6ec508e::t_9f42865ee41c11 21-26,454-456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "f2d2f2335980cb9682d7a9af8cb900acc6fe834d",
+  "prompts": {},
+  "sessions": {
+    "s_8b88d0d6ec508e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0fd83-dd76-71e1-a8ef-e22600f5bec0",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": null
+    }
+  }
+}
