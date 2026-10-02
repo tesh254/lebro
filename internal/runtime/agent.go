@@ -403,7 +403,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 			return nil, err
 		}
 	}
-	compactor, err := newContextCompactor(config.ContextCompaction, config.Model)
+	compactor, err := newContextCompactor(config.ContextCompaction)
 	if err != nil {
 		return nil, err
 	}
@@ -511,6 +511,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, resolverErr)
 		return a.fail(runID, input, 0, resolverErr)
 	}
+	compactor, compactErr := a.contextCompactor.forRun(runConfig.modelForSummary(), runConfig.modelName)
+	if compactErr != nil {
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, compactErr)
+		return a.fail(runID, input, 0, compactErr)
+	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -563,8 +568,8 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		} else {
 			request = *decision.Request
 		}
-		if a.contextCompactor != nil {
-			request, err = a.contextCompactor.compact(runCtx, emitter, runID, step, stepID, input.ThreadID, input.priorMessages, request)
+		if compactor != nil {
+			request, err = compactor.compact(runCtx, emitter, runID, step, stepID, input.ThreadID, input.priorMessages, request)
 			if err != nil {
 				agentErr := &AgentError{Kind: AgentErrorProcessor, Step: step, Err: err}
 				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
@@ -851,6 +856,12 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, resolverErr)
 		return nil, resolverErr
 	}
+	compactor, compactErr := a.contextCompactor.forRun(runConfig.modelForSummary(), runConfig.modelName)
+	if compactErr != nil {
+		cancel()
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, compactErr)
+		return nil, compactErr
+	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
@@ -895,28 +906,29 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	}
 
 	go a.runStreamLoop(streamRunParams{
-		ctx:             runCtx,
-		parentCtx:       ctx,
-		runID:           runID,
-		metadata:        metadata,
-		transcript:      transcript,
-		toolDefinitions: toolDefinitions,
-		outputSchema:    outputSchema,
-		compiledOutput:  compiledOutput,
-		streamingModel:  streamingModel,
-		emitter:         emitter,
-		journal:         journal,
-		deltas:          deltas,
-		done:            done,
-		finished:        finished,
-		threadID:        input.ThreadID,
-		loadedCount:     loadedCount,
-		memory:          input.Memory.Clone(),
-		memoryRecalled:  input.memoryRecalled,
-		modelName:       runConfig.modelName,
-		reasoning:       input.Reasoning,
-		annotations:     input.Annotations,
-		priorMessages:   input.priorMessages,
+		ctx:              runCtx,
+		parentCtx:        ctx,
+		runID:            runID,
+		metadata:         metadata,
+		transcript:       transcript,
+		toolDefinitions:  toolDefinitions,
+		outputSchema:     outputSchema,
+		compiledOutput:   compiledOutput,
+		streamingModel:   streamingModel,
+		emitter:          emitter,
+		journal:          journal,
+		deltas:           deltas,
+		done:             done,
+		finished:         finished,
+		threadID:         input.ThreadID,
+		loadedCount:      loadedCount,
+		memory:           input.Memory.Clone(),
+		memoryRecalled:   input.memoryRecalled,
+		modelName:        runConfig.modelName,
+		reasoning:        input.Reasoning,
+		annotations:      input.Annotations,
+		priorMessages:    input.priorMessages,
+		contextCompactor: compactor,
 	})
 
 	return run, nil
@@ -937,28 +949,29 @@ type streamOutcome struct {
 }
 
 type streamRunParams struct {
-	ctx             context.Context
-	parentCtx       context.Context
-	runID           RunID
-	metadata        map[string]string
-	transcript      []Message
-	toolDefinitions []ToolDefinition
-	outputSchema    *ModelOutputSchema
-	compiledOutput  CompiledSchema
-	streamingModel  StreamingModel
-	emitter         *runEmitter
-	journal         *runJournal
-	deltas          chan<- StreamDelta
-	done            chan<- streamOutcome
-	finished        chan<- struct{}
-	threadID        ThreadID
-	loadedCount     int
-	memory          *MemoryProcessorConfig
-	memoryRecalled  bool
-	modelName       string
-	reasoning       ReasoningConfig
-	annotations     Metadata
-	priorMessages   []MessageRecord
+	ctx              context.Context
+	parentCtx        context.Context
+	runID            RunID
+	metadata         map[string]string
+	transcript       []Message
+	toolDefinitions  []ToolDefinition
+	outputSchema     *ModelOutputSchema
+	compiledOutput   CompiledSchema
+	streamingModel   StreamingModel
+	emitter          *runEmitter
+	journal          *runJournal
+	deltas           chan<- StreamDelta
+	done             chan<- streamOutcome
+	finished         chan<- struct{}
+	threadID         ThreadID
+	loadedCount      int
+	memory           *MemoryProcessorConfig
+	memoryRecalled   bool
+	modelName        string
+	reasoning        ReasoningConfig
+	annotations      Metadata
+	priorMessages    []MessageRecord
+	contextCompactor *contextCompactor
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -1002,8 +1015,8 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		} else {
 			request = *decision.Request
 		}
-		if a.contextCompactor != nil {
-			compacted, compactErr := a.contextCompactor.compact(p.ctx, p.emitter, p.runID, step, stepID, p.threadID, p.priorMessages, request)
+		if p.contextCompactor != nil {
+			compacted, compactErr := p.contextCompactor.compact(p.ctx, p.emitter, p.runID, step, stepID, p.threadID, p.priorMessages, request)
 			if compactErr != nil {
 				agentErr := &AgentError{Kind: AgentErrorProcessor, Step: step, Err: compactErr}
 				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
@@ -1667,6 +1680,13 @@ func (c agentRunConfig) streamingModel() StreamingModel {
 		return c.router
 	}
 	return AsStreamingModel(c.model)
+}
+
+func (c agentRunConfig) modelForSummary() Model {
+	if c.model != nil && !isNilInterface(c.model) {
+		return c.model
+	}
+	return c.router
 }
 
 type agentRunConfig struct {

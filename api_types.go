@@ -476,6 +476,9 @@ const (
 	RunEventContextCompactionFailed   = runtime.RunEventContextCompactionFailed
 	RunEventContextCompactionSkipped  = runtime.RunEventContextCompactionSkipped
 
+	ContextCompactionInputTooLarge = runtime.ContextCompactionInputTooLarge
+	ContextCompactionFailed        = runtime.ContextCompactionFailed
+
 	FanOutFailFast   = runtime.FanOutFailFast
 	FanOutCollectAll = runtime.FanOutCollectAll
 

@@ -84,6 +84,12 @@ func TestContextCompactionSummarizesDurablePrefixWithoutChangingTranscript(t *te
 	if err != nil || len(page.Records) != 8 {
 		t.Fatalf("canonical transcript changed: %d %v", len(page.Records), err)
 	}
+	for i, want := range records {
+		got := page.Records[i]
+		if got.ID != want.ID || got.Message != want.Message {
+			t.Fatalf("canonical record %d changed: got %#v want %#v", i, got, want)
+		}
+	}
 }
 
 func TestContextCompactionNeverSplitsToolInteraction(t *testing.T) {

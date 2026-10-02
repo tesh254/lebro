@@ -242,7 +242,7 @@ func (m *Model) buildRequestBody(request lebro.ModelRequest) ([]byte, error) {
 		for key, value := range extension {
 			// Keys the adapter derives from the neutral protocol are owned by
 			// the mapping; keep callers from clobbering the wire representation.
-			if reservedWireKey(key) {
+			if reservedWireKey(key) && (key != "max_tokens" || request.MaxOutputTokens > 0) {
 				continue
 			}
 			body[key] = value
@@ -926,6 +926,9 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 	}
 
 	body := map[string]any{"model": model, "messages": messages, "stream": true}
+	if request.MaxOutputTokens > 0 {
+		body["max_tokens"] = request.MaxOutputTokens
+	}
 	if len(request.Tools) > 0 {
 		body["tools"] = chatTools(request.Tools)
 	}
@@ -945,7 +948,7 @@ func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, e
 			return nil, m.invalidRequest(fmt.Sprintf("lebro: request extension must be a JSON object: %v", err), err)
 		}
 		for key, value := range extension {
-			if reservedWireKey(key) {
+			if reservedWireKey(key) && (key != "max_tokens" || request.MaxOutputTokens > 0) {
 				continue
 			}
 			body[key] = value

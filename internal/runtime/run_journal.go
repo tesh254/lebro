@@ -125,6 +125,15 @@ func runEventPayload(event RunEvent) json.RawMessage {
 			return nil
 		}
 		return json.RawMessage(event.DeltaText)
+	case RunEventContextCompactionStarted, RunEventContextCompactionFinished, RunEventContextCompactionFailed, RunEventContextCompactionSkipped:
+		if event.DeltaText == "" {
+			return nil
+		}
+		raw, err := json.Marshal(map[string]string{"estimate": event.DeltaText})
+		if err != nil {
+			return nil
+		}
+		return raw
 	default:
 		return nil
 	}
