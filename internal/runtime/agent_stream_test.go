@@ -1790,4 +1790,84 @@ func TestAgentRunStreamRoutedFailureKeepsObservedMetadataAndOutcome(t *testing.T
 	if attempt.Usage != (ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) || attempt.Accounting.ProviderRequestID != "req-routed" || attempt.FinishReason != FinishReasonToolCalls {
 		t.Fatalf("attempt metadata = %#v finish %q", attempt, attempt.FinishReason)
 	}
+
+	// The durable attempt-finished event must agree with the relabeled
+	// record, or operators joining events with attempts see a success event
+	// next to a failed attempt for the same call.
+	attemptEvents, err := store.RunEvents().ListRunEvents(context.Background(), RunEventFilter{RunID: "routed-fail-run", Type: RunEventModelAttemptFinished}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attemptEvents.Records) != 1 {
+		t.Fatalf("attempt-finished events = %d, want 1", len(attemptEvents.Records))
+	}
+	event := attemptEvents.Records[0]
+	if event.AttemptStatus != ModelAttemptFailed || event.ErrorKind != string(ModelErrorMalformedResponse) {
+		t.Fatalf("attempt-finished event = %s/%s, want the relabeled outcome", event.AttemptStatus, event.ErrorKind)
+	}
+}
+
+// TestAgentRoutingFailureAfterSuccessNeverRelabelsEarlierAttempts pins the
+// relabel boundary: a model call that fails BEFORE any attempt begins
+// (routing rejects the request) must leave an earlier call's successful
+// attempt record and event untouched.
+func TestAgentRoutingFailureAfterSuccessNeverRelabelsEarlierAttempts(t *testing.T) {
+	t.Parallel()
+
+	model := newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}), textResponse("unused"))
+	calls := 0
+	registry := NewProviderRegistry()
+	if err := registry.Register(ProviderEntry{ID: "fixture", Model: model, Capabilities: ProviderCapabilities{SupportsTools: true}}); err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewModelRouter(ModelRouterConfig{Registry: registry, Policy: RoutingPolicy{
+		Predicate: func(ModelRequest) ProviderID {
+			calls++
+			if calls >= 2 {
+				return "missing"
+			}
+			return "fixture"
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	tools, _ := newAgentTestRegistry(t)
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "boundary-agent", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Router:     router,
+		Store:      store,
+		Tools:      tools,
+		MaxSteps:   3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, runErr := agent.Run(context.Background(), RunInput{RunID: "boundary-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if runErr == nil || result.Status != RunStatusFailed {
+		t.Fatalf("result = %+v %v, want failed run", result, runErr)
+	}
+
+	attempts, err := store.ModelAttempts().ListModelAttempts(context.Background(), ModelAttemptFilter{RunID: "boundary-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts.Records) != 1 {
+		t.Fatalf("persisted attempts = %d, want 1 (the routing failure started no attempt)", len(attempts.Records))
+	}
+	attempt := attempts.Records[0]
+	if attempt.Status != ModelAttemptSuccess || attempt.ErrorKind != "" {
+		t.Fatalf("earlier attempt relabeled by a later routing failure: %#v", attempt)
+	}
+	attemptEvents, err := store.RunEvents().ListRunEvents(context.Background(), RunEventFilter{RunID: "boundary-run", Type: RunEventModelAttemptFinished}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range attemptEvents.Records {
+		if event.AttemptStatus != ModelAttemptSuccess {
+			t.Fatalf("earlier attempt event relabeled: %#v", event)
+		}
+	}
 }

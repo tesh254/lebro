@@ -37,8 +37,13 @@ type runJournal struct {
 	// open holds in-flight provider attempts in start order. Attempts within
 	// one model call are sequential (routing walks its fallback chain one
 	// provider at a time), so completion pops from the front.
-	open    []openModelAttempt
-	toolSeq int
+	open []openModelAttempt
+	// sealedAttempts and sealedEvents mark how many attempts and events the
+	// previous finishModelCall already accounted for, so a failed call's
+	// outcome relabel only ever touches records from the current model call.
+	sealedAttempts int
+	sealedEvents   int
+	toolSeq        int
 	// persisted counts how many entries the success-path transaction already
 	// committed, so the deferred diagnostic flush writes only the delta —
 	// typically the terminal event emitted after persist.
@@ -290,15 +295,26 @@ func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccountin
 	j.open = nil
 	// Routed attempts completed through the observer before the failure was
 	// known (the winner opened its stream, or Generate returned a response
-	// that aggregation later rejected). The most recent attempt is the one
-	// whose response carried the observed metadata: it receives it, and its
-	// premature provider-level success is relabeled with the call's actual
-	// failed or cancelled outcome.
-	if observed && len(j.open) == 0 && len(j.attempts) > 0 && j.attempts[len(j.attempts)-1].Status == ModelAttemptSuccess {
+	// that aggregation later rejected). The most recent attempt of THIS
+	// model call is the one whose response carried the observed metadata: it
+	// receives it, and its premature provider-level success is relabeled
+	// with the call's actual failed or cancelled outcome — its durable
+	// attempt-finished event is relabeled with it so events and attempts
+	// agree. A call that never started an attempt (routing failed before
+	// any attempt began) touches nothing.
+	if observed && len(j.open) == 0 && len(j.attempts) > j.sealedAttempts && j.attempts[len(j.attempts)-1].Status == ModelAttemptSuccess {
 		last := &j.attempts[len(j.attempts)-1]
 		last.Status = status
 		last.ErrorKind, last.ErrorMessage = classifyRunError(err)
 		applyObservedAttemptMetadata(last, usage, accounting, finishReason)
+		for i := len(j.events) - 1; i >= j.sealedEvents; i-- {
+			if j.events[i].Type != RunEventModelAttemptFinished || j.events[i].AttemptStatus != ModelAttemptSuccess {
+				continue
+			}
+			j.events[i].AttemptStatus = status
+			j.events[i].ErrorKind, j.events[i].ErrorMessage = classifyRunError(err)
+			break
+		}
 	}
 	if err == nil && len(j.attempts) > 0 {
 		winner := &j.attempts[len(j.attempts)-1]
@@ -307,6 +323,8 @@ func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccountin
 		winner.ProviderRequestID = accounting.ProviderRequestID
 		winner.FinishReason = finishReason
 	}
+	j.sealedAttempts = len(j.attempts)
+	j.sealedEvents = len(j.events)
 }
 
 // applyObservedAttemptMetadata copies the metadata a failed or cancelled call
