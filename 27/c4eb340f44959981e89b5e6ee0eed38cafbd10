@@ -1,0 +1,64 @@
+internal/runtime/run_journal.go
+  s_ad24d93deb8275::t_ec113f11a314c6 242-248,266,282,288-294
+internal/runtime/sqlite_storage.go
+  s_ad24d93deb8275::t_13ad049a31a38b 293-295
+internal/runtime/tool_observer.go
+  s_ad24d93deb8275::t_144a7501cb1452 59-66,81,95-108
+  s_ad24d93deb8275::t_f58564f8e85ef4 5
+  s_ad24d93deb8275::t_237aaef5cff901 41
+CHANGELOG.md
+  s_ad24d93deb8275::t_14bf2bcfbfac45 31
+  s_ad24d93deb8275::t_fdbc775968d7ae 804
+  s_ad24d93deb8275::t_c6cd8bf43d4b9a 23
+internal/runtime/memory_storage.go
+  s_ad24d93deb8275::t_2b550be30928ec 906,911-926
+internal/testkit/contract_runtime_store.go
+  s_ad24d93deb8275::t_9c3f6d077031a0 442-445
+  ai_agent 505-506
+  s_ad24d93deb8275::t_ce8f53fe3c54a8 517-520,531,541-542
+  s_ad24d93deb8275::t_3091d8a82e049a 495
+internal/runtime/postgres_storage_test.go
+  s_ad24d93deb8275::t_ac7821aa7c3c02 364-427
+openai/stream_test.go
+  s_ad24d93deb8275::t_dbe05912bbdaed 543-550,555-603,605-637
+  s_ad24d93deb8275::t_afd0f9c065da41 604
+internal/runtime/agent_stream_test.go
+  s_ad24d93deb8275::t_ed579a794a4995 1672-1694,1699-1711
+  s_ad24d93deb8275::t_e7908d4d5ff651 1606-1634,1636-1638,1644-1671
+  s_ad24d93deb8275::t_79f8578f776a98 1635,1639-1643
+  s_ad24d93deb8275::t_47d3cb9df1175e 1564-1605
+  s_ad24d93deb8275::t_dd8a6e16d467f9 1533-1541,1544-1545
+  s_ad24d93deb8275::t_005792b116a618 1695-1698
+  s_ad24d93deb8275::t_5199e265f30bd5 1481-1532,1542-1543,1546-1563
+docs/run-records.md
+  s_ad24d93deb8275::t_5466e576c4efab 80
+internal/runtime/postgres_storage.go
+  s_ad24d93deb8275::t_9fdc8a08be397a 315-324
+internal/runtime/agent.go
+  s_ad24d93deb8275::t_0658f7363ab20d 698,701
+  s_ad24d93deb8275::t_1e150761da53b2 851-852,854-858
+  s_ad24d93deb8275::t_50194085adc3d6 696
+  s_ad24d93deb8275::t_228f613a682777 943
+  s_ad24d93deb8275::t_560cc5d4f96948 850,853,860
+  s_ad24d93deb8275::t_c8d085d70b7e99 486-487,491,501
+  s_ad24d93deb8275::t_0ba34b2ccce694 1170,1173
+  s_ad24d93deb8275::t_9bdd8d184bc1e9 488-490,492-496
+openai/adapter.go
+  s_ad24d93deb8275::t_9fa0b09d3e0c17 1176-1181
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "27c4eb340f44959981e89b5e6ee0eed38cafbd10",
+  "prompts": {},
+  "sessions": {
+    "s_ad24d93deb8275": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eea148b4bffeycQA9OoneEAwrp",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
