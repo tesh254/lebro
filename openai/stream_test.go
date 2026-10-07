@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	lebrojsonschema "github.com/tesh254/lebro/jsonschema"
 
 	"github.com/tesh254/lebro"
 )
@@ -388,6 +391,254 @@ func TestModelStreamKeepsOrderWhenContentAndFinishShareOneEvent(t *testing.T) {
 	}
 	if got.text != "bye" || got.finish != lebro.FinishReasonStop || !got.terminal {
 		t.Fatalf("stream outcome = %#v, want text before terminal stop", got)
+	}
+}
+
+// streamedToolCallFixture events model the fragmented streamed tool call the
+// session-failure investigation replayed: fragments carry id, name, and
+// argument JSON across separate SSE events.
+var streamedToolCallFixture = []string{
+	`{"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_fixture","type":"function","function":{"name":"lookup","arguments":""}}]},"finish_reason":null}]}`,
+	`{"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null}]}`,
+}
+
+// finishWithoutUsage repeats the terminal finish reason with an empty delta
+// and no usage; finishWithUsage is the trailing usage chunk some providers
+// emit after the first finish.
+const (
+	finishWithoutUsage = `{"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`
+	finishWithUsage    = `{"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"cost":0}}`
+	usageOnlyChunk     = `{"id":"fixture","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"cost":0}}`
+)
+
+func streamSSE(t *testing.T, events ...string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			_, _ = io.WriteString(w, "data: "+event+"\n\n")
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// collectStream drains reader and returns emitted tool calls, the terminal
+// deltas, and the usage observed on the last terminal.
+func collectStream(t *testing.T, reader lebro.StreamReader) (calls []lebro.ModelToolCall, terminals int, usage lebro.ModelUsage) {
+	t.Helper()
+	for {
+		delta, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return calls, terminals, usage
+		}
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if delta.ToolCall != nil {
+			calls = append(calls, *delta.ToolCall)
+		}
+		if delta.IsTerminal() {
+			terminals++
+			usage = delta.Usage
+		}
+	}
+}
+
+// TestModelStreamRepeatedToolCallsFinishEmitsCallsOnce pins the idempotent
+// tool-call completion lifecycle: a provider that repeats the tool_calls
+// finish reason — most commonly a trailing usage chunk — must emit each
+// intended call once, one terminal, and the received usage exactly as the
+// conventional single-finish shapes do.
+func TestModelStreamRepeatedToolCallsFinishEmitsCallsOnce(t *testing.T) {
+	t.Parallel()
+	for _, fixture := range []struct {
+		name    string
+		events  []string
+		calls   int
+		usage   int64
+		callIDs []string
+	}{
+		{
+			name:    "repeated finish then trailing usage",
+			events:  append(append([]string{}, streamedToolCallFixture...), finishWithoutUsage, finishWithUsage),
+			calls:   1,
+			usage:   12,
+			callIDs: []string{"call_fixture"},
+		},
+		{
+			name:    "finish then usage-only chunk",
+			events:  append(append([]string{}, streamedToolCallFixture...), finishWithoutUsage, usageOnlyChunk),
+			calls:   1,
+			usage:   12,
+			callIDs: []string{"call_fixture"},
+		},
+		{
+			name:    "single finish with usage",
+			events:  append(append([]string{}, streamedToolCallFixture...), finishWithUsage),
+			calls:   1,
+			usage:   12,
+			callIDs: []string{"call_fixture"},
+		},
+		{
+			name:    "repeated finishes without usage",
+			events:  append(append([]string{}, streamedToolCallFixture...), finishWithoutUsage, finishWithoutUsage),
+			calls:   1,
+			usage:   0,
+			callIDs: []string{"call_fixture"},
+		},
+		{
+			name:    "first finish already has usage then repeated",
+			events:  append(append([]string{}, streamedToolCallFixture...), finishWithUsage, finishWithUsage),
+			calls:   1,
+			usage:   12,
+			callIDs: []string{"call_fixture"},
+		},
+		{
+			name: "two interleaved tools with repeated finish and usage",
+			events: append([]string{},
+				`{"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call-a","type":"function","function":{"name":"lookup"}}]}}]}`,
+				`{"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call-b","type":"function","function":{"name":"ping","arguments":"{\"v\":1}"}}]}}]}`,
+				`{"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}`,
+				finishWithoutUsage,
+				finishWithUsage),
+			calls:   2,
+			usage:   12,
+			callIDs: []string{"call-a", "call-b"},
+		},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			t.Parallel()
+			model := newAdapter(t, streamSSE(t, fixture.events...), Config{APIKey: "test-key", Model: "gpt-4o"})
+			reader, err := model.Stream(context.Background(), lebro.ModelRequest{
+				Model:    "gpt-4o",
+				Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+				Tools:    []lebro.ToolDefinition{{ID: "lookup"}, {ID: "ping"}},
+			})
+			if err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			defer func() { _ = reader.Close() }()
+
+			calls, terminals, usage := collectStream(t, reader)
+			if len(calls) != fixture.calls {
+				t.Fatalf("emitted tool calls = %#v, want %d", calls, fixture.calls)
+			}
+			for i, call := range calls {
+				if call.ID != fixture.callIDs[i] {
+					t.Fatalf("call[%d].ID = %q, want %q", i, call.ID, fixture.callIDs[i])
+				}
+			}
+			if _, err := lebro.NewModelToolCalls(calls...); err != nil {
+				t.Fatalf("aggregate emitted tool calls: %v", err)
+			}
+			if terminals != 1 {
+				t.Fatalf("terminal delta count = %d, want 1", terminals)
+			}
+			if usage.TotalTokens != fixture.usage {
+				t.Fatalf("terminal usage tokens = %d, want %d", usage.TotalTokens, fixture.usage)
+			}
+		})
+	}
+}
+
+// countingTool is a real registered tool the agent fixture executes; it
+// records every execution so the test can prove the repaired stream executes
+// each intended tool exactly once.
+type countingTool struct {
+	mu      sync.Mutex
+	calls   int
+	lastArg string
+}
+
+func (t *countingTool) Definition() lebro.ToolDefinition {
+	return lebro.ToolDefinition{ID: "lookup", Description: "look up a value", InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+
+func (t *countingTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls++
+	t.lastArg = string(args)
+	return json.RawMessage(`{"result":"ok"}`), nil
+}
+
+// TestAgentStreamExecutesStreamedToolCallsOnce drives a real tool-enabled
+// agent through the repeated-finish fixture: the first model step streams
+// tool calls under the duplicate-finish shape, the tool executes once, and
+// the second model step answers so the run completes successfully.
+func TestAgentStreamExecutesStreamedToolCallsOnce(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		mu.Lock()
+		requests++
+		call := requests
+		mu.Unlock()
+		switch call {
+		case 1:
+			for _, event := range append(append([]string{}, streamedToolCallFixture...), finishWithoutUsage, finishWithUsage) {
+				_, _ = io.WriteString(w, "data: "+event+"\n\n")
+			}
+		default:
+			_, _ = io.WriteString(w, "data: "+`{"id":"fixture","choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n")
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	model := newAdapter(t, server, Config{APIKey: "test-key", Model: "gpt-4o"})
+	tool := &countingTool{}
+	registry, err := lebro.NewToolRegistry(lebrojsonschema.NewCompiler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(tool); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := lebro.NewAgent(lebro.AgentConfig{
+		Definition: lebro.AgentDefinition{ID: "fixture-agent", Tools: []lebro.ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+		MaxSteps:   3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := agent.RunStream(context.Background(), lebro.RunInput{RunID: "fixture-run", Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "list files"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream.Deltas {
+	}
+	result, err := stream.Wait()
+	if err != nil {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	if result.Status != lebro.RunStatusSucceeded {
+		t.Fatalf("run status = %s, want succeeded", result.Status)
+	}
+	tool.mu.Lock()
+	calls := tool.calls
+	args := tool.lastArg
+	tool.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("tool executions = %d, want 1", calls)
+	}
+	if args != "{}" {
+		t.Fatalf("tool arguments = %q, want %q", args, "{}")
+	}
+	if len(result.Messages) < 3 {
+		t.Fatalf("transcript messages = %d, want assistant, tool, and final assistant", len(result.Messages))
+	}
+	if result.Messages[len(result.Messages)-1].Content != "done" {
+		t.Fatalf("final message = %q, want %q", result.Messages[len(result.Messages)-1].Content, "done")
 	}
 }
 

@@ -278,6 +278,13 @@ type AgentConfig struct {
 	// call. It is opt-in because applications own context limits and summary
 	// publication fencing.
 	ContextCompaction *ContextCompactionConfig
+	// ToolObserver optionally receives the actual arguments and result of
+	// every tool invocation at the execution boundary, synchronously and in
+	// execution order. Lifecycle events and durable diagnostics stay
+	// content-free; only this opted-in channel carries payloads. Nil leaves
+	// default behavior unchanged. See ToolResultObserver for delivery
+	// semantics.
+	ToolObserver ToolResultObserver
 }
 
 // Agent repeatedly asks a model, executes requested tools, and feeds results
@@ -305,6 +312,7 @@ type Agent struct {
 	modelResolver        ModelResolver
 	costResolver         CostResolver
 	contextCompactor     *contextCompactor
+	toolObserver         ToolResultObserver
 }
 
 var _ Workflow = (*Agent)(nil)
@@ -429,6 +437,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		modelResolver:        config.ModelResolver,
 		costResolver:         config.CostResolver,
 		contextCompactor:     compactor,
+		toolObserver:         config.ToolObserver,
 	}, nil
 }
 
@@ -461,7 +470,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
 		runID := a.runID(input.RunID)
-		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
 		if journal != nil {
 			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
 		}
@@ -478,7 +487,7 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	// tool executions, and events so they persist with (or without) the
 	// transcript. The pre-loop cancellation path creates and flushes its own
 	// journal because it returns before this run ID exists.
-	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
 	defer journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
 	if journal != nil {
 		defer func() {
@@ -585,11 +594,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		if err != nil {
 			if cancelledErr := runCtx.Err(); cancelledErr != nil || (!isModelTimeout(err) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))) {
 				cause := preferContextError(err, cancelledErr)
-				emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, cause)
+				emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, cause)
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
 				return a.cancelledWithAttempts(runID, transcript, metadata, step, cause, allAttempts)
 			}
-			emitter.emitModelFinished(runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, err)
+			emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, err)
 			emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, err)
 			agentErr := modelAgentError(step, err)
 			result := a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts)
@@ -677,6 +686,8 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			result := a.executeToolCall(runCtx, runID, step, stepID, input.ThreadID, call, metadata)
 			emitter.emitToolFinished(runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 			journal.toolFinished(result)
+			observationStart := a.clock.Now()
+			a.deliverObservation(runID, input.ExecutionID, step, stepID, input.ThreadID, call, result, observationStart, a.clock.Now())
 
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
@@ -808,7 +819,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
 	if err := ctx.Err(); err != nil {
 		runID := a.runID(input.RunID)
-		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
 		if journal != nil {
 			emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
 		}
@@ -826,7 +837,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 
 	runID := a.runID(input.RunID)
 	// See Run: the journal is nil unless a Store is configured.
-	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ObservabilityScope, input.Annotations)
+	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
 	if journal != nil {
 		emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
 	}
@@ -909,6 +920,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		ctx:              runCtx,
 		parentCtx:        ctx,
 		runID:            runID,
+		executionID:      input.ExecutionID,
 		metadata:         metadata,
 		transcript:       transcript,
 		toolDefinitions:  toolDefinitions,
@@ -952,6 +964,7 @@ type streamRunParams struct {
 	ctx              context.Context
 	parentCtx        context.Context
 	runID            RunID
+	executionID      string
 	metadata         map[string]string
 	transcript       []Message
 	toolDefinitions  []ToolDefinition
@@ -1039,7 +1052,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			cause := streamErr
 			if cancelledErr := p.ctx.Err(); processorCancelled(streamErr) || cancelledErr != nil {
 				cause = preferContextError(streamErr, cancelledErr)
-				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, cause)
+				p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, cause)
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, cause)
 				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, cause, allAttempts), err: a.cancelledError(step, cause)}
 				return
@@ -1049,7 +1062,7 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			if errors.As(cause, &processorErr) {
 				agentErr = processorAgentError(step, cause)
 			}
-			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, FinishReasonUnspecified, ModelUsage{}, ModelAccounting{}, agentErr)
+			p.emitter.emitModelFinished(p.runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, agentErr)
 			p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
 			p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
 			return
@@ -1132,9 +1145,12 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
 			toolStart := p.emitter.emitToolStarted(p.runID, step, stepID, call.ID, call.ToolID)
 			p.journal.toolStarted(step, stepID, call)
+			observationStart := a.clock.Now()
 			result := a.executeToolCall(p.ctx, p.runID, step, stepID, p.threadID, call, p.metadata)
 			p.emitter.emitToolFinished(p.runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 			p.journal.toolFinished(result)
+			a.deliverObservation(p.runID, p.executionID, step, stepID, p.threadID, call, result, observationStart, a.clock.Now())
+
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, result.Err)
@@ -1188,15 +1204,15 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			delta := StreamDelta{ToolCall: &call}
 			decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Delta: delta})
 			if processorErr != nil {
-				return ModelResponse{}, attempts, false, processorErr
+				return response, attempts, true, processorErr
 			}
 			delta = *decision.Delta
 			if err := delta.Validate(); err != nil {
-				return ModelResponse{}, attempts, false, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+				return response, attempts, true, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			}
 			emitter.emitDelta(runID, step, stepID, delta)
 			if !sendDelta(ctx, deltas, delta) {
-				return ModelResponse{}, attempts, false, context.Canceled
+				return response, attempts, true, context.Canceled
 			}
 			calls[i] = *delta.ToolCall
 		}
@@ -1212,18 +1228,18 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		}
 		decision, processorErr := a.process(ctx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: threadID, Metadata: metadata, Usage: terminal.Usage, Delta: terminal})
 		if processorErr != nil {
-			return ModelResponse{}, attempts, false, processorErr
+			return response, attempts, true, processorErr
 		}
 		terminal = *decision.Delta
 		if terminal.Text == "" && terminal.Reasoning.IsZero() && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
 			terminal.FinishReason = FinishReasonUnspecified
 		}
 		if err := terminal.Validate(); err != nil {
-			return ModelResponse{}, attempts, false, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
+			return response, attempts, true, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		emitter.emitDelta(runID, step, stepID, terminal)
 		if !sendDelta(ctx, deltas, terminal) {
-			return ModelResponse{}, attempts, false, context.Canceled
+			return response, attempts, true, context.Canceled
 		}
 		response.Message.Content = terminal.Text
 		response.Message.Reasoning = terminal.Reasoning
@@ -1233,7 +1249,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		response.Accounting = terminal.Accounting.Clone()
 		encodedCalls, err := NewModelToolCalls(calls...)
 		if err != nil {
-			return ModelResponse{}, attempts, false, err
+			return response, attempts, true, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 		}
 		response.Message.ToolCalls = encodedCalls
 		return response, attempts, true, nil
@@ -1278,7 +1294,7 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		if len(toolCalls) > 0 {
 			encoded, err := NewModelToolCalls(toolCalls...)
 			if err != nil {
-				return ModelResponse{Message: message, Usage: usage, Accounting: accounting.Clone(), FinishReason: finish}, fmt.Errorf("lebro: aggregate partial stream tool calls: %w", err)
+				return ModelResponse{Message: message, Usage: usage, Accounting: accounting.Clone(), FinishReason: finish}, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: err.Error(), Err: err}
 			}
 			message.ToolCalls = encoded
 		}

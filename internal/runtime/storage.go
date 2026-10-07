@@ -181,8 +181,12 @@ type ModelAttemptRecord struct {
 	ThreadID  ThreadID `json:"thread_id,omitempty"`
 	Namespace string   `json:"namespace,omitempty"`
 	OwnerID   string   `json:"owner_id,omitempty"`
-	StepID    StepID   `json:"step_id,omitempty"`
-	Step      int      `json:"step,omitempty"`
+	// ExecutionID is the caller-supplied identity of the external execution
+	// that produced this record (RunInput.ExecutionID). It is empty for
+	// single-execution runs.
+	ExecutionID string `json:"execution_id,omitempty"`
+	StepID      StepID `json:"step_id,omitempty"`
+	Step        int    `json:"step,omitempty"`
 	// Index is the 1-indexed position of this attempt among the attempts for
 	// one model call; the routed winner normally carries the highest index.
 	Index    int        `json:"index"`
@@ -222,6 +226,7 @@ type ToolExecutionRecord struct {
 	ThreadID     ThreadID           `json:"thread_id,omitempty"`
 	Namespace    string             `json:"namespace,omitempty"`
 	OwnerID      string             `json:"owner_id,omitempty"`
+	ExecutionID  string             `json:"execution_id,omitempty"`
 	StepID       StepID             `json:"step_id,omitempty"`
 	Step         int                `json:"step,omitempty"`
 	ToolCallID   string             `json:"tool_call_id"`
@@ -247,6 +252,7 @@ type RunEventRecord struct {
 	ThreadID        ThreadID              `json:"thread_id,omitempty"`
 	Namespace       string                `json:"namespace,omitempty"`
 	OwnerID         string                `json:"owner_id,omitempty"`
+	ExecutionID     string                `json:"execution_id,omitempty"`
 	Sequence        int64                 `json:"sequence"`
 	Type            RunEventType          `json:"type"`
 	Timestamp       time.Time             `json:"timestamp"`
@@ -277,43 +283,47 @@ type RunEventRecord struct {
 }
 
 // RunEventFilter narrows a ListRunEvents query. Zero values match anything;
-// From is inclusive and To is exclusive on the event timestamp.
+// From is inclusive and To is exclusive on the event timestamp. An empty
+// ExecutionID matches records from every execution.
 type RunEventFilter struct {
-	RunID     RunID
-	ThreadID  ThreadID
-	Namespace string
-	OwnerID   string
-	Type      RunEventType
-	From      time.Time
-	To        time.Time
-	Provider  ProviderID
-	ToolID    ToolID
+	RunID       RunID
+	ThreadID    ThreadID
+	Namespace   string
+	OwnerID     string
+	ExecutionID string
+	Type        RunEventType
+	From        time.Time
+	To          time.Time
+	Provider    ProviderID
+	ToolID      ToolID
 }
 
 // ModelAttemptFilter narrows a ListModelAttempts query. Zero values match
-// anything.
+// anything; an empty ExecutionID matches records from every execution.
 type ModelAttemptFilter struct {
-	RunID      RunID
-	ThreadID   ThreadID
-	Namespace  string
-	OwnerID    string
-	Provider   ProviderID
-	Model      string
-	Status     ModelAttemptStatus
-	From       time.Time
-	To         time.Time
-	CostSource CostSource
+	RunID       RunID
+	ThreadID    ThreadID
+	Namespace   string
+	OwnerID     string
+	ExecutionID string
+	Provider    ProviderID
+	Model       string
+	Status      ModelAttemptStatus
+	From        time.Time
+	To          time.Time
+	CostSource  CostSource
 }
 
 // ToolExecutionFilter narrows a ListToolExecutions query. Zero values match
-// anything.
+// anything; an empty ExecutionID matches records from every execution.
 type ToolExecutionFilter struct {
-	RunID     RunID
-	ThreadID  ThreadID
-	Namespace string
-	OwnerID   string
-	ToolID    ToolID
-	State     ToolExecutionState
+	RunID       RunID
+	ThreadID    ThreadID
+	Namespace   string
+	OwnerID     string
+	ExecutionID string
+	ToolID      ToolID
+	State       ToolExecutionState
 }
 
 // RunEventRepository owns ordered, durable run events.

@@ -43,6 +43,9 @@ func RuntimeStoreContractSuite(t *testing.T, newRuntimeStore RuntimeStoreFactory
 	t.Run("observability round-trip", func(t *testing.T) {
 		runtimeStoreObservabilityRoundTrip(t, newRuntimeStore)
 	})
+	t.Run("execution identity round-trip", func(t *testing.T) {
+		runtimeStoreExecutionIdentityRoundTrip(t, newRuntimeStore)
+	})
 	t.Run("honors canceled context", func(t *testing.T) {
 		runtimeStoreCanceledContext(t, newRuntimeStore)
 	})
@@ -408,6 +411,136 @@ func runtimeStoreObservabilityRoundTrip(t *testing.T, newRuntimeStore RuntimeSto
 	}
 	if len(executions.Records) != 1 || executions.Records[0].ToolID != "weather" {
 		t.Fatalf("tool executions = %+v", executions.Records)
+	}
+}
+
+// runtimeStoreExecutionIdentityRoundTrip pins the retry-safe diagnostics
+// contract: two executions sharing one logical run ID persist distinct,
+// queryable records; replaying either execution's writes stays idempotent;
+// execution-scoped filtering works; and listings are deterministic across
+// executions even where per-execution sequences tie.
+func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore RuntimeStoreFactory) {
+	t.Helper()
+	rs := newRuntimeStore(t)
+	if !rs.Capabilities().Has(runtime.StoreCapabilityObservability) {
+		t.Skip("observability capability not advertised")
+	}
+	observability := rs.(runtime.ObservabilityStore)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 9, 0, 0, 0, time.UTC)
+
+	// Both executions reuse one logical RunID but carry distinct execution
+	// identities, and both report the same local sequence number.
+	executionA := runtime.RunEventRecord{
+		ID: "cap-run-1-exec-a-event-1", RunID: "cap-run-1", ThreadID: "cap-thread-x",
+		ExecutionID: "exec-a", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now,
+	}
+	executionB := runtime.RunEventRecord{
+		ID: "cap-run-1-exec-b-event-1", RunID: "cap-run-1", ThreadID: "cap-thread-x",
+		ExecutionID: "exec-b", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now.Add(time.Second),
+	}
+	if err := observability.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{executionA, executionB}); err != nil {
+		t.Fatalf("AppendRunEvents: %v", err)
+	}
+	// Replaying one execution's flush must not duplicate its records.
+	if err := observability.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{executionA}); err != nil {
+		t.Fatalf("AppendRunEvents replay: %v", err)
+	}
+	events, err := observability.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "cap-run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListRunEvents: %v", err)
+	}
+	if len(events.Records) != 2 || events.Records[0].ExecutionID != "exec-a" || events.Records[1].ExecutionID != "exec-b" {
+		t.Fatalf("events = %+v, want one record per execution in deterministic order", events.Records)
+	}
+	scoped, err := observability.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "cap-run-1", ExecutionID: "exec-b"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListRunEvents by execution: %v", err)
+	}
+	if len(scoped.Records) != 1 || scoped.Records[0].ID != "cap-run-1-exec-b-event-1" {
+		t.Fatalf("execution-scoped events = %+v", scoped.Records)
+	}
+	// Pagination must be deterministic across two executions with tied
+	// sequence numbers.
+	firstPage, err := observability.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "cap-run-1"}, runtime.PageRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("ListRunEvents page 1: %v", err)
+	}
+	if len(firstPage.Records) != 1 || firstPage.Records[0].ExecutionID != "exec-a" || firstPage.NextCursor == "" {
+		t.Fatalf("first page = %+v cursor %q", firstPage.Records, firstPage.NextCursor)
+	}
+	secondPage, err := observability.RunEvents().ListRunEvents(ctx, runtime.RunEventFilter{RunID: "cap-run-1"}, runtime.PageRequest{Limit: 1, Cursor: firstPage.NextCursor})
+	if err != nil {
+		t.Fatalf("ListRunEvents page 2: %v", err)
+	}
+	if len(secondPage.Records) != 1 || secondPage.Records[0].ExecutionID != "exec-b" {
+		t.Fatalf("second page = %+v", secondPage.Records)
+	}
+
+	attemptA := runtime.ModelAttemptRecord{
+		ID: "cap-run-1-exec-a-attempt-1", RunID: "cap-run-1", ThreadID: "cap-thread-x", ExecutionID: "exec-a",
+		Index: 1, Provider: "fixture", Model: "fixture-model", Status: runtime.ModelAttemptFailed,
+		Usage:     runtime.ModelUsage{InputTokens: 3, TotalTokens: 3},
+		StartedAt: now, FinishedAt: now.Add(time.Second), ErrorKind: "error", ErrorMessage: "redacted",
+	}
+	attemptB := runtime.ModelAttemptRecord{
+		ID: "cap-run-1-exec-b-attempt-1", RunID: "cap-run-1", ThreadID: "cap-thread-x", ExecutionID: "exec-b",
+		Index: 1, Provider: "fixture", Model: "fixture-model", Status: runtime.ModelAttemptSuccess,
+		Usage:     runtime.ModelUsage{InputTokens: 4, TotalTokens: 4},
+		StartedAt: now.Add(time.Second), FinishedAt: now.Add(2 * time.Second),
+	}
+	if err := observability.ModelAttempts().SaveModelAttempts(ctx, []runtime.ModelAttemptRecord{attemptA, attemptB}); err != nil {
+		t.Fatalf("SaveModelAttempts: %v", err)
+	}
+	if err := observability.ModelAttempts().SaveModelAttempts(ctx, []runtime.ModelAttemptRecord{attemptA}); err != nil {
+		t.Fatalf("SaveModelAttempts replay: %v", err)
+	}
+	attempts, err := observability.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{RunID: "cap-run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListModelAttempts: %v", err)
+	}
+	if len(attempts.Records) != 2 || attempts.Records[0].ExecutionID != "exec-a" || attempts.Records[1].ExecutionID != "exec-b" {
+		t.Fatalf("attempts = %+v, want one record per execution", attempts.Records)
+	}
+	scopedAttempts, err := observability.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{RunID: "cap-run-1", ExecutionID: "exec-b"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListModelAttempts by execution: %v", err)
+	}
+	if len(scopedAttempts.Records) != 1 || scopedAttempts.Records[0].Usage.TotalTokens != 4 {
+		t.Fatalf("execution-scoped attempts = %+v", scopedAttempts.Records)
+	}
+
+	// Tool diagnostic identities must not overwrite another execution's
+	// records: both executions report tool call ID "call-1".
+	toolA := runtime.ToolExecutionRecord{
+		ID: "cap-run-1-exec-a-tool-1", RunID: "cap-run-1", ThreadID: "cap-thread-x", ExecutionID: "exec-a",
+		Step: 1, ToolCallID: "call-1", ToolID: "weather", State: runtime.ToolExecutionSucceeded,
+		StartedAt: now, FinishedAt: now.Add(time.Millisecond),
+	}
+	toolB := runtime.ToolExecutionRecord{
+		ID: "cap-run-1-exec-b-tool-1", RunID: "cap-run-1", ThreadID: "cap-thread-x", ExecutionID: "exec-b",
+		Step: 1, ToolCallID: "call-1", ToolID: "weather", State: runtime.ToolExecutionSucceeded,
+		StartedAt: now.Add(time.Second), FinishedAt: now.Add(time.Second + time.Millisecond),
+	}
+	if err := observability.ToolExecutions().SaveToolExecutions(ctx, []runtime.ToolExecutionRecord{toolA, toolB}); err != nil {
+		t.Fatalf("SaveToolExecutions: %v", err)
+	}
+	if err := observability.ToolExecutions().SaveToolExecutions(ctx, []runtime.ToolExecutionRecord{toolB}); err != nil {
+		t.Fatalf("SaveToolExecutions replay: %v", err)
+	}
+	tools, err := observability.ToolExecutions().ListToolExecutions(ctx, runtime.ToolExecutionFilter{RunID: "cap-run-1"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListToolExecutions: %v", err)
+	}
+	if len(tools.Records) != 2 || tools.Records[0].ExecutionID != "exec-a" || tools.Records[1].ExecutionID != "exec-b" {
+		t.Fatalf("tool executions = %+v, want one record per execution", tools.Records)
+	}
+	scopedTools, err := observability.ToolExecutions().ListToolExecutions(ctx, runtime.ToolExecutionFilter{RunID: "cap-run-1", ExecutionID: "exec-a"}, runtime.PageRequest{})
+	if err != nil {
+		t.Fatalf("ListToolExecutions by execution: %v", err)
+	}
+	if len(scopedTools.Records) != 1 || scopedTools.Records[0].ID != "cap-run-1-exec-a-tool-1" {
+		t.Fatalf("execution-scoped tools = %+v", scopedTools.Records)
 	}
 }
 

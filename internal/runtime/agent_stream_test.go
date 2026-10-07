@@ -925,3 +925,556 @@ func TestAgentRunStreamTimeoutCancellation(t *testing.T) {
 		t.Fatalf("error = %v, want AgentErrorCancelled", runErr)
 	}
 }
+
+// TestAgentRunStreamTypesStreamAggregationFailureAsMalformedResponse feeds a
+// deliberately broken stream — duplicate tool-call IDs at the aggregation
+// boundary, independent of any adapter — and pins the typed failure contract:
+// the nested *ModelError is discoverable through errors.As, the broad
+// AgentError wrapper is preserved, the cause is retained, and the
+// deterministic failure is not retryable.
+func TestAgentRunStreamTypesStreamAggregationFailureAsMalformedResponse(t *testing.T) {
+	t.Parallel()
+
+	call := ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}
+	model := newStreamScriptedModel([]StreamDelta{
+		{ToolCall: &call},
+		{ToolCall: &call},
+		{FinishReason: FinishReasonToolCalls},
+	})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "dup-stream", Model: "fixture-model"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{RunID: "dup-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+	for range run.Deltas {
+	}
+	result, runErr := run.Wait()
+	if runErr == nil {
+		t.Fatal("Wait() error = nil, want aggregation failure")
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	var agentErr *AgentError
+	if !errors.As(runErr, &agentErr) || agentErr.Kind != AgentErrorProviderFailure {
+		t.Fatalf("error = %v, want AgentErrorProviderFailure wrapper", runErr)
+	}
+	var modelErr *ModelError
+	if !errors.As(runErr, &modelErr) || modelErr.Kind != ModelErrorMalformedResponse {
+		t.Fatalf("error = %v, want nested ModelErrorMalformedResponse", runErr)
+	}
+	if modelErr.Err == nil || !strings.Contains(modelErr.Err.Error(), "duplicate model tool call ID") {
+		t.Fatalf("cause = %v, want duplicate tool call ID", modelErr.Err)
+	}
+	if modelErr.Retryable() {
+		t.Fatal("malformed response must not be retryable")
+	}
+	if len(result.Messages) != 1 {
+		t.Fatalf("transcript = %#v, want user message only (no partial assistant content)", result.Messages)
+	}
+}
+
+// TestAgentRunStreamTypesProcessorProducedDuplicateAsMalformedResponse covers
+// the synthesized-delta path: a non-streaming model returns valid tool calls
+// and a stream-delta processor rewrites one call's ID into a duplicate. The
+// aggregation failure after processors must expose the same typed
+// malformed-response cause instead of an untyped encoding error, and the
+// pre-processor partial response stays available.
+func TestAgentRunStreamTypesProcessorProducedDuplicateAsMalformedResponse(t *testing.T) {
+	t.Parallel()
+
+	calls, err := NewModelToolCalls(
+		ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)},
+		ModelToolCall{ID: "call-2", ToolID: "ping", Arguments: json.RawMessage(`{}`)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline, err := NewProcessorPipeline(runtimeProcessor{name: "rewriter", delta: func(request ProcessorStreamDeltaRequest) ProcessorStreamDeltaResult {
+		if request.Delta.ToolCall != nil && request.Delta.ToolCall.ID == "call-2" {
+			rewritten := *request.Delta.ToolCall
+			rewritten.ID = "call-1"
+			request.Delta.ToolCall = &rewritten
+		}
+		return ProcessorStreamDeltaResult{Decision: ProcessorDecision{Kind: ProcessorTransform}, Delta: request.Delta}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newScriptedModel(scriptedResponse{response: ModelResponse{
+		Message:      Message{Role: RoleAssistant, ToolCalls: calls},
+		FinishReason: FinishReasonToolCalls,
+	}})
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "dup-processor", Model: "fixture-model"},
+		Model:      model,
+		Processors: pipeline,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{RunID: "dup-processor-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+	for range run.Deltas {
+	}
+	result, runErr := run.Wait()
+	if runErr == nil {
+		t.Fatal("Wait() error = nil, want processor-produced duplicate failure")
+	}
+	var agentErr *AgentError
+	if !errors.As(runErr, &agentErr) || agentErr.Kind != AgentErrorProviderFailure {
+		t.Fatalf("error = %v, want AgentErrorProviderFailure wrapper", runErr)
+	}
+	var modelErr *ModelError
+	if !errors.As(runErr, &modelErr) || modelErr.Kind != ModelErrorMalformedResponse {
+		t.Fatalf("error = %v, want nested ModelErrorMalformedResponse", runErr)
+	}
+	if modelErr.Err == nil || !strings.Contains(modelErr.Err.Error(), "duplicate model tool call ID") {
+		t.Fatalf("cause = %v, want duplicate tool call ID", modelErr.Err)
+	}
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+}
+
+// deltaFailureProcessor fails the stream-delta phase so the run fails after
+// deltas were received, exercising processor classification at the stream
+// boundary.
+type deltaFailureProcessor struct{}
+
+func (deltaFailureProcessor) Name() string { return "delta-fail" }
+func (deltaFailureProcessor) ProcessStreamDelta(context.Context, ProcessorStreamDeltaRequest) (ProcessorStreamDeltaResult, error) {
+	return ProcessorStreamDeltaResult{}, errors.New("redaction backend offline")
+}
+
+// TestAgentRunStreamKeepsProcessorFailuresUntypedAsModelErrors guards the
+// classification boundary: a stream-delta processor that fails mid-stream is
+// a processor failure, not a malformed provider response.
+func TestAgentRunStreamKeepsProcessorFailuresUntypedAsModelErrors(t *testing.T) {
+	t.Parallel()
+
+	pipeline, err := NewProcessorPipeline(deltaFailureProcessor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStreamScriptedModel(textDeltas("hello"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "processor-fail", Model: "fixture-model"},
+		Model:      model,
+		Processors: pipeline,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{RunID: "processor-fail-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+	for range run.Deltas {
+	}
+	_, runErr := run.Wait()
+	var modelErr *ModelError
+	if errors.As(runErr, &modelErr) {
+		t.Fatalf("error = %v, want processor classification not model error", runErr)
+	}
+	var agentErr *AgentError
+	if !errors.As(runErr, &agentErr) || agentErr.Kind != AgentErrorProcessor {
+		t.Fatalf("error = %v, want AgentErrorProcessor", runErr)
+	}
+}
+
+// TestAgentRunStreamRetainsObservedUsageOnFailedCall replays the session
+// failure end to end: the provider reports usage and a request identity, the
+// runtime rejects the duplicated tool calls, and the durable diagnostics must
+// keep the observed metadata on the failed attempt and the model-finished
+// failure event while the run still fails and persists no transcript.
+func TestAgentRunStreamRetainsObservedUsageOnFailedCall(t *testing.T) {
+	t.Parallel()
+
+	call := ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}
+	model := newStreamScriptedModel([]StreamDelta{
+		{ToolCall: &call},
+		{ToolCall: &call},
+		{
+			FinishReason: FinishReasonToolCalls,
+			Usage:        ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
+			Accounting:   ModelAccounting{ProviderRequestID: "req-1"},
+		},
+	})
+	store := NewMemoryStore()
+	resolverCalls := 0
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "fail-usage", Model: "fixture-model"},
+		Model:      model,
+		Store:      store,
+		CostResolver: CostResolverFunc(func(context.Context, ModelAttemptRecord) (ModelCost, error) {
+			resolverCalls++
+			return ModelCost{}, errors.New("pricing service offline")
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{RunID: "fail-usage-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+	for range run.Deltas {
+	}
+	result, runErr := run.Wait()
+	if runErr == nil || result.Status != RunStatusFailed {
+		t.Fatalf("result = %+v %v, want failed run", result, runErr)
+	}
+	var modelErr *ModelError
+	if !errors.As(runErr, &modelErr) || modelErr.Kind != ModelErrorMalformedResponse {
+		t.Fatalf("error = %v, want typed malformed response", runErr)
+	}
+
+	ctx := context.Background()
+	attempts, err := store.ModelAttempts().ListModelAttempts(ctx, ModelAttemptFilter{RunID: "fail-usage-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts.Records) != 1 {
+		t.Fatalf("persisted attempts = %d, want 1", len(attempts.Records))
+	}
+	attempt := attempts.Records[0]
+	if attempt.Status != ModelAttemptFailed || attempt.Usage != (ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) {
+		t.Fatalf("failed attempt = %#v, want failed status with observed usage", attempt)
+	}
+	if attempt.Accounting.ProviderRequestID != "req-1" || attempt.FinishReason != FinishReasonToolCalls {
+		t.Fatalf("failed attempt identity = %#v finish %q", attempt.Accounting, attempt.FinishReason)
+	}
+
+	events, err := store.RunEvents().ListRunEvents(ctx, RunEventFilter{RunID: "fail-usage-run", Type: RunEventModelFinished}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events.Records) != 1 {
+		t.Fatalf("model_finished events = %d, want 1", len(events.Records))
+	}
+	event := events.Records[0]
+	if event.ErrorKind != string(AgentErrorProviderFailure) || event.Usage != (ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) || event.Accounting.ProviderRequestID != "req-1" || event.FinishReason != FinishReasonToolCalls {
+		t.Fatalf("failure event = %#v finish %q", event, event.FinishReason)
+	}
+	if resolverCalls != 1 {
+		t.Fatalf("cost resolver invoked %d times, want 1 (at the terminal delta, never re-resolved on the failure path)", resolverCalls)
+	}
+
+	messages, err := store.Messages().ListMessages(ctx, ThreadID(""), PageRequest{})
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+	if len(messages.Records) != 0 {
+		t.Fatalf("failed run must not commit a canonical transcript, got %#v", messages.Records)
+	}
+}
+
+// TestAgentRunStreamExecutionIdentitySeparatesRetries proves the retry-safe
+// diagnostics contract end to end: two executions of one logical run with
+// distinct ExecutionIDs persist distinct, queryable attempts, events, and
+// tool records, while an execution without an identity keeps the legacy
+// single-execution ID format.
+func TestAgentRunStreamExecutionIdentitySeparatesRetries(t *testing.T) {
+	t.Parallel()
+
+	answer := textDeltas("done")
+	model := newStreamScriptedModel(toolCallDeltaStream(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}), answer, answer, answer, answer, answer)
+	registry, _ := newAgentTestRegistry(t)
+	store := NewMemoryStore()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "exec-agent", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runStream := func(executionID string) error {
+		run, err := agent.RunStream(context.Background(), RunInput{
+			RunID:       "exec-run",
+			ExecutionID: executionID,
+			Messages:    []Message{{Role: RoleUser, Content: "hi"}},
+		})
+		if err != nil {
+			return err
+		}
+		defer run.Cancel()
+		for range run.Deltas {
+		}
+		_, waitErr := run.Wait()
+		return waitErr
+	}
+	if err := runStream("exec-a"); err != nil {
+		t.Fatalf("execution A error = %v", err)
+	}
+	if err := runStream("exec-b"); err != nil {
+		t.Fatalf("execution B error = %v", err)
+	}
+	// A third execution without an identity keeps the legacy format.
+	if err := runStream(""); err != nil {
+		t.Fatalf("legacy execution error = %v", err)
+	}
+
+	ctx := context.Background()
+	attempts, err := store.ModelAttempts().ListModelAttempts(ctx, ModelAttemptFilter{RunID: "exec-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts.Records) != 4 {
+		t.Fatalf("persisted attempts = %d, want 4", len(attempts.Records))
+	}
+	wantIDs := []string{"exec-run-exec-a-attempt-1", "exec-run-exec-a-attempt-2", "exec-run-exec-b-attempt-1", "exec-run-attempt-1"}
+	for i, attempt := range attempts.Records {
+		if attempt.ID != wantIDs[i] {
+			t.Fatalf("attempt[%d].ID = %q, want %q", i, attempt.ID, wantIDs[i])
+		}
+	}
+	scoped, err := store.ModelAttempts().ListModelAttempts(ctx, ModelAttemptFilter{RunID: "exec-run", ExecutionID: "exec-b"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped.Records) != 1 || scoped.Records[0].ID != "exec-run-exec-b-attempt-1" {
+		t.Fatalf("execution-scoped attempts = %#v", scoped.Records)
+	}
+
+	tools, err := store.ToolExecutions().ListToolExecutions(ctx, ToolExecutionFilter{RunID: "exec-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.Records) != 1 {
+		t.Fatalf("persisted tool executions = %d, want 1 (only execution A called the tool)", len(tools.Records))
+	}
+	if tools.Records[0].ExecutionID != "exec-a" || tools.Records[0].ID != "exec-run-exec-a-tool-1" {
+		t.Fatalf("tool execution = %#v, want execution A's identity-scoped record", tools.Records[0])
+	}
+	toolScoped, err := store.ToolExecutions().ListToolExecutions(ctx, ToolExecutionFilter{RunID: "exec-run", ExecutionID: "exec-b"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(toolScoped.Records) != 0 {
+		t.Fatalf("execution-scoped tools = %#v, want none (execution B never called a tool)", toolScoped.Records)
+	}
+
+	events, err := store.RunEvents().ListRunEvents(ctx, RunEventFilter{RunID: "exec-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The legacy execution's event identity stays sequence-scoped; the two
+	// identity-bearing executions never collide with it or each other.
+	seen := map[string]int{}
+	for _, event := range events.Records {
+		seen[event.ID]++
+	}
+	for id, count := range seen {
+		if count != 1 {
+			t.Fatalf("event %q persisted %d times, want 1", id, count)
+		}
+	}
+	if len(events.Records) != len(seen) {
+		t.Fatalf("event IDs = %d records but %d unique IDs", len(events.Records), len(seen))
+	}
+}
+
+// observingTool records every delivered observation for a run.
+type observingTool struct {
+	mu           sync.Mutex
+	observations []ToolExecutionObservation
+	panicOnFirst bool
+	panicked     bool
+}
+
+func (t *observingTool) observe(o ToolExecutionObservation) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.panicOnFirst && !t.panicked {
+		t.panicked = true
+		panic("observer bug")
+	}
+	t.observations = append(t.observations, o)
+}
+
+func (t *observingTool) snapshot() []ToolExecutionObservation {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]ToolExecutionObservation(nil), t.observations...)
+}
+
+// TestAgentToolObserverReceivesRealPayloads pins the opted-in capture
+// contract: the observer sees the actual arguments and result at the
+// execution boundary — including when a later model step fails — with
+// run/execution/step/call correlation, while the durable diagnostics stay
+// content-free.
+func TestAgentToolObserverReceivesRealPayloads(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel(toolCallDeltaStream(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"q":"weather"}`)}), []StreamDelta{{Err: &ModelError{Kind: ModelErrorTransport, Provider: "fixture", Message: "provider dropped the connection"}}}, textDeltas("unused"))
+	registry, _ := newAgentTestRegistry(t)
+	watcher := &observingTool{}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "watch-agent", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+		ToolObserver: ToolResultObserverFunc(func(o ToolExecutionObservation) {
+			watcher.observe(o)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, streamErr := agent.RunStream(context.Background(), RunInput{
+		RunID:       "watch-run",
+		ExecutionID: "watch-exec",
+		Messages:    []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if streamErr != nil {
+		t.Fatal(streamErr)
+	}
+	result, runErr := stream.Drain()
+	if result.Status != RunStatusFailed {
+		t.Fatalf("status = %q, want failed (the later model step fails)", result.Status)
+	}
+	if runErr == nil {
+		t.Fatal("error = nil, want later model failure")
+	}
+
+	observations := watcher.snapshot()
+	if len(observations) != 1 {
+		t.Fatalf("observations = %d, want 1", len(observations))
+	}
+	observed := observations[0]
+	if observed.RunID != "watch-run" || observed.ExecutionID != "watch-exec" || observed.Step != 1 || observed.ToolCallID != "call-1" || observed.ToolID != "lookup" {
+		t.Fatalf("correlation = %#v", observed)
+	}
+	if string(observed.Arguments) != `{"q":"weather"}` {
+		t.Fatalf("arguments = %s", observed.Arguments)
+	}
+	if string(observed.Result) != `{}` {
+		t.Fatalf("result = %s, want the real tool output", observed.Result)
+	}
+	if observed.State != ToolExecutionSucceeded || observed.Err != nil {
+		t.Fatalf("state = %q err = %v, want success", observed.State, observed.Err)
+	}
+	if observed.StartedAt.IsZero() || observed.FinishedAt.IsZero() || observed.FinishedAt.Before(observed.StartedAt) {
+		t.Fatalf("timestamps = %v -> %v", observed.StartedAt, observed.FinishedAt)
+	}
+}
+
+// TestAgentToolObserverReceivesFailureOutcome covers error outcomes: a tool
+// whose handler fails delivers its state and error (never the arguments in
+// the place of a result), and a cancelled tool delivers its cancelled state.
+func TestAgentToolObserverReceivesFailureOutcome(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel(toolCallDeltaStream(ModelToolCall{ID: "call-err", ToolID: "boom", Arguments: json.RawMessage(`{"boom":true}`)}))
+	failingTool := &agentTestTool{
+		definition: ToolDefinition{ID: "boom", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		execute: func(context.Context, json.RawMessage) (json.RawMessage, error) {
+			return nil, errors.New("upstream unreachable")
+		},
+	}
+	registry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(failingTool); err != nil {
+		t.Fatal(err)
+	}
+	watcher := &observingTool{}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "fail-tool-agent", Model: "fixture-model", Tools: []ToolID{"boom"}},
+		Model:      model,
+		Tools:      registry,
+		ToolObserver: ToolResultObserverFunc(func(o ToolExecutionObservation) {
+			watcher.observe(o)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, streamErr := agent.RunStream(context.Background(), RunInput{RunID: "fail-tool-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if streamErr != nil {
+		t.Fatal(streamErr)
+	}
+	result, runErr := stream.Drain()
+	if runErr == nil || result.Status != RunStatusFailed {
+		t.Fatalf("result = %+v %v, want failed run", result, runErr)
+	}
+	observations := watcher.snapshot()
+	if len(observations) != 1 {
+		t.Fatalf("observations = %d, want 1", len(observations))
+	}
+	observed := observations[0]
+	if observed.State != ToolExecutionHandlerError || observed.Err == nil {
+		t.Fatalf("state = %q err = %v, want handler error", observed.State, observed.Err)
+	}
+	if len(observed.Result) != 0 {
+		t.Fatalf("result = %s, want empty for a failed execution", observed.Result)
+	}
+	if string(observed.Arguments) != `{"boom":true}` {
+		t.Fatalf("arguments = %s", observed.Arguments)
+	}
+}
+
+// TestAgentToolObserverPanicIsContainedAndOrdered proves an observer bug
+// cannot affect the run: the panicking delivery is contained, the poisoned
+// tool still runs, and the next observation still arrives, in execution
+// order.
+func TestAgentToolObserverPanicIsContainedAndOrdered(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel(
+		toolCallDeltaStream(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{"one":1}`)}),
+		toolCallDeltaStream(ModelToolCall{ID: "call-2", ToolID: "lookup", Arguments: json.RawMessage(`{"two":2}`)}),
+		textDeltas("done"),
+	)
+	registry, _ := newAgentTestRegistry(t)
+	watcher := &observingTool{panicOnFirst: true}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "panic-agent", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+		ToolObserver: ToolResultObserverFunc(func(o ToolExecutionObservation) {
+			watcher.observe(o)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, streamErr := agent.RunStream(context.Background(), RunInput{RunID: "panic-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if streamErr != nil {
+		t.Fatal(streamErr)
+	}
+	result, runErr := stream.Drain()
+	if runErr != nil || result.Status != RunStatusSucceeded {
+		t.Fatalf("result = %+v %v, want succeeded run despite the observer panic", result, runErr)
+	}
+	observations := watcher.snapshot()
+	if len(observations) != 1 {
+		t.Fatalf("observations = %d, want only the second delivery (the panicking one was contained)", len(observations))
+	}
+	if string(observations[0].Arguments) != `{"two":2}` || observations[0].ToolCallID != "call-2" {
+		t.Fatalf("delivered observation = %+#v, want the second tool call", observations[0])
+	}
+}

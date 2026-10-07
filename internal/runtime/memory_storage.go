@@ -935,6 +935,9 @@ func runEventMatchesFilter(event RunEventRecord, filter RunEventFilter) bool {
 	if filter.OwnerID != "" && event.OwnerID != filter.OwnerID {
 		return false
 	}
+	if filter.ExecutionID != "" && event.ExecutionID != filter.ExecutionID {
+		return false
+	}
 	if filter.Type != "" && event.Type != filter.Type {
 		return false
 	}
@@ -994,6 +997,9 @@ func listModelAttempts(ctx context.Context, s memoryState, filter ModelAttemptFi
 				continue
 			}
 			if filter.OwnerID != "" && attempt.OwnerID != filter.OwnerID {
+				continue
+			}
+			if filter.ExecutionID != "" && attempt.ExecutionID != filter.ExecutionID {
 				continue
 			}
 			if filter.Provider != "" && attempt.Provider != filter.Provider {
@@ -1073,6 +1079,9 @@ func listToolExecutions(ctx context.Context, s memoryState, filter ToolExecution
 				continue
 			}
 			if filter.OwnerID != "" && execution.OwnerID != filter.OwnerID {
+				continue
+			}
+			if filter.ExecutionID != "" && execution.ExecutionID != filter.ExecutionID {
 				continue
 			}
 			if filter.ToolID != "" && execution.ToolID != filter.ToolID {

@@ -112,7 +112,18 @@ type RunInput struct {
 	ThreadID ThreadID
 	// RunID optionally supplies the durable identity for this run. It is
 	// validated before any model call; an empty value uses the IDSource.
-	RunID        RunID
+	RunID RunID
+	// ExecutionID optionally identifies one external execution of a logical
+	// run — a queue retry, for example. Diagnostics (model attempts, run
+	// events, tool executions) generated for this execution embed the value
+	// in their record IDs and carry it on their records, so separate
+	// executions of one logical RunID persist distinct, queryable records
+	// while repeated persistence of one execution stays idempotent. Callers
+	// must supply a fresh, unique value per execution and keep it stable
+	// within it; an empty value keeps the single-execution behavior and ID
+	// format unchanged. Lookup, cancellation, and continuation keep using the
+	// logical RunID.
+	ExecutionID  string
 	Metadata     map[string]string
 	OutputSchema *ModelOutputSchema
 	// Annotations attaches validated, namespaced application metadata to the

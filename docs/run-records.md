@@ -25,6 +25,64 @@ model calls synthesize one attempt per `Generate` with provider ID `direct`.
 Adapters can implement `ModelIdentityProvider` to persist their actual provider
 ID instead.
 
+## Execution identity
+
+External queues retry the same logical run, and every execution must persist
+its own diagnostics. Set a fresh, unique `RunInput.ExecutionID` per execution:
+
+```go
+lebro.RunInput{
+    RunID:       "logical-run-42",
+    ExecutionID: execution.ID, // supplied by your queue, fresh per attempt
+    Messages:    messages,
+}
+```
+
+Records carry the value in `ExecutionID`, and generated diagnostic IDs embed
+it — `<runID>-<executionID>-attempt-1`, `-event-3`, `-tool-2` — so two
+executions sharing one logical `RunID` produce distinct, queryable rows
+(duplicate `(run_id, id)` appends still collapse within one execution).
+Attempt `Index` and event `Sequence` stay scoped to one execution. An empty
+`ExecutionID` keeps the legacy single-execution format and behavior
+byte-identical. Lookup, cancellation, and continuation keep using the logical
+run ID. Filters gained an `ExecutionID` field; listings order deterministically
+across executions even where per-execution sequences tie. Diagnostic
+idempotency is not execution idempotency: a retried execution still re-runs
+its tools, and side-effect protection remains the application's job.
+
+A failed call keeps the metadata the provider actually reported before the
+failure: when usage, accounting, and a finish reason arrived before the
+response was rejected, the failed attempt record and the `model_finished`
+failure event carry them. Nothing is fabricated for failures that received no
+metadata, no cost is resolved on the failure path, and failed statuses are
+preserved.
+
+## Opt-in tool-result capture
+
+Lifecycle events and durable diagnostics never carry tool payloads. When your
+application wants the real arguments and result — for building an inspectable
+timeline, for example — install a `ToolResultObserver`:
+
+```go
+agent, err := lebro.NewAgent(lebro.AgentConfig{
+    Definition:  definition,
+    Model:       model,
+    ToolObserver: lebro.ToolResultObserverFunc(func(o lebro.ToolExecutionObservation) {
+        // o.Arguments, o.Result (on success), o.State, o.Err, plus
+        // run/execution/step/call correlation and timestamps.
+    }),
+})
+```
+
+Delivery is synchronous, after the tool finishes and before the run continues,
+so observations arrive in execution order exactly once per invocation — even
+when a later model step fails the run. Observers cannot affect the run: an
+observer error or panic is contained, the tool is never executed twice because
+of delivery, and the transcript is untouched. Arguments and results are
+immutable snapshots; authorization, display filtering, size limits, storage,
+and rendering belong to the observer's owner. Nil leaves the content-free
+defaults unchanged.
+
 ## Correlation
 
 All records carry `run_id`. Attempts, tool executions, and events also carry
@@ -101,7 +159,8 @@ page, err := store.RunEvents().ListRunEvents(ctx, lebro.RunEventFilter{
 Filters: `RunEventFilter` (run/thread/type/provider/tool/time range),
 `ModelAttemptFilter` (run/thread/provider/model/status/time range/cost source), `ToolExecutionFilter`
 (run/thread/tool/state). All filters also accept `Namespace` and `OwnerID` to
-preserve tenant isolation. Listings order by run then insertion/sequence and use
+preserve tenant isolation and an `ExecutionID` scope (see above). Listings
+order by run then insertion/sequence and use
 the same cursor pagination as every repository. Records do not require a
 thread row to exist — failed runs persist diagnostics before any transcript.
 

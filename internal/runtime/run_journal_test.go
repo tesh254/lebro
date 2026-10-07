@@ -526,7 +526,7 @@ func TestMetadataValidationBounds(t *testing.T) {
 
 func TestJournalConcurrentCaptureIsRaceFree(t *testing.T) {
 	t.Parallel()
-	journal := newRunJournal(NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)), NewMemoryStore(), "run-race", "", ObservabilityScope{}, nil)
+	journal := newRunJournal(NewFixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)), NewMemoryStore(), "run-race", "", "", ObservabilityScope{}, nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
@@ -976,7 +976,7 @@ func TestObservabilityFilterAndErrorBranches(t *testing.T) {
 
 func TestLinkProducedMessagesWithoutWinner(t *testing.T) {
 	t.Parallel()
-	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "r", "", ObservabilityScope{}, nil)
+	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "r", "", "", ObservabilityScope{}, nil)
 	journal.completeModelAttempt(ModelAttempt{Provider: "p", Status: ModelAttemptFailed})
 	journal.linkProducedMessages([]string{"m-1"})
 	events, attempts, _ := journal.snapshot()
@@ -1002,7 +1002,7 @@ func TestClassifyAndJournalEdgeBranches(t *testing.T) {
 	nilJournal.linkProducedMessages([]string{"m"})
 
 	// A payload-bearing event keeps its payload through capture.
-	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "r", "", ObservabilityScope{}, nil)
+	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "r", "", "", ObservabilityScope{}, nil)
 	journal.OnRunEvent(RunEvent{Sequence: 5, Type: RunEventStepAttemptFinished, Attempt: 2,
 		Delay: time.Second, Timestamp: time.Unix(0, 0), Error: context.DeadlineExceeded})
 	events, _, _ := journal.snapshot()
@@ -1066,7 +1066,7 @@ func TestEncodingHelperFallbacks(t *testing.T) {
 		t.Fatal("missing tool ID accepted")
 	}
 
-	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "r", "", ObservabilityScope{}, nil)
+	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "r", "", "", ObservabilityScope{}, nil)
 	journal.OnRunEvent(RunEvent{Sequence: 6, Type: RunEventRouteSelected, Timestamp: time.Unix(0, 0)})
 	events, _, _ := journal.snapshot()
 	if len(events) != 1 || events[0].Payload != nil {
@@ -1110,5 +1110,61 @@ func TestSQLiteAppendRunEventsChunksLargeBatches(t *testing.T) {
 	}
 	if page.Records[0].Sequence != 1 || page.Records[total-1].Sequence != total {
 		t.Fatalf("chunked append lost ordering: first=%d last=%d", page.Records[0].Sequence, page.Records[total-1].Sequence)
+	}
+}
+
+// TestJournalFinishModelCallRetainsObservedFailureMetadata pins the failed-call
+// accounting contract: a call that fails after the provider reported usage,
+// accounting, and a finish reason keeps exactly that metadata on its durable
+// attempt record, while a call that never received metadata stays unknown and
+// earlier attempts are never overwritten.
+func TestJournalFinishModelCallRetainsObservedFailureMetadata(t *testing.T) {
+	t.Parallel()
+
+	journal := newRunJournal(NewFixedClock(time.Unix(0, 0)), NewMemoryStore(), "fail-run", "", "", ObservabilityScope{}, nil)
+
+	// A prior successful call stamps its winner; a later failure must not
+	// touch it.
+	journal.beginModelAttempt("direct", "first-model")
+	journal.finishModelCall(ModelUsage{InputTokens: 1, TotalTokens: 1}, ModelAccounting{ProviderRequestID: "req-first"}, FinishReasonStop, nil)
+
+	// The failing call received usage and accounting before aggregation
+	// rejected the response.
+	journal.beginModelAttempt("openai", "fixture-model")
+	observedUsage := ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
+	observedAccounting := ModelAccounting{ProviderRequestID: "req-1", Costs: []ModelCost{{Source: CostProviderReported, Amount: "0", Currency: "USD"}}}
+	journal.finishModelCall(observedUsage, observedAccounting, FinishReasonToolCalls, &ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: "duplicate model tool call ID"})
+
+	// A transport failure that received nothing stays unknown.
+	journal.beginModelAttempt("openai", "next-model")
+	journal.finishModelCall(ModelUsage{}, ModelAccounting{}, "", errors.New("connection reset"))
+
+	// A cancelled call retains what it observed.
+	journal.beginModelAttempt("direct", "cancelled-model")
+	journal.finishModelCall(observedUsage, ModelAccounting{ProviderRequestID: "req-2"}, FinishReasonStop, context.Canceled)
+
+	_, attempts, _ := journal.snapshot()
+	if len(attempts) != 4 {
+		t.Fatalf("attempts = %d, want 4", len(attempts))
+	}
+	first, failed, unknown, cancelled := attempts[0], attempts[1], attempts[2], attempts[3]
+
+	if first.Status != ModelAttemptSuccess || first.Usage.TotalTokens != 1 || first.Accounting.ProviderRequestID != "req-first" || first.FinishReason != FinishReasonStop {
+		t.Fatalf("earlier successful attempt overwritten: %#v", first)
+	}
+	if failed.Status != ModelAttemptFailed || failed.Usage != observedUsage || failed.Accounting.ProviderRequestID != "req-1" || failed.FinishReason != FinishReasonToolCalls {
+		t.Fatalf("failed attempt metadata = %#v", failed)
+	}
+	if len(failed.Accounting.Costs) != 1 || failed.Accounting.Costs[0].Source != CostProviderReported || failed.Accounting.Costs[0].Amount != "0" {
+		t.Fatalf("reported zero cost must stay a known zero: %#v", failed.Accounting.Costs)
+	}
+	if failed.ErrorKind != string(ModelErrorMalformedResponse) {
+		t.Fatalf("failed attempt error kind = %q", failed.ErrorKind)
+	}
+	if unknown.Status != ModelAttemptFailed || unknown.Usage != (ModelUsage{}) || !unknown.Accounting.IsZero() || unknown.FinishReason != "" {
+		t.Fatalf("no-usage failure must stay unknown: %#v", unknown)
+	}
+	if cancelled.Status != ModelAttemptCancelled || cancelled.Usage.TotalTokens != 12 || cancelled.Accounting.ProviderRequestID != "req-2" {
+		t.Fatalf("cancelled attempt metadata = %#v", cancelled)
 	}
 }
