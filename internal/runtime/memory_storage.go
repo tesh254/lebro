@@ -903,12 +903,27 @@ func listRunEvents(ctx context.Context, s memoryState, filter RunEventFilter, p 
 		if filter.RunID != "" && runID != filter.RunID {
 			continue
 		}
+		runEvents := make([]RunEventRecord, 0, len(s.events[runID]))
 		for _, event := range s.events[runID] {
 			if !runEventMatchesFilter(event, filter) {
 				continue
 			}
-			matched = append(matched, cloneRunEventRecord(event))
+			runEvents = append(runEvents, cloneRunEventRecord(event))
 		}
+		// Match the SQL adapters' ordering key: per-execution sequences tie
+		// across executions sharing one run, so (sequence, execution, ID)
+		// decides the order everywhere. Runs stay grouped in ID order.
+		sort.SliceStable(runEvents, func(i, j int) bool {
+			a, b := runEvents[i], runEvents[j]
+			if a.Sequence != b.Sequence {
+				return a.Sequence < b.Sequence
+			}
+			if a.ExecutionID != b.ExecutionID {
+				return a.ExecutionID < b.ExecutionID
+			}
+			return a.ID < b.ID
+		})
+		matched = append(matched, runEvents...)
 	}
 	return paginate(matched, p, func(v RunEventRecord) RunEventRecord { return v })
 }

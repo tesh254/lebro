@@ -1173,6 +1173,12 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 		r.textBuf.WriteString(choice.Delta.Content)
 		r.pending = append(r.pending, lebro.StreamDelta{Text: choice.Delta.Content})
 	}
+	// A finish reason ends the generation: tool fragments arriving after the
+	// calls were completed cannot belong to a valid response and would
+	// otherwise be silently dropped. Surface them instead of swallowing.
+	if r.toolCallsCompleted && len(choice.Delta.ToolCalls) > 0 {
+		return lebro.StreamDelta{}, false, r.model.malformedResponse("lebro: tool call fragments arrived after streamed tool completion", nil)
+	}
 	r.accumulateToolFragments(choice.Delta.ToolCalls)
 	if choice.FinishReason == "" {
 		if len(r.pending) == 0 {

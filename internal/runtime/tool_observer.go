@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -37,7 +38,7 @@ type ToolExecutionObservation struct {
 // once per invocation — including when a later model step fails or the run is
 // cancelled by someone else.
 //
-// Observers cannot affect the run: a returned error or panic is contained,
+// Observers cannot affect the run: a panic is recovered,
 // the tool is never executed a second time because of a failed delivery, and
 // the transcript is untouched. A blocking observer applies backpressure to
 // the run. Observers must not reenter the observer's own agent from the
@@ -55,11 +56,14 @@ func (fn ToolResultObserverFunc) ObserveToolExecution(observation ToolExecutionO
 }
 
 // deliverObservation invokes the configured observer once with a defensive
-// snapshot. Delivery is best-effort: observer errors are ignored (the
-// interface cannot accept one, so there is nothing to propagate), panics are
-// recovered so an observer bug cannot take the run down, and a nil observer
-// or nil agent is a no-op. ctx cancellation is not checked: the observation
-// happened, so reporting it is still correct on a cancelled run.
+// snapshot. Delivery is best-effort: the interface cannot accept an error, so
+// there is nothing to propagate; panics are recovered so an observer bug
+// cannot take the run down; a nil observer or nil agent is a no-op. Ctx
+// cancellation is not checked: the observation happened, so reporting it is
+// still correct on a cancelled run. Delivered errors are detached from the
+// run's own copy so an observer mutating the *ToolExecutionError fields
+// cannot alter the transcript or the returned failure; the inner cause stays
+// shared because Go error chains are conventionally immutable.
 func (a *Agent) deliverObservation(runID RunID, executionID string, step int, stepID StepID, threadID ThreadID, call ModelToolCall, result ToolExecutionResult, started, finished time.Time) {
 	if a == nil || a.toolObserver == nil {
 		return
@@ -74,7 +78,7 @@ func (a *Agent) deliverObservation(runID RunID, executionID string, step int, st
 		ToolID:      call.ToolID,
 		Arguments:   cloneRawMessage(call.Arguments),
 		State:       result.State,
-		Err:         result.Err,
+		Err:         detachedToolError(result.Err),
 		StartedAt:   started,
 		FinishedAt:  finished,
 	}
@@ -87,4 +91,19 @@ func (a *Agent) deliverObservation(runID RunID, executionID string, step int, st
 		}()
 		a.toolObserver.ObserveToolExecution(observation)
 	}()
+}
+
+// detachedToolError copies a *ToolExecutionError so mutating the delivered
+// value cannot affect the run's own error. Errors that are not typed tool
+// failures are delivered as-is; Go error values are conventionally immutable.
+func detachedToolError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var toolErr *ToolExecutionError
+	if errors.As(err, &toolErr) && toolErr != nil {
+		clone := *toolErr
+		return &clone
+	}
+	return err
 }

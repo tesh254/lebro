@@ -77,7 +77,7 @@ agent, err := lebro.NewAgent(lebro.AgentConfig{
 Delivery is synchronous, after the tool finishes and before the run continues,
 so observations arrive in execution order exactly once per invocation — even
 when a later model step fails the run. Observers cannot affect the run: an
-observer error or panic is contained, the tool is never executed twice because
+observer panic is recovered, the tool is never executed twice because
 of delivery, and the transcript is untouched. Arguments and results are
 immutable snapshots; authorization, display filtering, size limits, storage,
 and rendering belong to the observer's owner. Nil leaves the content-free

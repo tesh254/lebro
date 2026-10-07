@@ -239,6 +239,13 @@ func (j *runJournal) completeModelAttempt(attempt ModelAttempt) {
 // usage, accounting, and finish reason the provider actually reported before
 // the failure — never fabricated, never resolved through cost lookups, and
 // never attributed to attempts that already completed.
+//
+// Attribution: when routing is in use the observer completes every attempt as
+// the walk proceeds, so on failure the observed metadata belongs to the most
+// recently completed attempt (the one whose response the caller was
+// aggregating). When attempts are still open, only the most recent open slot
+// receives the metadata: an aggregate usage value cannot be split across
+// concurrent attempts.
 func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccounting, finishReason FinishReason, err error) {
 	if j == nil {
 		return
@@ -256,7 +263,7 @@ func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccountin
 	}
 	observed := err != nil
 	end := j.clock.Now()
-	for _, slot := range j.open {
+	for i, slot := range j.open {
 		record := ModelAttemptRecord{
 			ID:          j.recordID("attempt", len(j.attempts)+1),
 			RunID:       j.runID,
@@ -272,12 +279,19 @@ func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccountin
 			FinishedAt:  end,
 		}
 		record.ErrorKind, record.ErrorMessage = classifyRunError(err)
-		if observed {
+		if observed && i == len(j.open)-1 {
 			applyObservedAttemptMetadata(&record, usage, accounting, finishReason)
 		}
 		j.attempts = append(j.attempts, record)
 	}
 	j.open = nil
+	// Routed attempts completed through the observer before the failure was
+	// known (the winner opened its stream, or Generate returned a response
+	// that aggregation later rejected). The most recent attempt is the one
+	// whose response carried the observed metadata.
+	if observed && len(j.open) == 0 && len(j.attempts) > 0 && j.attempts[len(j.attempts)-1].Status == ModelAttemptSuccess {
+		applyObservedAttemptMetadata(&j.attempts[len(j.attempts)-1], usage, accounting, finishReason)
+	}
 	if err == nil && len(j.attempts) > 0 {
 		winner := &j.attempts[len(j.attempts)-1]
 		winner.Usage = usage

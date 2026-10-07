@@ -20,7 +20,7 @@ All notable changes to this project are documented in this file.
   while repeated persistence of one execution stays idempotent. Attempt
   indices and event sequences stay scoped per execution, filters gained an
   `ExecutionID` scope, and listings order deterministically across tied
-  sequences. Memory, SQLite, and Postgres persisted in this shape (additive
+  sequences. Memory, SQLite, and Postgres persist records in this shape (additive
   `execution_id` columns for the SQL stores); an empty value keeps the
   single-execution format and behavior unchanged.
 
@@ -28,7 +28,7 @@ All notable changes to this project are documented in this file.
   `ToolExecutionObservation` for every tool invocation at the actual execution
   boundary, synchronously and in execution order — including when a later
   model step fails the run. Arguments and results are immutable snapshots;
-  delivery cannot re-execute a tool, observer errors and panics are contained,
+  delivery cannot re-execute a tool, observer panics are recovered,
   and nil leaves the content-free lifecycle events and diagnostics unchanged.
 
 - Request-scoped MCP exposures can now register durable task entries:
@@ -801,7 +801,7 @@ All notable changes to this project are documented in this file.
   resolved on the failure path, and earlier successful attempts are never
   overwritten.
 
-- OpenAI adapters no longer report a canceled or timed-out request as an HTTP- OpenAI adapters no longer report a canceled or timed-out request as an HTTP
+- OpenAI adapters no longer report a canceled or timed-out request as an HTTP
   status error. When a request is canceled while the error body of a failed
   response is still being read, both the chat and embeddings adapters classified
   the failure from the status code alone, so an abandoned request surfaced as a

@@ -483,11 +483,22 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	defer cancel()
 
 	runID := a.runID(input.RunID)
+	// The execution identity is captured once, before the input processor
+	// can replace the run input, so the journal and every observer
+	// delivery describe the same execution. NUL is rejected up front:
+	// PostgreSQL text columns cannot store it, and diagnostics for such a
+	// run would silently fail to persist.
+	executionID := input.ExecutionID
+	if strings.ContainsRune(executionID, '\x00') {
+		failure := &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: errors.New("lebro: run input execution ID must not contain NUL")}
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, failure)
+		return RunResult{ID: runID, Status: RunStatusFailed, Messages: nil, Metadata: input.Metadata}, failure
+	}
 	// The journal is nil unless a Store is configured; it captures attempts,
 	// tool executions, and events so they persist with (or without) the
 	// transcript. The pre-loop cancellation path creates and flushes its own
 	// journal because it returns before this run ID exists.
-	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
+	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, executionID, input.ObservabilityScope, input.Annotations)
 	defer journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
 	if journal != nil {
 		defer func() {
@@ -682,12 +693,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 
 			toolStart := emitter.emitToolStarted(runID, step, stepID, call.ID, call.ToolID)
 			journal.toolStarted(step, stepID, call)
-
+			observationStart := a.clock.Now()
 			result := a.executeToolCall(runCtx, runID, step, stepID, input.ThreadID, call, metadata)
+			observationEnd := a.clock.Now()
 			emitter.emitToolFinished(runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 			journal.toolFinished(result)
-			observationStart := a.clock.Now()
-			a.deliverObservation(runID, input.ExecutionID, step, stepID, input.ThreadID, call, result, observationStart, a.clock.Now())
+			a.deliverObservation(runID, executionID, step, stepID, input.ThreadID, call, result, observationStart, observationEnd)
 
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {
@@ -836,8 +847,17 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 	}
 
 	runID := a.runID(input.RunID)
+	// See Run: the execution identity is captured before the input processor
+	// can replace the run input so journal and observer deliveries agree, and
+	// NUL is rejected up front for the same reason.
+	executionID := input.ExecutionID
+	if strings.ContainsRune(executionID, '\x00') {
+		failure := &AgentError{Kind: AgentErrorProviderFailure, Step: 0, Err: errors.New("lebro: run input execution ID must not contain NUL")}
+		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, failure)
+		return nil, failure
+	}
 	// See Run: the journal is nil unless a Store is configured.
-	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
+	journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, executionID, input.ObservabilityScope, input.Annotations)
 	if journal != nil {
 		emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
 	}
@@ -920,7 +940,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		ctx:              runCtx,
 		parentCtx:        ctx,
 		runID:            runID,
-		executionID:      input.ExecutionID,
+		executionID:      executionID,
 		metadata:         metadata,
 		transcript:       transcript,
 		toolDefinitions:  toolDefinitions,
@@ -1147,9 +1167,10 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 			p.journal.toolStarted(step, stepID, call)
 			observationStart := a.clock.Now()
 			result := a.executeToolCall(p.ctx, p.runID, step, stepID, p.threadID, call, p.metadata)
+			observationEnd := a.clock.Now()
 			p.emitter.emitToolFinished(p.runID, step, stepID, toolStart, call.ID, call.ToolID, result.State, result.Err)
 			p.journal.toolFinished(result)
-			a.deliverObservation(p.runID, p.executionID, step, stepID, p.threadID, call, result, observationStart, a.clock.Now())
+			a.deliverObservation(p.runID, p.executionID, step, stepID, p.threadID, call, result, observationStart, observationEnd)
 
 			transcript = append(transcript, toolResultMessage(call.ID, result))
 			if result.State == ToolExecutionCancelled {

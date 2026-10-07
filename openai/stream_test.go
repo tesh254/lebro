@@ -540,7 +540,101 @@ func TestModelStreamRepeatedToolCallsFinishEmitsCallsOnce(t *testing.T) {
 			if usage.TotalTokens != fixture.usage {
 				t.Fatalf("terminal usage tokens = %d, want %d", usage.TotalTokens, fixture.usage)
 			}
+			if fixture.usage > 0 {
+				// Trailing usage must arrive with the full received
+				// identity: the request ID and the provider-reported zero
+				// cost, exactly as single-finish fixtures preserve them.
+				if usage != (lebro.ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: fixture.usage}) {
+					t.Fatalf("terminal usage = %#v, want full received usage", usage)
+				}
+			}
 		})
+	}
+}
+
+// TestModelStreamRepeatedFinishKeepsAccountingIdentity asserts the full
+// received accounting on the trailing terminal: the provider request ID and
+// the known provider-reported zero cost must survive the repeated finish,
+// not just the token counts.
+func TestModelStreamRepeatedFinishKeepsAccountingIdentity(t *testing.T) {
+	t.Parallel()
+	model := newAdapter(t, streamSSE(t, append(append([]string{}, streamedToolCallFixture...), finishWithoutUsage, finishWithUsage)...), Config{APIKey: "test-key", Model: "gpt-4o", PricingDomain: lebro.PricingDomainOpenRouter})
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{
+		Model:    "gpt-4o",
+		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+		Tools:    []lebro.ToolDefinition{{ID: "lookup"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	var accounting lebro.ModelAccounting
+	terminals := 0
+	for {
+		delta, derr := reader.Next()
+		if errors.Is(derr, io.EOF) {
+			break
+		}
+		if derr != nil {
+			t.Fatalf("Next() error = %v", derr)
+		}
+		if delta.IsTerminal() {
+			terminals++
+			accounting = delta.Accounting
+		}
+	}
+	if terminals != 1 {
+		t.Fatalf("terminal delta count = %d, want 1", terminals)
+	}
+	if accounting.ProviderRequestID != "fixture" {
+		t.Fatalf("terminal request ID = %q, want %q", accounting.ProviderRequestID, "fixture")
+	}
+	if len(accounting.Costs) != 1 || accounting.Costs[0].Source != lebro.CostProviderReported || accounting.Costs[0].Amount != "0" {
+		t.Fatalf("terminal cost = %#v, want known provider-reported zero", accounting.Costs)
+	}
+}
+
+// TestModelStreamRejectsToolFragmentsAfterCompletion proves the lifecycle
+// guard surfaces protocol violations instead of silently dropping calls: a
+// fragment-bearing event after the tool calls completed fails the stream as a
+// malformed response rather than losing the call.
+func TestModelStreamRejectsToolFragmentsAfterCompletion(t *testing.T) {
+	t.Parallel()
+	model := newAdapter(t, streamSSE(t, append(append([]string{}, streamedToolCallFixture...), finishWithoutUsage, `{"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call-late","type":"function","function":{"name":"ping"}}]},"finish_reason":null}]}`)...), Config{APIKey: "test-key", Model: "gpt-4o"})
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{
+		Model:    "gpt-4o",
+		Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "hi"}},
+		Tools:    []lebro.ToolDefinition{{ID: "lookup"}, {ID: "ping"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	var streamErr error
+	for {
+		delta, derr := reader.Next()
+		if errors.Is(derr, io.EOF) {
+			break
+		}
+		if delta.ToolCall != nil {
+			continue
+		}
+		if delta.IsTerminal() {
+			continue
+		}
+		if derr != nil {
+			streamErr = derr
+			break
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("Next() error = nil, want malformed response for late tool fragments")
+	}
+	var modelErr *lebro.ModelError
+	if !errors.As(streamErr, &modelErr) || modelErr.Kind != lebro.ModelErrorMalformedResponse {
+		t.Fatalf("error = %v, want malformed_response", streamErr)
 	}
 }
 

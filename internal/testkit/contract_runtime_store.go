@@ -439,7 +439,10 @@ func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore Runtim
 		ID: "cap-run-1-exec-b-event-1", RunID: "cap-run-1", ThreadID: "cap-thread-x",
 		ExecutionID: "exec-b", Sequence: 1, Type: runtime.RunEventStarted, Timestamp: now.Add(time.Second),
 	}
-	if err := observability.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{executionA, executionB}); err != nil {
+	// Write the later execution FIRST: ordering must be canonical
+	// (sequence, execution, ID), not the arrival order an insertion-ordered
+	// store happens to produce.
+	if err := observability.RunEvents().AppendRunEvents(ctx, []runtime.RunEventRecord{executionB, executionA}); err != nil {
 		t.Fatalf("AppendRunEvents: %v", err)
 	}
 	// Replaying one execution's flush must not duplicate its records.
@@ -489,7 +492,7 @@ func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore Runtim
 		Usage:     runtime.ModelUsage{InputTokens: 4, TotalTokens: 4},
 		StartedAt: now.Add(time.Second), FinishedAt: now.Add(2 * time.Second),
 	}
-	if err := observability.ModelAttempts().SaveModelAttempts(ctx, []runtime.ModelAttemptRecord{attemptA, attemptB}); err != nil {
+	if err := observability.ModelAttempts().SaveModelAttempts(ctx, []runtime.ModelAttemptRecord{attemptB, attemptA}); err != nil {
 		t.Fatalf("SaveModelAttempts: %v", err)
 	}
 	if err := observability.ModelAttempts().SaveModelAttempts(ctx, []runtime.ModelAttemptRecord{attemptA}); err != nil {
@@ -499,8 +502,8 @@ func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore Runtim
 	if err != nil {
 		t.Fatalf("ListModelAttempts: %v", err)
 	}
-	if len(attempts.Records) != 2 || attempts.Records[0].ExecutionID != "exec-a" || attempts.Records[1].ExecutionID != "exec-b" {
-		t.Fatalf("attempts = %+v, want one record per execution", attempts.Records)
+	if len(attempts.Records) != 2 || attempts.Records[0].ExecutionID != "exec-b" || attempts.Records[1].ExecutionID != "exec-a" {
+		t.Fatalf("attempts = %+v, want one record per execution in insertion order", attempts.Records)
 	}
 	scopedAttempts, err := observability.ModelAttempts().ListModelAttempts(ctx, runtime.ModelAttemptFilter{RunID: "cap-run-1", ExecutionID: "exec-b"}, runtime.PageRequest{})
 	if err != nil {
@@ -511,7 +514,10 @@ func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore Runtim
 	}
 
 	// Tool diagnostic identities must not overwrite another execution's
-	// records: both executions report tool call ID "call-1".
+	// records: both executions report tool call ID "call-1". The later
+	// execution is written first; the canonical order for these records is
+	// the store's own insertion/sequence order, and the reverse write proves
+	// the assertions track that order rather than the fixture's convenience.
 	toolA := runtime.ToolExecutionRecord{
 		ID: "cap-run-1-exec-a-tool-1", RunID: "cap-run-1", ThreadID: "cap-thread-x", ExecutionID: "exec-a",
 		Step: 1, ToolCallID: "call-1", ToolID: "weather", State: runtime.ToolExecutionSucceeded,
@@ -522,7 +528,7 @@ func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore Runtim
 		Step: 1, ToolCallID: "call-1", ToolID: "weather", State: runtime.ToolExecutionSucceeded,
 		StartedAt: now.Add(time.Second), FinishedAt: now.Add(time.Second + time.Millisecond),
 	}
-	if err := observability.ToolExecutions().SaveToolExecutions(ctx, []runtime.ToolExecutionRecord{toolA, toolB}); err != nil {
+	if err := observability.ToolExecutions().SaveToolExecutions(ctx, []runtime.ToolExecutionRecord{toolB, toolA}); err != nil {
 		t.Fatalf("SaveToolExecutions: %v", err)
 	}
 	if err := observability.ToolExecutions().SaveToolExecutions(ctx, []runtime.ToolExecutionRecord{toolB}); err != nil {
@@ -532,8 +538,8 @@ func runtimeStoreExecutionIdentityRoundTrip(t *testing.T, newRuntimeStore Runtim
 	if err != nil {
 		t.Fatalf("ListToolExecutions: %v", err)
 	}
-	if len(tools.Records) != 2 || tools.Records[0].ExecutionID != "exec-a" || tools.Records[1].ExecutionID != "exec-b" {
-		t.Fatalf("tool executions = %+v, want one record per execution", tools.Records)
+	if len(tools.Records) != 2 || tools.Records[0].ExecutionID != "exec-b" || tools.Records[1].ExecutionID != "exec-a" {
+		t.Fatalf("tool executions = %+v, want one record per execution in insertion order", tools.Records)
 	}
 	scopedTools, err := observability.ToolExecutions().ListToolExecutions(ctx, runtime.ToolExecutionFilter{RunID: "cap-run-1", ExecutionID: "exec-a"}, runtime.PageRequest{})
 	if err != nil {

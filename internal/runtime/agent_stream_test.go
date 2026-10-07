@@ -1478,3 +1478,234 @@ func TestAgentToolObserverPanicIsContainedAndOrdered(t *testing.T) {
 		t.Fatalf("delivered observation = %+#v, want the second tool call", observations[0])
 	}
 }
+
+// blockingTool waits on its context so the test can cancel the run while the
+// tool is executing, exercising the observer's cancelled-state delivery.
+type blockingTool struct {
+	definition ToolDefinition
+	started    chan struct{}
+}
+
+func (t *blockingTool) Definition() ToolDefinition { return t.definition }
+func (t *blockingTool) Execute(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	close(t.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestAgentToolObserverReceivesCancelledOutcome covers the cancellation
+// branch of the capture contract: a tool cancelled through its context
+// delivers ToolExecutionCancelled (never a fabricated success), and the run
+// itself reports cancellation.
+func TestAgentToolObserverReceivesCancelledOutcome(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel(toolCallDeltaStream(ModelToolCall{ID: "call-1", ToolID: "waiter", Arguments: json.RawMessage(`{}`)}))
+	tool := &blockingTool{definition: ToolDefinition{ID: "waiter", InputSchema: json.RawMessage(`{"type":"object"}`)}, started: make(chan struct{})}
+	registry, err := NewToolRegistry(stubSchemaCompiler{compile: func(json.RawMessage) (CompiledSchema, error) { return stubCompiledSchema{}, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(tool); err != nil {
+		t.Fatal(err)
+	}
+	watcher := &observingTool{}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "cancel-agent", Model: "fixture-model", Tools: []ToolID{"waiter"}},
+		Model:      model,
+		Tools:      registry,
+		ToolObserver: ToolResultObserverFunc(func(o ToolExecutionObservation) {
+			watcher.observe(o)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	run, err := agent.RunStream(runCtx, RunInput{RunID: "cancel-obs-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("RunStream() setup error = %v", err)
+	}
+	defer run.Cancel()
+
+	// Drain in the background: the run goroutine must be able to emit
+	// deltas while the tool executes, or it would never reach the tool.
+	drained := make(chan struct{})
+	go func() {
+		for range run.Deltas {
+		}
+		close(drained)
+	}()
+
+	<-tool.started
+	cancelRun()
+	<-drained
+	result, runErr := run.Wait()
+	if !errors.Is(runErr, ErrAgentCancelled) {
+		t.Fatalf("error = %v, want cancellation", runErr)
+	}
+	if result.Status != RunStatusCancelled {
+		t.Fatalf("status = %q, want cancelled", result.Status)
+	}
+	observations := watcher.snapshot()
+	if len(observations) != 1 {
+		t.Fatalf("observations = %d, want 1", len(observations))
+	}
+	observed := observations[0]
+	if observed.State != ToolExecutionCancelled || observed.Err == nil {
+		t.Fatalf("state = %q err = %v, want cancelled", observed.State, observed.Err)
+	}
+	if len(observed.Result) != 0 {
+		t.Fatalf("result = %s, want empty for a cancelled execution", observed.Result)
+	}
+}
+
+// TestAgentRunObservesToolRuntime pins the observer's timestamps on the
+// non-streaming Run path: StartedAt is sampled before the tool executes and
+// FinishedAt when it returns, so the observation brackets the tool's real
+// runtime instead of reporting an empty window.
+func TestAgentRunObservesToolRuntime(t *testing.T) {
+	t.Parallel()
+
+	model := newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}), textResponse("done"))
+	registry, _ := newAgentTestRegistry(t)
+	watcher := &observingTool{}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "runtime-agent", Model: "fixture-model", Tools: []ToolID{"lookup"}},
+		Model:      model,
+		Tools:      registry,
+		ToolObserver: ToolResultObserverFunc(func(o ToolExecutionObservation) {
+			watcher.observe(o)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := agent.Run(context.Background(), RunInput{RunID: "runtime-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if err != nil || result.Status != RunStatusSucceeded {
+		t.Fatalf("Run() = %+v %v, want success", result, err)
+	}
+	observations := watcher.snapshot()
+	if len(observations) != 1 {
+		t.Fatalf("observations = %d, want 1", len(observations))
+	}
+	observed := observations[0]
+	if observed.ExecutionID != "" || observed.RunID != "runtime-run" {
+		t.Fatalf("correlation = %#v", observed)
+	}
+	if observed.State != ToolExecutionSucceeded || string(observed.Result) != `{}` {
+		t.Fatalf("observation = %#v, want the real success payload", observed)
+	}
+	if !observed.FinishedAt.After(observed.StartedAt) {
+		t.Fatalf("timestamps %v -> %v, want FinishedAt after StartedAt", observed.StartedAt, observed.FinishedAt)
+	}
+}
+
+// TestAgentExecutionIDStableAcrossInputProcessorReplacement pins the
+// single-execution-identity rule: an input processor that replaces the run
+// input must not split the observer's correlation from the persisted
+// diagnostics — both describe the pre-processor execution identity.
+func TestAgentExecutionIDStableAcrossInputProcessorReplacement(t *testing.T) {
+	t.Parallel()
+
+	pipeline, err := NewProcessorPipeline(runtimeProcessor{name: "replacer", input: func(request ProcessorInputRequest) ProcessorInputResult {
+		replaced := request.Input
+		replaced.ExecutionID = "processor-invented-id"
+		replaced.Metadata = map[string]string{"rewritten": "yes"}
+		return ProcessorInputResult{Decision: ProcessorDecision{Kind: ProcessorTransform}, Input: replaced}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStreamScriptedModel(textDeltas("done"))
+	store := NewMemoryStore()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "identity-agent", Model: "fixture-model"},
+		Model:      model,
+		Processors: pipeline,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, streamErr := agent.RunStream(context.Background(), RunInput{
+		RunID:       "identity-run",
+		ExecutionID: "queue-exec-1",
+		Messages:    []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if streamErr != nil {
+		t.Fatal(streamErr)
+	}
+	result, runErr := stream.Drain()
+	if runErr != nil || result.Status != RunStatusSucceeded {
+		t.Fatalf("result = %+v %v, want success", result, runErr)
+	}
+
+	ctx := context.Background()
+	events, err := store.RunEvents().ListRunEvents(ctx, RunEventFilter{RunID: "identity-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events.Records) == 0 {
+		t.Fatal("no events persisted")
+	}
+	for _, event := range events.Records {
+		if event.ExecutionID != "queue-exec-1" {
+			t.Fatalf("event %q execution ID = %q, want the pre-processor identity", event.ID, event.ExecutionID)
+		}
+	}
+	if _, err := store.RunEvents().ListRunEvents(ctx, RunEventFilter{RunID: "identity-run", ExecutionID: "processor-invented-id"}, PageRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := store.RunEvents().ListRunEvents(ctx, RunEventFilter{RunID: "identity-run", ExecutionID: "processor-invented-id"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped.Records) != 0 {
+		t.Fatalf("processor-invented execution ID leaked into diagnostics: %+v", scoped.Records)
+	}
+}
+
+// TestAgentRunRejectsNULInExecutionID pins the validation: PostgreSQL text
+// columns cannot store NUL, so an execution identity containing one must fail
+// the run before any diagnostics are produced rather than silently losing
+// them at persist time.
+func TestAgentRunRejectsNULInExecutionID(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel(textDeltas("must not run"))
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "nul-agent", Model: "fixture-model"},
+		Model:      model,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := agent.RunStream(context.Background(), RunInput{
+		RunID:       "nul-run",
+		ExecutionID: "exec\x00bad",
+		Messages:    []Message{{Role: RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		if !strings.Contains(err.Error(), "execution ID must not contain NUL") {
+			t.Fatalf("setup error = %v, want NUL rejection", err)
+		}
+		return
+	}
+	defer stream.Cancel()
+	result, runErr := stream.Drain()
+	if runErr == nil || result.Status != RunStatusFailed {
+		t.Fatalf("result = %+v %v, want failed run", result, runErr)
+	}
+	if !strings.Contains(runErr.Error(), "execution ID must not contain NUL") {
+		t.Fatalf("error = %v, want NUL rejection", runErr)
+	}
+	if calls := model.Calls(); len(calls) != 0 {
+		t.Fatalf("model calls = %#v, want none", calls)
+	}
+}
