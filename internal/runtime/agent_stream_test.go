@@ -1709,3 +1709,85 @@ func TestAgentRunRejectsNULInExecutionID(t *testing.T) {
 		t.Fatalf("model calls = %#v, want none", calls)
 	}
 }
+
+// TestAgentRunStreamRoutedFailureKeepsObservedMetadataAndOutcome covers the
+// routed path of the failed-call accounting contract: the provider call
+// succeeds at the provider level (the router completes the attempt when the
+// response arrives), a stream-delta processor then breaks the tool calls, and
+// the durable attempt record must both keep the observed usage and identity
+// and report the call's actual failed outcome instead of the premature
+// provider-level success.
+func TestAgentRunStreamRoutedFailureKeepsObservedMetadataAndOutcome(t *testing.T) {
+	t.Parallel()
+
+	calls, err := NewModelToolCalls(
+		ModelToolCall{ID: "call-1", ToolID: "lookup", Arguments: json.RawMessage(`{}`)},
+		ModelToolCall{ID: "call-2", ToolID: "ping", Arguments: json.RawMessage(`{}`)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeline, err := NewProcessorPipeline(runtimeProcessor{name: "rewriter", delta: func(request ProcessorStreamDeltaRequest) ProcessorStreamDeltaResult {
+		if request.Delta.ToolCall != nil && request.Delta.ToolCall.ID == "call-2" {
+			rewritten := *request.Delta.ToolCall
+			rewritten.ID = "call-1"
+			request.Delta.ToolCall = &rewritten
+		}
+		return ProcessorStreamDeltaResult{Decision: ProcessorDecision{Kind: ProcessorTransform}, Delta: request.Delta}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newScriptedModel(scriptedResponse{response: ModelResponse{
+		Message:      Message{Role: RoleAssistant, ToolCalls: calls},
+		FinishReason: FinishReasonToolCalls,
+		Usage:        ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
+		Accounting:   ModelAccounting{ProviderRequestID: "req-routed"},
+	}})
+	registry := NewProviderRegistry()
+	if err := registry.Register(ProviderEntry{ID: "fixture", Model: model, Capabilities: ProviderCapabilities{SupportsTools: true}}); err != nil {
+		t.Fatal(err)
+	}
+	router, err := NewModelRouter(ModelRouterConfig{Registry: registry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewMemoryStore()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "routed-fail", Model: "fixture-model"},
+		Router:     router,
+		Processors: pipeline,
+		Store:      store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, streamErr := agent.RunStream(context.Background(), RunInput{RunID: "routed-fail-run", Messages: []Message{{Role: RoleUser, Content: "hi"}}})
+	if streamErr != nil {
+		t.Fatal(streamErr)
+	}
+	result, runErr := stream.Drain()
+	if runErr == nil || result.Status != RunStatusFailed {
+		t.Fatalf("result = %+v %v, want failed run", result, runErr)
+	}
+	var modelErr *ModelError
+	if !errors.As(runErr, &modelErr) || modelErr.Kind != ModelErrorMalformedResponse {
+		t.Fatalf("error = %v, want typed malformed response", runErr)
+	}
+
+	attempts, err := store.ModelAttempts().ListModelAttempts(context.Background(), ModelAttemptFilter{RunID: "routed-fail-run"}, PageRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts.Records) != 1 {
+		t.Fatalf("persisted attempts = %d, want 1", len(attempts.Records))
+	}
+	attempt := attempts.Records[0]
+	if attempt.Status != ModelAttemptFailed || attempt.ErrorKind != string(ModelErrorMalformedResponse) {
+		t.Fatalf("attempt = %s/%s, want failed outcome relabeled from provider success", attempt.Status, attempt.ErrorKind)
+	}
+	if attempt.Usage != (ModelUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}) || attempt.Accounting.ProviderRequestID != "req-routed" || attempt.FinishReason != FinishReasonToolCalls {
+		t.Fatalf("attempt metadata = %#v finish %q", attempt, attempt.FinishReason)
+	}
+}

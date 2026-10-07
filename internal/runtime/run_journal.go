@@ -237,8 +237,11 @@ func (j *runJournal) completeModelAttempt(attempt ModelAttempt) {
 // here); on success the final attempt is the routed winner and receives the
 // response usage and finish reason. A failed or cancelled call retains the
 // usage, accounting, and finish reason the provider actually reported before
-// the failure — never fabricated, never resolved through cost lookups, and
-// never attributed to attempts that already completed.
+// the failure — never fabricated, never resolved through cost lookups. The
+// single attempt whose response was being aggregated (the newest open slot,
+// or the routed attempt the observer completed at reader creation) receives
+// that metadata and the call's failed or cancelled outcome; no other attempt
+// is touched.
 //
 // Attribution: when routing is in use the observer completes every attempt as
 // the walk proceeds, so on failure the observed metadata belongs to the most
@@ -288,9 +291,14 @@ func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccountin
 	// Routed attempts completed through the observer before the failure was
 	// known (the winner opened its stream, or Generate returned a response
 	// that aggregation later rejected). The most recent attempt is the one
-	// whose response carried the observed metadata.
+	// whose response carried the observed metadata: it receives it, and its
+	// premature provider-level success is relabeled with the call's actual
+	// failed or cancelled outcome.
 	if observed && len(j.open) == 0 && len(j.attempts) > 0 && j.attempts[len(j.attempts)-1].Status == ModelAttemptSuccess {
-		applyObservedAttemptMetadata(&j.attempts[len(j.attempts)-1], usage, accounting, finishReason)
+		last := &j.attempts[len(j.attempts)-1]
+		last.Status = status
+		last.ErrorKind, last.ErrorMessage = classifyRunError(err)
+		applyObservedAttemptMetadata(last, usage, accounting, finishReason)
 	}
 	if err == nil && len(j.attempts) > 0 {
 		winner := &j.attempts[len(j.attempts)-1]

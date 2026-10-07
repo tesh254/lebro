@@ -365,7 +365,7 @@ func responseToStreamReader(resp ModelResponse) StreamReader {
 		deltas = append(deltas, StreamDelta{Text: resp.Message.Content})
 	}
 
-	terminal := StreamDelta{FinishReason: resp.FinishReason, Usage: resp.Usage}
+	terminal := StreamDelta{FinishReason: resp.FinishReason, Usage: resp.Usage, Accounting: resp.Accounting.Clone()}
 	if terminal.Text == "" && terminal.ToolCall == nil && terminal.StructuredOutput == "" && terminal.FinishReason == "" {
 		terminal.FinishReason = FinishReasonUnspecified
 	}
