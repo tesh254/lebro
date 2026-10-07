@@ -1865,6 +1865,9 @@ func TestAgentRoutingFailureAfterSuccessNeverRelabelsEarlierAttempts(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(attemptEvents.Records) != 1 {
+		t.Fatalf("attempt-finished events = %d, want 1", len(attemptEvents.Records))
+	}
 	for _, event := range attemptEvents.Records {
 		if event.AttemptStatus != ModelAttemptSuccess {
 			t.Fatalf("earlier attempt event relabeled: %#v", event)
