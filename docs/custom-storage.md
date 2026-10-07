@@ -125,12 +125,16 @@ is a legitimate adapter — the contract says what it costs.
   pagination (`PageRequest`/`Page`, `ErrInvalidPage`), `ErrNotFound` for
   missing reads, `ErrConflict` for stale versions, defensive copies (returned
   records must not alias stored state), and idempotent observability appends
-  (a repeated `(run_id, id)` pair is skipped, never duplicated).
+  (a repeated `(run_id, id)` pair is skipped, never duplicated).   Observability
+  records may carry an `ExecutionID` field identifying the external execution
+  that produced them: persist it like any other field and
+  match it in filters; when the runtime-generated IDs embed an execution ID,
+  distinct executions sharing one logical run must coexist queryably.
 
 The public `storetest` package exposes `RuntimeStoreContractSuite` for
 external adapters. It covers capability advertisement, round-trips,
 pagination, cancellation, tenant isolation, idempotent observability writes,
-and transaction commit/rollback semantics:
+execution-identity coexistence, and transaction commit/rollback semantics:
 
 ```go
 storetest.RuntimeStoreContractSuite(t, func(t *testing.T) lebro.RuntimeStore {

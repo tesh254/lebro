@@ -48,12 +48,12 @@ func (r *sqliteRepositories) AppendRunEvents(ctx context.Context, vs []RunEventR
 			}
 			chunk := vs[start:end]
 			placeholders := make([]string, 0, len(chunk))
-			args := make([]any, 0, len(chunk)*39)
+			args := make([]any, 0, len(chunk)*40)
 			for _, v := range chunk {
 				payload, pluginID, pluginVersion, pluginAction, pluginOutcome := obsEventExtras(v)
-				placeholders = append(placeholders, "("+strings.Repeat("?, ", 38)+"?)")
+				placeholders = append(placeholders, "("+strings.Repeat("?, ", 39)+"?)")
 				args = append(args,
-					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Sequence, v.Type, sqliteTime(v.Timestamp),
+					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.ExecutionID, v.Sequence, v.Type, sqliteTime(v.Timestamp),
 					v.Step, v.StepID, v.ParentRunID, v.ParentStepID, v.Branch,
 					v.ToolCallID, string(v.ToolID), string(v.Provider), v.ProviderModel,
 					string(v.AttemptStatus), string(v.ProcessorPhase), string(v.ProcessorAction),
@@ -66,7 +66,7 @@ func (r *sqliteRepositories) AppendRunEvents(ctx context.Context, vs []RunEventR
 				)
 			}
 			query := `INSERT INTO run_events (
-				id, run_id, thread_id, namespace, owner_id, seq, type, timestamp,
+				id, run_id, thread_id, namespace, owner_id, execution_id, seq, type, timestamp,
 				step, step_id, parent_run_id, parent_step_id, branch,
 				tool_call_id, tool_id, provider, provider_model,
 				attempt_status, processor_phase, processor_action,
@@ -92,12 +92,12 @@ func (r *sqliteRepositories) ListRunEvents(ctx context.Context, filter RunEventF
 	}
 	where, args := sqliteRunEventFilter(filter)
 	rows, err := r.q.QueryContext(ctx,
-		`SELECT id, run_id, thread_id, namespace, owner_id, seq, type, timestamp, step, step_id, parent_run_id, parent_step_id,
+		`SELECT id, run_id, thread_id, namespace, owner_id, execution_id, seq, type, timestamp, step, step_id, parent_run_id, parent_step_id,
 		 branch, tool_call_id, tool_id, provider, provider_model, attempt_status, processor_phase,
 		 processor_action, status, finish_reason, input_tokens, output_tokens, reasoning_tokens,
 		 total_tokens, cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
 		 duration_ns, error_kind, error_message, payload, plugin_id, plugin_version, plugin_action, plugin_outcome, annotations
-		 FROM run_events `+where+` ORDER BY run_id, seq LIMIT ? OFFSET ?`,
+		 FROM run_events `+where+` ORDER BY run_id, seq, execution_id, id LIMIT ? OFFSET ?`,
 		append(args, limit+1, offset)...)
 	if err != nil {
 		return Page[RunEventRecord]{}, fmt.Errorf("lebro: list run events: %w", sqliteError(err))
@@ -117,7 +117,7 @@ func (r *sqliteRepositories) ListRunEvents(ctx context.Context, filter RunEventF
 			accounting  sql.NullString
 		)
 		if err := rows.Scan(
-			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Sequence, &v.Type, &timestamp,
+			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.ExecutionID, &v.Sequence, &v.Type, &timestamp,
 			&v.Step, &v.StepID, &v.ParentRunID, &v.ParentStepID, &v.Branch,
 			&v.ToolCallID, &v.ToolID, &v.Provider, &v.ProviderModel,
 			&v.AttemptStatus, &v.ProcessorPhase, &v.ProcessorAction,
@@ -183,6 +183,10 @@ func sqliteRunEventFilter(filter RunEventFilter) (string, []any) {
 		clauses = append(clauses, "owner_id = ?")
 		args = append(args, filter.OwnerID)
 	}
+	if filter.ExecutionID != "" {
+		clauses = append(clauses, "execution_id = ?")
+		args = append(args, filter.ExecutionID)
+	}
 	if filter.Type != "" {
 		clauses = append(clauses, "type = ?")
 		args = append(args, filter.Type)
@@ -230,12 +234,12 @@ func (r *sqliteRepositories) SaveModelAttempts(ctx context.Context, vs []ModelAt
 			}
 			chunk := vs[start:end]
 			placeholders := make([]string, 0, len(chunk))
-			args := make([]any, 0, len(chunk)*30)
+			args := make([]any, 0, len(chunk)*31)
 			for _, v := range chunk {
 				messageIDs := obsStringArray(v.ProducedMessageIDs)
-				placeholders = append(placeholders, "("+strings.Repeat("?, ", 29)+"?)")
+				placeholders = append(placeholders, "("+strings.Repeat("?, ", 30)+"?)")
 				args = append(args,
-					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Step, v.StepID, v.Index,
+					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.ExecutionID, v.Step, v.StepID, v.Index,
 					string(v.Provider), v.Model, v.RoutedModel, string(v.Status), string(v.FinishReason),
 					v.Usage.InputTokens, v.Usage.OutputTokens, v.Usage.ReasoningTokens, v.Usage.TotalTokens,
 					v.Usage.CacheReadTokens, v.Usage.CacheWriteTokens, v.Usage.CacheWrite1hTokens, obsAccountingJSON(v.Accounting),
@@ -245,7 +249,7 @@ func (r *sqliteRepositories) SaveModelAttempts(ctx context.Context, vs []ModelAt
 				)
 			}
 			query := `INSERT INTO model_attempts (
-				id, run_id, thread_id, namespace, owner_id, step, step_id, idx,
+				id, run_id, thread_id, namespace, owner_id, execution_id, step, step_id, idx,
 				provider, model, routed_model, status, finish_reason,
 				input_tokens, output_tokens, reasoning_tokens, total_tokens,
 				cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting,
@@ -289,6 +293,10 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 		clauses = append(clauses, "owner_id = ?")
 		args = append(args, filter.OwnerID)
 	}
+	if filter.ExecutionID != "" {
+		clauses = append(clauses, "execution_id = ?")
+		args = append(args, filter.ExecutionID)
+	}
 	if filter.Provider != "" {
 		clauses = append(clauses, "provider = ?")
 		args = append(args, filter.Provider)
@@ -318,7 +326,7 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 		where = "WHERE " + strings.Join(clauses, " AND ")
 	}
 	rows, err := r.q.QueryContext(ctx,
-		`SELECT id, run_id, thread_id, namespace, owner_id, step, step_id, idx, provider, model, routed_model, status,
+		`SELECT id, run_id, thread_id, namespace, owner_id, execution_id, step, step_id, idx, provider, model, routed_model, status,
 		 finish_reason, input_tokens, output_tokens, reasoning_tokens, total_tokens,
 		 cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, accounting, started_at,
 		 finished_at, message_ids, error_kind, error_message, provider_request_id, cost_micros,
@@ -339,7 +347,7 @@ func (r *sqliteRepositories) ListModelAttempts(ctx context.Context, filter Model
 			accounting  sql.NullString
 		)
 		if err := rows.Scan(
-			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Step, &v.StepID, &v.Index,
+			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.ExecutionID, &v.Step, &v.StepID, &v.Index,
 			&v.Provider, &v.Model, &v.RoutedModel, &v.Status, &v.FinishReason,
 			&v.Usage.InputTokens, &v.Usage.OutputTokens, &v.Usage.ReasoningTokens, &v.Usage.TotalTokens,
 			&v.Usage.CacheReadTokens, &v.Usage.CacheWriteTokens, &v.Usage.CacheWrite1hTokens, &accounting,
@@ -408,18 +416,18 @@ func (r *sqliteRepositories) SaveToolExecutions(ctx context.Context, vs []ToolEx
 			}
 			chunk := vs[start:end]
 			placeholders := make([]string, 0, len(chunk))
-			args := make([]any, 0, len(chunk)*15)
+			args := make([]any, 0, len(chunk)*16)
 			for _, v := range chunk {
-				placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+				placeholders = append(placeholders, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 				args = append(args,
-					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.Step, v.StepID,
+					v.ID, v.RunID, v.ThreadID, v.Namespace, v.OwnerID, v.ExecutionID, v.Step, v.StepID,
 					v.ToolCallID, string(v.ToolID), string(v.State),
 					sqliteTime(v.StartedAt), sqliteNullableTime(timePointer(v.FinishedAt)),
 					v.ErrorKind, v.ErrorMessage, obsMetadataJSON(v.Metadata),
 				)
 			}
 			query := `INSERT INTO tool_executions (
-				id, run_id, thread_id, namespace, owner_id, step, step_id,
+				id, run_id, thread_id, namespace, owner_id, execution_id, step, step_id,
 				tool_call_id, tool_id, state, started_at, finished_at,
 				error_kind, error_message, annotations
 			) VALUES ` + strings.Join(placeholders, ", ") + ` ON CONFLICT (run_id, id) DO NOTHING`
@@ -457,6 +465,10 @@ func (r *sqliteRepositories) ListToolExecutions(ctx context.Context, filter Tool
 		clauses = append(clauses, "owner_id = ?")
 		args = append(args, filter.OwnerID)
 	}
+	if filter.ExecutionID != "" {
+		clauses = append(clauses, "execution_id = ?")
+		args = append(args, filter.ExecutionID)
+	}
 	if filter.ToolID != "" {
 		clauses = append(clauses, "tool_id = ?")
 		args = append(args, filter.ToolID)
@@ -470,7 +482,7 @@ func (r *sqliteRepositories) ListToolExecutions(ctx context.Context, filter Tool
 		where = "WHERE " + strings.Join(clauses, " AND ")
 	}
 	rows, err := r.q.QueryContext(ctx,
-		`SELECT id, run_id, thread_id, namespace, owner_id, step, step_id, tool_call_id, tool_id, state, started_at,
+		`SELECT id, run_id, thread_id, namespace, owner_id, execution_id, step, step_id, tool_call_id, tool_id, state, started_at,
 		 finished_at, error_kind, error_message, annotations FROM tool_executions `+where+` ORDER BY run_id, seq LIMIT ? OFFSET ?`,
 		append(args, limit+1, offset)...)
 	if err != nil {
@@ -486,7 +498,7 @@ func (r *sqliteRepositories) ListToolExecutions(ctx context.Context, filter Tool
 			annotations sql.NullString
 		)
 		if err := rows.Scan(
-			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.Step, &v.StepID,
+			&v.ID, &v.RunID, &v.ThreadID, &v.Namespace, &v.OwnerID, &v.ExecutionID, &v.Step, &v.StepID,
 			&v.ToolCallID, &v.ToolID, &v.State, &startedAt, &finishedAt,
 			&v.ErrorKind, &v.ErrorMessage, &annotations,
 		); err != nil {

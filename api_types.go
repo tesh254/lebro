@@ -55,6 +55,9 @@ type (
 	ToolExecutionResult         = runtime.ToolExecutionResult
 	ToolExecutionError          = runtime.ToolExecutionError
 	ToolPanicError              = runtime.ToolPanicError
+	ToolExecutionObservation    = runtime.ToolExecutionObservation
+	ToolResultObserver          = runtime.ToolResultObserver
+	ToolResultObserverFunc      = runtime.ToolResultObserverFunc
 	RegisteredTool              = runtime.RegisteredTool
 	ToolRegistry                = runtime.ToolRegistry
 	Subagent                    = runtime.Subagent

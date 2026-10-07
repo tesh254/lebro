@@ -22,12 +22,13 @@ import (
 // message. Stored event sequences keep their original numbering, so omitted
 // delta events leave gaps but order never regresses.
 type runJournal struct {
-	mu       sync.Mutex
-	clock    Clock
-	runID    RunID
-	threadID ThreadID
-	scope    ObservabilityScope
-	base     Metadata
+	mu          sync.Mutex
+	clock       Clock
+	runID       RunID
+	threadID    ThreadID
+	executionID string
+	scope       ObservabilityScope
+	base        Metadata
 
 	events   []RunEventRecord
 	attempts []ModelAttemptRecord
@@ -36,8 +37,13 @@ type runJournal struct {
 	// open holds in-flight provider attempts in start order. Attempts within
 	// one model call are sequential (routing walks its fallback chain one
 	// provider at a time), so completion pops from the front.
-	open    []openModelAttempt
-	toolSeq int
+	open []openModelAttempt
+	// sealedAttempts and sealedEvents mark how many attempts and events the
+	// previous finishModelCall already accounted for, so a failed call's
+	// outcome relabel only ever touches records from the current model call.
+	sealedAttempts int
+	sealedEvents   int
+	toolSeq        int
 	// persisted counts how many entries the success-path transaction already
 	// committed, so the deferred diagnostic flush writes only the delta —
 	// typically the terminal event emitted after persist.
@@ -54,11 +60,23 @@ type openModelAttempt struct {
 
 // newRunJournal returns nil unless durable persistence is configured; every
 // call site treats a nil journal as "capture disabled".
-func newRunJournal(clock Clock, store Store, runID RunID, threadID ThreadID, scope ObservabilityScope, annotations Metadata) *runJournal {
+func newRunJournal(clock Clock, store Store, runID RunID, threadID ThreadID, executionID string, scope ObservabilityScope, annotations Metadata) *runJournal {
 	if store == nil || isNilInterface(store) {
 		return nil
 	}
-	return &runJournal{clock: clock, runID: runID, threadID: threadID, scope: scope, base: annotations.Clone()}
+	return &runJournal{clock: clock, runID: runID, threadID: threadID, executionID: executionID, scope: scope, base: annotations.Clone()}
+}
+
+// recordID builds the durable identity for a generated record. When an
+// execution identity is present it scopes the ID to that execution, so
+// separate external executions of one logical run never collide, while
+// repeated persistence of one execution remains idempotent. Without one the
+// legacy single-execution format is unchanged.
+func (j *runJournal) recordID(kind string, n int) string {
+	if j.executionID == "" {
+		return fmt.Sprintf("%s-%s-%d", j.runID, kind, n)
+	}
+	return fmt.Sprintf("%s-%s-%s-%d", j.runID, j.executionID, kind, n)
 }
 
 // OnRunEvent converts an emitted run event into a durable record. Delta
@@ -68,9 +86,10 @@ func (j *runJournal) OnRunEvent(event RunEvent) {
 		return
 	}
 	record := RunEventRecord{
-		ID:              fmt.Sprintf("%s-event-%d", event.RunID, event.Sequence),
+		ID:              j.recordID("event", event.Sequence),
 		RunID:           event.RunID,
 		ThreadID:        j.threadID,
+		ExecutionID:     j.executionID,
 		Namespace:       j.scope.Namespace,
 		OwnerID:         j.scope.OwnerID,
 		Sequence:        int64(event.Sequence),
@@ -199,17 +218,18 @@ func (j *runJournal) completeModelAttempt(attempt ModelAttempt) {
 		slot.start = j.clock.Now()
 	}
 	record := ModelAttemptRecord{
-		ID:         fmt.Sprintf("%s-attempt-%d", j.runID, len(j.attempts)+1),
-		RunID:      j.runID,
-		ThreadID:   j.threadID,
-		Namespace:  j.scope.Namespace,
-		OwnerID:    j.scope.OwnerID,
-		Index:      len(j.attempts) + 1,
-		Provider:   attempt.Provider,
-		Model:      attempt.Model,
-		Status:     attempt.Status,
-		StartedAt:  slot.start,
-		FinishedAt: j.clock.Now(),
+		ID:          j.recordID("attempt", len(j.attempts)+1),
+		RunID:       j.runID,
+		ThreadID:    j.threadID,
+		ExecutionID: j.executionID,
+		Namespace:   j.scope.Namespace,
+		OwnerID:     j.scope.OwnerID,
+		Index:       len(j.attempts) + 1,
+		Provider:    attempt.Provider,
+		Model:       attempt.Model,
+		Status:      attempt.Status,
+		StartedAt:   slot.start,
+		FinishedAt:  j.clock.Now(),
 	}
 	if attempt.Error != nil {
 		record.ErrorKind, record.ErrorMessage = classifyRunError(attempt.Error)
@@ -220,7 +240,20 @@ func (j *runJournal) completeModelAttempt(attempt ModelAttempt) {
 // finishModelCall closes out one model call. Any attempt still open failed or
 // was cancelled without its observer completing (direct model calls land
 // here); on success the final attempt is the routed winner and receives the
-// response usage and finish reason.
+// response usage and finish reason. A failed or cancelled call retains the
+// usage, accounting, and finish reason the provider actually reported before
+// the failure — never fabricated, never resolved through cost lookups. The
+// single attempt whose response was being aggregated (the newest open slot,
+// or the routed attempt the observer completed at reader creation) receives
+// that metadata and the call's failed or cancelled outcome; no other attempt
+// is touched.
+//
+// Attribution: when routing is in use the observer completes every attempt as
+// the walk proceeds, so on failure the observed metadata belongs to the most
+// recently completed attempt (the one whose response the caller was
+// aggregating). When attempts are still open, only the most recent open slot
+// receives the metadata: an aggregate usage value cannot be split across
+// concurrent attempts.
 func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccounting, finishReason FinishReason, err error) {
 	if j == nil {
 		return
@@ -236,31 +269,78 @@ func (j *runJournal) finishModelCall(usage ModelUsage, accounting ModelAccountin
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status = ModelAttemptCancelled
 	}
+	observed := err != nil
 	end := j.clock.Now()
-	for _, slot := range j.open {
+	for i, slot := range j.open {
 		record := ModelAttemptRecord{
-			ID:         fmt.Sprintf("%s-attempt-%d", j.runID, len(j.attempts)+1),
-			RunID:      j.runID,
-			ThreadID:   j.threadID,
-			Namespace:  j.scope.Namespace,
-			OwnerID:    j.scope.OwnerID,
-			Index:      len(j.attempts) + 1,
-			Provider:   slot.provider,
-			Model:      slot.model,
-			Status:     status,
-			StartedAt:  slot.start,
-			FinishedAt: end,
+			ID:          j.recordID("attempt", len(j.attempts)+1),
+			RunID:       j.runID,
+			ThreadID:    j.threadID,
+			ExecutionID: j.executionID,
+			Namespace:   j.scope.Namespace,
+			OwnerID:     j.scope.OwnerID,
+			Index:       len(j.attempts) + 1,
+			Provider:    slot.provider,
+			Model:       slot.model,
+			Status:      status,
+			StartedAt:   slot.start,
+			FinishedAt:  end,
 		}
 		record.ErrorKind, record.ErrorMessage = classifyRunError(err)
+		if observed && i == len(j.open)-1 {
+			applyObservedAttemptMetadata(&record, usage, accounting, finishReason)
+		}
 		j.attempts = append(j.attempts, record)
 	}
 	j.open = nil
+	// Routed attempts completed through the observer before the failure was
+	// known (the winner opened its stream, or Generate returned a response
+	// that aggregation later rejected). The most recent attempt of THIS
+	// model call is the one whose response carried the observed metadata: it
+	// receives it, and its premature provider-level success is relabeled
+	// with the call's actual failed or cancelled outcome — its durable
+	// attempt-finished event is relabeled with it so events and attempts
+	// agree. A call that never started an attempt (routing failed before
+	// any attempt began) touches nothing.
+	if observed && len(j.open) == 0 && len(j.attempts) > j.sealedAttempts && j.attempts[len(j.attempts)-1].Status == ModelAttemptSuccess {
+		last := &j.attempts[len(j.attempts)-1]
+		last.Status = status
+		last.ErrorKind, last.ErrorMessage = classifyRunError(err)
+		applyObservedAttemptMetadata(last, usage, accounting, finishReason)
+		for i := len(j.events) - 1; i >= j.sealedEvents; i-- {
+			if j.events[i].Type != RunEventModelAttemptFinished || j.events[i].AttemptStatus != ModelAttemptSuccess {
+				continue
+			}
+			j.events[i].AttemptStatus = status
+			j.events[i].ErrorKind, j.events[i].ErrorMessage = classifyRunError(err)
+			break
+		}
+	}
 	if err == nil && len(j.attempts) > 0 {
 		winner := &j.attempts[len(j.attempts)-1]
 		winner.Usage = usage
 		winner.Accounting = accounting.Clone()
 		winner.ProviderRequestID = accounting.ProviderRequestID
 		winner.FinishReason = finishReason
+	}
+	j.sealedAttempts = len(j.attempts)
+	j.sealedEvents = len(j.events)
+}
+
+// applyObservedAttemptMetadata copies the metadata a failed or cancelled call
+// actually reported onto its attempt record. Zero token usage and zero
+// accounting stay unwritten so an unknown value is never converted into a
+// reported zero; accounting is cloned to keep the record independent.
+func applyObservedAttemptMetadata(record *ModelAttemptRecord, usage ModelUsage, accounting ModelAccounting, finishReason FinishReason) {
+	if usage != (ModelUsage{}) {
+		record.Usage = usage
+	}
+	if !accounting.IsZero() {
+		record.Accounting = accounting.Clone()
+		record.ProviderRequestID = accounting.ProviderRequestID
+	}
+	if finishReason != "" {
+		record.FinishReason = finishReason
 	}
 }
 
@@ -280,7 +360,7 @@ func (j *runJournal) costResolutionAttempt(usage ModelUsage, accounting ModelAcc
 		attempt.Metadata = nil
 		return attempt
 	}
-	attempt := ModelAttemptRecord{ID: fmt.Sprintf("%s-attempt-%d", j.runID, len(j.attempts)+1), RunID: j.runID, ThreadID: j.threadID, Namespace: j.scope.Namespace, OwnerID: j.scope.OwnerID, Index: len(j.attempts) + 1, Status: ModelAttemptSuccess, Usage: usage, Accounting: accounting.Clone(), ProviderRequestID: accounting.ProviderRequestID}
+	attempt := ModelAttemptRecord{ID: j.recordID("attempt", len(j.attempts)+1), RunID: j.runID, ThreadID: j.threadID, ExecutionID: j.executionID, Namespace: j.scope.Namespace, OwnerID: j.scope.OwnerID, Index: len(j.attempts) + 1, Status: ModelAttemptSuccess, Usage: usage, Accounting: accounting.Clone(), ProviderRequestID: accounting.ProviderRequestID}
 	if len(j.open) > 0 {
 		attempt.Provider, attempt.Model, attempt.StartedAt = j.open[0].provider, j.open[0].model, j.open[0].start
 	}
@@ -315,17 +395,18 @@ func (j *runJournal) toolStarted(step int, stepID StepID, call ModelToolCall) {
 	defer j.mu.Unlock()
 	j.toolSeq++
 	j.tools = append(j.tools, ToolExecutionRecord{
-		ID:         fmt.Sprintf("%s-tool-%d", j.runID, j.toolSeq),
-		RunID:      j.runID,
-		ThreadID:   j.threadID,
-		Namespace:  j.scope.Namespace,
-		OwnerID:    j.scope.OwnerID,
-		StepID:     stepID,
-		Step:       step,
-		ToolCallID: call.ID,
-		ToolID:     call.ToolID,
-		State:      ToolExecutionSucceeded,
-		StartedAt:  j.clock.Now(),
+		ID:          j.recordID("tool", j.toolSeq),
+		RunID:       j.runID,
+		ThreadID:    j.threadID,
+		ExecutionID: j.executionID,
+		Namespace:   j.scope.Namespace,
+		OwnerID:     j.scope.OwnerID,
+		StepID:      stepID,
+		Step:        step,
+		ToolCallID:  call.ID,
+		ToolID:      call.ToolID,
+		State:       ToolExecutionSucceeded,
+		StartedAt:   j.clock.Now(),
 	})
 }
 

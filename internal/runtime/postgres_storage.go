@@ -312,6 +312,16 @@ var postgresSchemaMigrations = []string{
 	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS accounting JSONB`,
 	`CREATE INDEX IF NOT EXISTS idx_model_attempts_model ON model_attempts(model)`,
 	`CREATE INDEX IF NOT EXISTS idx_model_attempts_started ON model_attempts(started_at)`,
+	// Versioned statements are appended here, immediately before the
+	// bootstrap schema_migrations element: Migrate resumes by array index
+	// from the recorded version, so inserting earlier would make existing
+	// databases skip the new statements.
+	`ALTER TABLE run_events ADD COLUMN IF NOT EXISTS execution_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE model_attempts ADD COLUMN IF NOT EXISTS execution_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE tool_executions ADD COLUMN IF NOT EXISTS execution_id TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_run_events_execution ON run_events(run_id, execution_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_model_attempts_execution ON model_attempts(run_id, execution_id)`,
+	`CREATE INDEX IF NOT EXISTS idx_tool_executions_execution ON tool_executions(run_id, execution_id)`,
 	`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()

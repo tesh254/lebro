@@ -993,8 +993,13 @@ type sseStreamReader struct {
 	accounting   lebro.ModelAccounting
 	pendingTools map[int]*streamToolBuilder
 	toolOrder    []int
-	pending      []lebro.StreamDelta
-	final        *lebro.StreamDelta
+	// toolCallsCompleted marks the accumulated builders as consumed. A
+	// provider that repeats the "tool_calls" finish reason — commonly a
+	// trailing usage chunk — must not emit the same calls twice; terminal
+	// and usage collection continue independently.
+	toolCallsCompleted bool
+	pending            []lebro.StreamDelta
+	final              *lebro.StreamDelta
 }
 
 // streamToolBuilder accumulates one streamed tool call from its wire
@@ -1168,6 +1173,12 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 		r.textBuf.WriteString(choice.Delta.Content)
 		r.pending = append(r.pending, lebro.StreamDelta{Text: choice.Delta.Content})
 	}
+	// A finish reason ends the generation: tool fragments arriving after the
+	// calls were completed cannot belong to a valid response and would
+	// otherwise be silently dropped. Surface them instead of swallowing.
+	if r.toolCallsCompleted && len(choice.Delta.ToolCalls) > 0 {
+		return lebro.StreamDelta{}, false, r.model.malformedResponse("lebro: tool call fragments arrived after streamed tool completion", nil)
+	}
 	r.accumulateToolFragments(choice.Delta.ToolCalls)
 	if choice.FinishReason == "" {
 		if len(r.pending) == 0 {
@@ -1178,11 +1189,17 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 		return delta, true, nil
 	}
 	finish := mapFinishReason(choice.FinishReason)
-	if finish == lebro.FinishReasonToolCalls {
+	if finish == lebro.FinishReasonToolCalls && !r.toolCallsCompleted {
 		calls, err := r.completeToolCalls()
 		if err != nil {
 			return lebro.StreamDelta{}, false, r.model.malformedResponse(err.Error(), nil)
 		}
+		// Consume the builders exactly once: the repeated finish chunks some
+		// providers emit while trailing usage arrives must not re-complete
+		// the same accumulated calls.
+		r.toolCallsCompleted = true
+		r.pendingTools = nil
+		r.toolOrder = nil
 		for i := range calls {
 			call := calls[i]
 			r.pending = append(r.pending, lebro.StreamDelta{ToolCall: &call})

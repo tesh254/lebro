@@ -361,3 +361,67 @@ func postgresDropAll(t *testing.T, dsn string) (func(), error) {
 	}
 	return func() { _ = store.Close() }, nil
 }
+
+// TestPostgresStoreUpgradeApendsExecutionIdentityColumns simulates a database
+// migrated by an older build: the recorded version predates the current
+// statements, so Migrate must resume at the appended statements — the
+// execution-identity columns and indexes exist only if new versioned
+// statements stay at the end of the migration list, past every statement an
+// existing database has already applied.
+func TestPostgresStoreUpgradeApendsExecutionIdentityColumns(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := newTestPostgresStore(t)
+	current := len(postgresSchemaMigrations) - 1
+
+	// Rewind the recorded version to the count before the execution-identity
+	// statements were appended and drop the columns they add.
+	prior := current - 6
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version > $1`, prior); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"run_events", "model_attempts", "tool_executions"} {
+		for _, index := range []string{"idx_" + table + "_execution"} {
+			if _, err := store.db.ExecContext(ctx, fmt.Sprintf("DROP INDEX IF EXISTS %s", index)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := store.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS execution_id", table)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate on rewound database: %v", err)
+	}
+	for _, table := range []string{"run_events", "model_attempts", "tool_executions"} {
+		columns, err := store.db.QueryContext(ctx, fmt.Sprintf("SELECT column_name FROM information_schema.columns WHERE table_name = '%s'", table))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for columns.Next() {
+			var name string
+			if err := columns.Scan(&name); err != nil {
+				t.Fatal(err)
+			}
+			if name == "execution_id" {
+				found = true
+			}
+		}
+		if err := columns.Err(); err != nil {
+			t.Fatal(err)
+		}
+		_ = columns.Close()
+		if !found {
+			t.Fatalf("%s: execution_id column missing after upgrade migration", table)
+		}
+	}
+	var version int
+	if err := store.db.QueryRowContext(ctx, `SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != current {
+		t.Fatalf("recorded version = %d, want %d", version, current)
+	}
+}

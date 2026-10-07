@@ -711,6 +711,16 @@ for _, attempt := range page.Records {
 }
 ```
 
+External queues that retry the same logical run set a fresh
+`lebro.RunInput.ExecutionID` per execution; each execution then persists its
+own attempt, event, and tool records under the logical run, while repeated
+persistence of one execution stays idempotent (empty keeps the single-format
+behavior). A failed model call keeps the usage, accounting, and finish reason
+the provider reported before the failure on its attempt record and failure
+event. To also capture the actual tool arguments and results, install an
+opt-in `AgentConfig.ToolObserver`; lifecycle events and diagnostics stay
+content-free without it.
+
 See [run records](docs/run-records.md) for the full contract and
 [`run-timeline`](examples/run-timeline) for a runnable walkthrough.
 

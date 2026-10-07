@@ -12,6 +12,25 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Retry-safe execution identity for durable diagnostics. `RunInput.ExecutionID`
+  distinguishes separate external executions of one logical run (queue retries,
+  for example): model attempts, run events, and tool executions embed the
+  value in their generated IDs and carry an `ExecutionID` field, so two
+  executions sharing one logical `RunID` persist distinct, queryable rows
+  while repeated persistence of one execution stays idempotent. Attempt
+  indices and event sequences stay scoped per execution, filters gained an
+  `ExecutionID` scope, and listings order deterministically across tied
+  sequences. Memory, SQLite, and Postgres persist records in this shape (additive
+  `execution_id` columns for the SQL stores); an empty value keeps the
+  single-execution format and behavior unchanged.
+
+- Opt-in tool-result capture. `AgentConfig.ToolObserver` receives a
+  `ToolExecutionObservation` for every tool invocation at the actual execution
+  boundary, synchronously and in execution order — including when a later
+  model step fails the run. Arguments and results are immutable snapshots;
+  delivery cannot re-execute a tool, observer panics are recovered,
+  and nil leaves the content-free lifecycle events and diagnostics unchanged.
+
 - Request-scoped MCP exposures can now register durable task entries:
   `RequestExposure` accepts `AsyncAgents` and `AsyncWorkflows`, each wrapping
   the synchronous adapter with `AsyncEntryOptions`. The per-request server
@@ -756,6 +775,31 @@ All notable changes to this project are documented in this file.
   `.gitignore` entry that matched any directory named `streaming` was removed.
 
 ### Fixed
+
+- OpenAI-compatible streaming no longer emits duplicated tool calls when a
+  provider repeats the `tool_calls` finish reason while trailing usage
+  arrives. The accumulated builders are completed exactly once, so each
+  intended call is emitted once with a single terminal, and the received
+  usage, accounting, and request identity survive — instead of the runtime
+  rejecting a duplicated call ID before any tool executed.
+
+- Stream aggregation failures now carry a typed cause. Duplicate or invalid
+  tool calls at the runtime aggregation boundary — native streaming and the
+  synthesized-delta path that wraps non-streaming models after processors —
+  surface as `ModelErrorMalformedResponse` discoverable through `errors.As`
+  despite the broad `AgentError` wrapper, with the original cause and the
+  partial response retained. Deliberately deterministic, so retry policy
+  treats them as non-retryable; transport, timeout, cancellation, and
+  processor classifications are unchanged.
+
+- Failed model calls retain the usage, accounting, and finish reason the
+  provider already reported. The durable failed attempt record and the
+  `model_finished` failure event keep the observed metadata (including the
+  provider request ID and a reported zero cost, which stays distinguishable
+  from an unknown cost) while preserving the failed or cancelled status.
+  Failures that received no metadata stay explicitly unknown, no cost is
+  resolved on the failure path, and earlier successful attempts are never
+  overwritten.
 
 - OpenAI adapters no longer report a canceled or timed-out request as an HTTP
   status error. When a request is canceled while the error body of a failed
