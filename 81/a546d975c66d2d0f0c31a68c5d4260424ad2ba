@@ -1,0 +1,19 @@
+internal/runtime/agent_stream_test.go
+  s_ad24d93deb8275::t_e0682a3ce1afde 1868-1870
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "81a546d975c66d2d0f0c31a68c5d4260424ad2ba",
+  "prompts": {},
+  "sessions": {
+    "s_ad24d93deb8275": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eea148b4bffeycQA9OoneEAwrp",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
