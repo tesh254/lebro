@@ -1,0 +1,25 @@
+internal/runtime/run_journal.go
+  s_ad24d93deb8275::t_268679e7fd50e0 294-296,298-301
+  s_ad24d93deb8275::t_1f974d199342f9 240-244
+internal/runtime/agent_stream_test.go
+  s_ad24d93deb8275::t_a343ea7769aed9 1747,1766-1770
+  s_ad24d93deb8275::t_9d6eb0dcc3243d 1712-1746,1748-1765,1771-1793
+internal/runtime/model_router.go
+  s_ad24d93deb8275::t_b626858e5bb1f6 368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "003d9be51a5980cc591e5c0999a73206a9f3d267",
+  "prompts": {},
+  "sessions": {
+    "s_ad24d93deb8275": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eea148b4bffeycQA9OoneEAwrp",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
