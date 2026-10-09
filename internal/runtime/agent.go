@@ -268,6 +268,12 @@ type AgentConfig struct {
 	// result and events. When nil, no authorization is applied and agent
 	// behavior is unchanged.
 	Policy Policy
+	// ToolApprovalPolicy optionally classifies one model-requested tool call as
+	// allowed, denied, or requiring durable human approval. A policy that can
+	// require approval needs a Store with workflow-state capability so the
+	// exact model request can survive a process restart before its handler
+	// starts. Nil preserves the existing immediate-execution behavior.
+	ToolApprovalPolicy ToolApprovalPolicy
 	// Processors are ordered, provider-neutral hooks around input, model calls,
 	// stream deltas, and terminal output. They operate independently of Policy.
 	Processors ProcessorPipeline
@@ -307,6 +313,7 @@ type Agent struct {
 	store                Store
 	storeCaps            StoreCapabilities
 	policy               Policy
+	toolApprovalPolicy   ToolApprovalPolicy
 	processors           ProcessorPipeline
 	instructionsResolver InstructionsResolver
 	modelResolver        ModelResolver
@@ -411,6 +418,11 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 			return nil, err
 		}
 	}
+	if config.ToolApprovalPolicy != nil && !isNilInterface(config.ToolApprovalPolicy) {
+		if err := requireCapability(storeCaps, StoreCapabilityWorkflowState, "durable tool approval"); err != nil {
+			return nil, err
+		}
+	}
 	compactor, err := newContextCompactor(config.ContextCompaction)
 	if err != nil {
 		return nil, err
@@ -432,6 +444,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		store:                store,
 		storeCaps:            storeCaps,
 		policy:               config.Policy,
+		toolApprovalPolicy:   config.ToolApprovalPolicy,
 		processors:           processors,
 		instructionsResolver: config.InstructionsResolver,
 		modelResolver:        config.ModelResolver,
@@ -468,6 +481,9 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: err}
 	}
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
+	if input.resumeEventSequence > 0 {
+		emitter.seq = input.resumeEventSequence
+	}
 	if err := ctx.Err(); err != nil {
 		runID := a.runID(input.RunID)
 		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
@@ -506,24 +522,28 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}()
 		emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
 	}
-	emitter.emit(runID, 0, "", RunEventStarted)
+	if !input.resumeSkipInputPhase {
+		emitter.emit(runID, 0, "", RunEventStarted)
+	}
 	metadata := cloneMetadata(input.Metadata)
-	var allAttempts []ModelAttempt
+	allAttempts := cloneModelAttempts(input.resumePriorAttempts)
 
 	if err := a.authorizeRun(runCtx); err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
 		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
 	}
-	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Memory: input.Memory.Clone(), Input: input}); err != nil {
-		if processorCancelled(err) {
-			emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
-			return a.cancelledWithAttempts(runID, nil, metadata, 0, err, nil)
+	if !input.resumeSkipInputPhase {
+		if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Memory: input.Memory.Clone(), Input: input}); err != nil {
+			if processorCancelled(err) {
+				emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+				return a.cancelledWithAttempts(runID, nil, metadata, 0, err, nil)
+			}
+			agentErr := processorAgentError(0, err)
+			emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
+			return a.fail(runID, input, 0, agentErr)
+		} else {
+			input = *decision.Input
 		}
-		agentErr := processorAgentError(0, err)
-		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
-		return a.fail(runID, input, 0, agentErr)
-	} else {
-		input = *decision.Input
 	}
 	metadata = cloneMetadata(input.Metadata)
 	runConfig, resolverErr := a.resolveRunConfig(runCtx, input)
@@ -561,7 +581,11 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return a.fail(runID, input, 0, err)
 	}
 
-	for step := 1; step <= a.maxSteps; step++ {
+	firstStep := 1
+	if input.resumeStartStep > firstStep {
+		firstStep = input.resumeStartStep
+	}
+	for step := firstStep; step <= a.maxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
 			emitter.terminal(runID, step, "", RunEventCancelled, RunStatusCancelled, err)
 			return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
@@ -684,12 +708,33 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 
 		toolCalls := response.Message.ToolCalls.Values()
-		for _, call := range toolCalls {
+		for callIndex, call := range toolCalls {
 			if err := runCtx.Err(); err != nil {
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
 				return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
 			}
 			emitter.emitToolRequested(runID, step, stepID, call.ID, call.ToolID)
+			resolution, approvalErr := a.evaluateToolApproval(runCtx, runID, executionID, step, stepID, input.ThreadID, call, metadata)
+			if approvalErr != nil {
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+			}
+			if resolution.Outcome == ToolApprovalDeny {
+				approvalErr := &ToolApprovalError{Kind: ToolApprovalErrorDenied, RequestID: fmt.Sprintf("%s:%d:%s:%s", runID, step, stepID, call.ID), Err: ErrToolApprovalDenied}
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+			}
+			if resolution.Outcome == ToolApprovalRequire {
+				request, persistErr := a.suspendAgentToolApproval(runCtx, input, runID, executionID, step, stepID, metadata, transcript, toolCalls, callIndex, allAttempts, loadedCount, emitter, resolution)
+				if persistErr != nil {
+					agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
+					emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+					return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+				}
+				return RunResult{ID: runID, Status: RunStatusSuspended, Messages: cloneMessages(transcript), Metadata: metadata, ModelAttempts: allAttempts, ToolApproval: &request}, nil
+			}
 
 			toolStart := emitter.emitToolStarted(runID, step, stepID, call.ID, call.ToolID)
 			journal.toolStarted(step, stepID, call)
@@ -961,6 +1006,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		annotations:      input.Annotations,
 		priorMessages:    input.priorMessages,
 		contextCompactor: compactor,
+		approvalInput:    input,
 	})
 
 	return run, nil
@@ -1005,6 +1051,7 @@ type streamRunParams struct {
 	annotations      Metadata
 	priorMessages    []MessageRecord
 	contextCompactor *contextCompactor
+	approvalInput    RunInput
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -1156,13 +1203,38 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		}
 
 		toolCalls := response.Message.ToolCalls.Values()
-		for _, call := range toolCalls {
+		for callIndex, call := range toolCalls {
 			if err := p.ctx.Err(); err != nil {
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
 				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
 				return
 			}
 			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
+			resolution, approvalErr := a.evaluateToolApproval(p.ctx, p.runID, p.executionID, step, stepID, p.threadID, call, p.metadata)
+			if approvalErr != nil {
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+				return
+			}
+			if resolution.Outcome == ToolApprovalDeny {
+				approvalErr := &ToolApprovalError{Kind: ToolApprovalErrorDenied, RequestID: fmt.Sprintf("%s:%d:%s:%s", p.runID, step, stepID, call.ID), Err: ErrToolApprovalDenied}
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+				return
+			}
+			if resolution.Outcome == ToolApprovalRequire {
+				request, persistErr := a.suspendAgentToolApproval(p.ctx, p.approvalInput, p.runID, p.executionID, step, stepID, p.metadata, transcript, toolCalls, callIndex, allAttempts, p.loadedCount, p.emitter, resolution)
+				if persistErr != nil {
+					agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
+					p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+					p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+					return
+				}
+				p.done <- streamOutcome{result: RunResult{ID: p.runID, Status: RunStatusSuspended, Messages: cloneMessages(transcript), Metadata: p.metadata, ModelAttempts: allAttempts, ToolApproval: &request}}
+				return
+			}
 			toolStart := p.emitter.emitToolStarted(p.runID, step, stepID, call.ID, call.ToolID)
 			p.journal.toolStarted(step, stepID, call)
 			observationStart := a.clock.Now()

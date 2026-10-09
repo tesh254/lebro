@@ -12,6 +12,18 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Durable agent tool approvals. `AgentConfig.ToolApprovalPolicy` can allow,
+  deny, or require human approval for each model-requested tool call. Required
+  calls suspend before the handler starts and persist an immutable
+  `ToolApprovalRequest` in the existing workflow-state contract, so Memory,
+  SQLite, Postgres, and compatible runtime stores can reload the exact tool ID
+  and canonical arguments after a restart. `PendingToolApproval` renders that
+  request; `ResumeToolApproval` accepts only its `RunID` and `RequestID`, then
+  executes the persisted input exactly once. Rejection, expiry, stale decisions,
+  and an action left uncertain after a crash are typed errors; uncertain actions
+  are deliberately never replayed. This is an additive public API requiring the
+  next minor release.
+
 - Retry-safe execution identity for durable diagnostics. `RunInput.ExecutionID`
   distinguishes separate external executions of one logical run (queue retries,
   for example): model attempts, run events, and tool executions embed the

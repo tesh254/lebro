@@ -144,6 +144,13 @@ type RunInput struct {
 	Memory         *MemoryProcessorConfig
 	memoryRecalled bool
 	priorMessages  []MessageRecord
+	// The remaining fields are internal continuation state populated only by
+	// ResumeToolApproval. They keep a resumed execution on the same logical
+	// run without exposing a client-controlled replay surface.
+	resumeStartStep      int
+	resumeEventSequence  int
+	resumePriorAttempts  []ModelAttempt
+	resumeSkipInputPhase bool
 }
 
 // ObservabilityScope is retained for source compatibility. It is the same
@@ -170,6 +177,9 @@ type RunResult struct {
 	Messages      []Message
 	Metadata      map[string]string
 	ModelAttempts []ModelAttempt
+	// ToolApproval is non-nil only when a configured ToolApprovalPolicy
+	// durably suspended the agent before a tool handler started.
+	ToolApproval *ToolApprovalRequest
 }
 
 // ModelAttempt records one provider invocation during a run. When routing and

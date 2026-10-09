@@ -61,6 +61,13 @@ a local schema-backed tool (no network or API key required):
 go run ./examples/agent-loop
 ```
 
+Run the durable tool-approval example (a protected tool call suspends before
+its handler starts, then resumes from the persisted reviewed arguments):
+
+```sh
+go run ./examples/tool-approval
+```
+
 Run the supervised delegation example, with deterministic specialist routing
 and a configured fallback (no network or API key required):
 
