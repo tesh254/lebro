@@ -560,6 +560,7 @@ const (
 	PricingDomainOpenAI                  = runtime.PricingDomainOpenAI
 	PricingDomainOpenAICompatible        = runtime.PricingDomainOpenAICompatible
 	PricingDomainAnthropic               = runtime.PricingDomainAnthropic
+	PricingDomainAnthropicCompatible     = runtime.PricingDomainAnthropicCompatible
 	PricingDomainGemini                  = runtime.PricingDomainGemini
 	PricingDomainVertexAI                = runtime.PricingDomainVertexAI
 	CostUnavailableProviderOmitted       = runtime.CostUnavailableProviderOmitted

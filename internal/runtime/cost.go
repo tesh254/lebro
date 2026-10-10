@@ -93,8 +93,12 @@ const (
 	PricingDomainOpenAI           PricingDomain = "openai_api"
 	PricingDomainOpenAICompatible PricingDomain = "openai_compatible"
 	PricingDomainAnthropic        PricingDomain = "anthropic_api"
-	PricingDomainGemini           PricingDomain = "gemini_developer_api"
-	PricingDomainVertexAI         PricingDomain = "vertex_ai"
+	// PricingDomainAnthropicCompatible is any non-Anthropic endpoint that
+	// speaks the Messages API. It has no bundled rates, so a gateway is never
+	// priced as the Anthropic API by accident.
+	PricingDomainAnthropicCompatible PricingDomain = "anthropic_compatible"
+	PricingDomainGemini              PricingDomain = "gemini_developer_api"
+	PricingDomainVertexAI            PricingDomain = "vertex_ai"
 )
 
 type CostUnavailableReason string

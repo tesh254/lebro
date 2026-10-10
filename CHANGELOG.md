@@ -12,6 +12,20 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Anthropic-compatible endpoints. `anthropic.Config` adds `AuthToken`
+  (Authorization Bearer, as OpenRouter and many gateways expect, as an
+  alternative to `APIKey`), `Headers`, `Timeout`, `MaxRetries`, `ProviderID`,
+  and `PricingDomain`. Provider identity and pricing domain default from the
+  `BaseURL` host: `anthropic_api` only for api.anthropic.com, `openrouter` for
+  openrouter.ai, and the new unpriced `PricingDomainAnthropicCompatible`
+  otherwise, so a gateway is never estimated at Anthropic list prices. Thinking
+  streamed without a signature is kept as display-only reasoning instead of
+  failing the stream, and is not replayed. Non-streaming requests the SDK
+  would refuse as too long now fail as invalid requests rather than
+  unavailable ones. Behavior change: the adapter no longer reads
+  `ANTHROPIC_BASE_URL` or other `ANTHROPIC_*` environment variables; pass
+  `BaseURL` explicitly.
+
 - Durable agent tool approvals. `AgentConfig.ToolApprovalPolicy` can allow,
   deny, or require human approval for each model-requested tool call. Required
   calls suspend before the handler starts and persist an immutable
