@@ -1,0 +1,56 @@
+CHANGELOG.md
+  s_a12185801d8231::t_2078a09452a2e8 21,23-26
+  s_a12185801d8231::t_c989d8f8548039 22
+internal/runtime/tool_approval_test.go
+  s_a12185801d8231::t_2078a09452a2e8 195-197,202-203,208-209
+  s_a12185801d8231::t_40c42af2c8baf0 479-604
+internal/runtime/tool_approval.go
+  s_a12185801d8231::t_517b9d8ff999a9 297-299
+  s_a12185801d8231::t_c5b44da2a4df80 657,686-688,713-720,760-763
+  s_a12185801d8231::t_83ae7027335d22 654-656
+internal/runtime/processor.go
+  s_a12185801d8231::t_aa225e9634729e 207-211
+httpapi/ai_sdk_stream.go
+  s_a12185801d8231::t_279373f312b641 121-125
+openai/adapter.go
+  s_a12185801d8231::t_395ab73f314412 1488-1491,1500-1508
+internal/runtime/agent_stream_test.go
+  s_a12185801d8231::t_40c42af2c8baf0 2021-2070
+httpapi/stream_test.go
+  s_a12185801d8231::t_fa729aed3eb920 247-304
+httpapi/ai_sdk_stream_test.go
+  s_a12185801d8231::t_75cc0874716d53 129-132,156-167
+examples/tool-approval/README.md
+  s_a12185801d8231::t_2078a09452a2e8 11-13
+openai/stream_test.go
+  s_a12185801d8231::t_fa729aed3eb920 246-282
+internal/runtime/agent.go
+  s_a12185801d8231::t_517b9d8ff999a9 275-277
+  s_a12185801d8231::t_b125fbe20c4efd 530,536,540,549,554,560,566,572,578,1906-1911
+anthropic/adapter_test.go
+  s_a12185801d8231::t_75cc0874716d53 108-109,112,115-116,131-134,137,140
+httpapi/redact.go
+  s_a12185801d8231::t_d83f23bd7e2ddd 19-25,32-34,39-53
+internal/runtime/processor_runtime.go
+  s_a12185801d8231::t_aa225e9634729e 118,146-160
+  s_a12185801d8231::t_3668c565eec2db 6
+httpapi/stream.go
+  s_a12185801d8231::t_279373f312b641 169-172,205-208,210
+  s_a12185801d8231::t_59d5b158e9b4a9 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "ba805407367520f62942968b6b6fda429bb609c6",
+  "prompts": {},
+  "sessions": {
+    "s_a12185801d8231": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b0539db-ef7f-4a8d-9e50-f8250e23ec40",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
