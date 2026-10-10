@@ -294,6 +294,9 @@ func (a *Agent) persistToolApproval(ctx context.Context, state toolApprovalSnaps
 	if a.store == nil || isNilInterface(a.store) {
 		return errors.New("lebro: durable tool approval requires a store")
 	}
+	if err := requireCapability(a.storeCaps, StoreCapabilityWorkflowState, "durable tool approval"); err != nil {
+		return err
+	}
 	state.Version = toolApprovalSnapshotVersion
 	state.State = toolApprovalPending
 	state.Transcript = cloneTranscript(state.Transcript)
@@ -648,6 +651,10 @@ func (a *Agent) resumeApprovedTool(ctx context.Context, state toolApprovalSnapsh
 	for i := state.CallIndex; i < len(state.Calls); i++ {
 		call := cloneToolCallValue(state.Calls[i])
 		if i > state.CallIndex {
+			if err := ctx.Err(); err != nil {
+				return a.cancelApprovalResume(ctx, emitter, journal, state, transcript, err)
+			}
+			emitter.emitToolRequested(state.Request.RunID, state.Request.Step, state.Request.StepID, call.ID, call.ToolID)
 			resolution, err := a.evaluateToolApproval(ctx, state.Request.RunID, executionID, state.Request.Step, state.Request.StepID, state.ThreadID, call, state.Metadata)
 			if err != nil {
 				return a.finishApprovalResume(ctx, emitter, journal, state, transcript, &AgentError{Kind: AgentErrorToolFailure, Step: state.Request.Step, Err: err})
@@ -656,7 +663,6 @@ func (a *Agent) resumeApprovedTool(ctx context.Context, state toolApprovalSnapsh
 				return a.finishApprovalResume(ctx, emitter, journal, state, transcript, &ToolApprovalError{Kind: ToolApprovalErrorDenied, RequestID: state.Request.ID, Err: ErrToolApprovalDenied})
 			}
 			if resolution.Outcome == ToolApprovalRequire {
-				emitter.emitToolRequested(state.Request.RunID, state.Request.Step, state.Request.StepID, call.ID, call.ToolID)
 				request := a.newToolApprovalRequest(state.Request.RunID, executionID, state.Request.Step, state.Request.StepID, state.ThreadID, call, resolution)
 				next := state
 				next.Request, next.Decision, next.Calls, next.CallIndex, next.Transcript, next.EventSequence = request, nil, cloneModelToolCalls(state.Calls), i, transcript, pendingToolApprovalSuspendSequence(emitter)
@@ -677,6 +683,9 @@ func (a *Agent) resumeApprovedTool(ctx context.Context, state toolApprovalSnapsh
 		journal.toolFinished(result)
 		a.deliverObservation(state.Request.RunID, executionID, state.Request.Step, state.Request.StepID, state.ThreadID, call, result, observationStart, observationEnd)
 		transcript = append(transcript, toolResultMessage(call.ID, result))
+		if result.State == ToolExecutionCancelled {
+			return a.cancelApprovalResume(ctx, emitter, journal, state, transcript, result.Err)
+		}
 		if result.State != ToolExecutionSucceeded {
 			return a.finishApprovalResume(ctx, emitter, journal, state, transcript, toolExecutionAgentError(state.Request.Step, result))
 		}
@@ -697,6 +706,14 @@ func (a *Agent) finishApprovalResume(ctx context.Context, emitter *runEmitter, j
 	emitter.terminal(state.Request.RunID, state.Request.Step, state.Request.StepID, RunEventFailed, RunStatusFailed, err)
 	journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
 	result := RunResult{ID: state.Request.RunID, Status: RunStatusFailed, Messages: cloneTranscript(transcript), Metadata: cloneMetadata(state.Metadata), ModelAttempts: cloneModelAttempts(state.ModelAttempts)}
+	a.persistApprovalRunTerminal(state, result, err)
+	return result, err
+}
+
+func (a *Agent) cancelApprovalResume(ctx context.Context, emitter *runEmitter, journal *runJournal, state toolApprovalSnapshot, transcript []Message, cause error) (RunResult, error) {
+	emitter.terminal(state.Request.RunID, state.Request.Step, state.Request.StepID, RunEventCancelled, RunStatusCancelled, cause)
+	journal.flushDiagnostics(context.WithoutCancel(ctx), a.store)
+	result, err := a.cancelledWithAttempts(state.Request.RunID, transcript, cloneMetadata(state.Metadata), state.Request.Step, cause, cloneModelAttempts(state.ModelAttempts))
 	a.persistApprovalRunTerminal(state, result, err)
 	return result, err
 }
@@ -740,7 +757,10 @@ func (a *Agent) persistApprovalRunTerminal(state toolApprovalSnapshot, result Ru
 	}
 	now := a.clock.Now().UTC()
 	failure := (*WorkflowFailureData)(nil)
-	if runErr != nil {
+	switch {
+	case result.Status == RunStatusCancelled:
+		failure = &WorkflowFailureData{Kind: WorkflowErrorCancelled, Step: state.Request.Step, StepID: state.Request.StepID, Message: "agent tool approval continuation cancelled"}
+	case runErr != nil:
 		failure = &WorkflowFailureData{Kind: WorkflowErrorStepFailed, Step: state.Request.Step, StepID: state.Request.StepID, Message: "agent tool approval continuation failed"}
 	}
 	_ = a.store.WorkflowRuns().SaveWorkflowRun(context.Background(), WorkflowRunRecord{

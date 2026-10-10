@@ -18,10 +18,12 @@ All notable changes to this project are documented in this file.
   `ToolApprovalRequest` in the existing workflow-state contract, so Memory,
   SQLite, Postgres, and compatible runtime stores can reload the exact tool ID
   and canonical arguments after a restart. `PendingToolApproval` renders that
-  request; `ResumeToolApproval` accepts only its `RunID` and `RequestID`, then
-  executes the persisted input exactly once. Rejection, expiry, stale decisions,
-  and an action left uncertain after a crash are typed errors; uncertain actions
-  are deliberately never replayed. This is an additive public API requiring the
+  request; `ResumeToolApproval` takes a `ToolApprovalDecision` (approval,
+  decider, reason, and decision time) bound to that request's `RunID` and
+  `ID`, so a decision cannot replace the persisted tool input. An approved call
+  executes at most once: rejection, expiry, stale decisions, and an action left
+  uncertain after a crash are typed errors, and uncertain actions are
+  deliberately never replayed. This is an additive public API requiring the
   next minor release.
 
 - Retry-safe execution identity for durable diagnostics. `RunInput.ExecutionID`

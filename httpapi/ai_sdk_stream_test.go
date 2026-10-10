@@ -126,6 +126,10 @@ func TestAISDKStreamsCanonicalContentPartsInOrder(t *testing.T) {
 					Text:      "answer",
 					Reasoning: lebro.ModelReasoning{Text: "first second"},
 				},
+				{
+					Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, ReasoningDetails: lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque"}]`))}},
+					Reasoning: lebro.ModelReasoning{Details: lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque"}]`))},
+				},
 				{FinishReason: lebro.FinishReasonStop},
 			}}
 			server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
@@ -148,6 +152,19 @@ func TestAISDKStreamsCanonicalContentPartsInOrder(t *testing.T) {
 			firstAt, textAt, secondAt := strings.Index(body, first), strings.Index(body, text), strings.Index(body, second)
 			if firstAt < 0 || textAt < firstAt || secondAt < textAt {
 				t.Fatalf("canonical part order missing from stream: %s", body)
+			}
+			// Parts are canonical: each must stream exactly once, and neither
+			// the aggregate compatibility projection nor an empty frame for
+			// the details-only part may appear beside them.
+			for _, frame := range []string{first, text, second} {
+				if count := strings.Count(body, frame); count != 1 {
+					t.Fatalf("frame %s appears %d times: %s", frame, count, body)
+				}
+			}
+			for _, unwanted := range []string{"first second", `"reasoning":""`, `"data":""`} {
+				if strings.Contains(body, unwanted) {
+					t.Fatalf("stream contains %s: %s", unwanted, body)
+				}
 			}
 		})
 	}

@@ -204,6 +204,11 @@ func (r ProcessorModelResponseResult) Clone() ProcessorModelResponseResult {
 }
 
 // StreamDeltaProcessor handles each delta from a streaming model request.
+// When a delta carries ordered Parts, a transform should rewrite Parts
+// alongside Text and Reasoning. A transform that changes only the Text or
+// Reasoning projection and returns Parts unchanged is treated as written
+// before Parts existed: the runtime drops the stale Parts so the rewritten
+// projection, not the original content, reaches the stream and transcript.
 type StreamDeltaProcessor interface {
 	Processor
 	ProcessStreamDelta(context.Context, ProcessorStreamDeltaRequest) (ProcessorStreamDeltaResult, error)

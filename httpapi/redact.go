@@ -16,25 +16,41 @@ import "github.com/tesh254/lebro"
 type Redactor func(lebro.StreamDelta) lebro.StreamDelta
 
 // redactStreamDelta preserves the privacy posture of redactors written before
-// ordered parts existed. Clearing a legacy text or reasoning projection also
-// clears the corresponding canonical parts. A redactor that rewrites content
-// rather than removing it must rewrite Parts explicitly, because one legacy
-// string can represent several ordered parts.
+// ordered parts existed. Clearing a legacy text projection also clears the
+// canonical text parts, and clearing reasoning text or reasoning details
+// clears the same field on the canonical reasoning parts, independently, so a
+// redactor that keeps opaque replay details still removes displayable
+// reasoning. A redactor that rewrites content rather than removing it must
+// rewrite Parts explicitly, because one legacy string can represent several
+// ordered parts.
 func redactStreamDelta(redactor Redactor, delta lebro.StreamDelta) lebro.StreamDelta {
 	redacted := redactor(delta)
 	if len(delta.Parts) == 0 || len(redacted.Parts) == 0 {
 		return redacted
 	}
 	removeText := delta.Text != "" && redacted.Text == ""
-	removeReasoning := !delta.Reasoning.IsZero() && redacted.Reasoning.IsZero()
-	if !removeText && !removeReasoning {
+	removeReasoningText := delta.Reasoning.Text != "" && redacted.Reasoning.Text == ""
+	removeReasoningDetails := delta.Reasoning.Details != "" && redacted.Reasoning.Details == ""
+	if !removeText && !removeReasoningText && !removeReasoningDetails {
 		return redacted
 	}
 	parts := make([]lebro.StreamContentPart, 0, len(redacted.Parts))
 	for _, part := range redacted.Parts {
-		if (part.Kind == lebro.StreamContentPartText && removeText) ||
-			(part.Kind == lebro.StreamContentPartReasoning && removeReasoning) {
-			continue
+		switch part.Kind {
+		case lebro.StreamContentPartText:
+			if removeText {
+				continue
+			}
+		case lebro.StreamContentPartReasoning:
+			if removeReasoningText {
+				part.Text = ""
+			}
+			if removeReasoningDetails {
+				part.ReasoningDetails = ""
+			}
+			if part.Text == "" && part.ReasoningDetails == "" {
+				continue
+			}
 		}
 		parts = append(parts, part)
 	}

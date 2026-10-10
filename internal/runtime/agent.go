@@ -272,7 +272,9 @@ type AgentConfig struct {
 	// allowed, denied, or requiring durable human approval. A policy that can
 	// require approval needs a Store with workflow-state capability so the
 	// exact model request can survive a process restart before its handler
-	// starts. Nil preserves the existing immediate-execution behavior.
+	// starts; the capability is checked when a call actually suspends, so
+	// policies that only allow or deny run without durable storage. Nil
+	// preserves the existing immediate-execution behavior.
 	ToolApprovalPolicy ToolApprovalPolicy
 	// Processors are ordered, provider-neutral hooks around input, model calls,
 	// stream deltas, and terminal output. They operate independently of Policy.
@@ -418,11 +420,6 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 			return nil, err
 		}
 	}
-	if config.ToolApprovalPolicy != nil && !isNilInterface(config.ToolApprovalPolicy) {
-		if err := requireCapability(storeCaps, StoreCapabilityWorkflowState, "durable tool approval"); err != nil {
-			return nil, err
-		}
-	}
 	compactor, err := newContextCompactor(config.ContextCompaction)
 	if err != nil {
 		return nil, err
@@ -530,17 +527,17 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 
 	if err := a.authorizeRun(runCtx); err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
+		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, allAttempts), err
 	}
 	if !input.resumeSkipInputPhase {
 		if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Memory: input.Memory.Clone(), Input: input}); err != nil {
 			if processorCancelled(err) {
 				emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
-				return a.cancelledWithAttempts(runID, nil, metadata, 0, err, nil)
+				return a.cancelledWithAttempts(runID, nil, metadata, 0, err, allAttempts)
 			}
 			agentErr := processorAgentError(0, err)
 			emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
-			return a.fail(runID, input, 0, agentErr)
+			return a.failWithPriorAttempts(runID, input, agentErr, allAttempts)
 		} else {
 			input = *decision.Input
 		}
@@ -549,36 +546,36 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 	runConfig, resolverErr := a.resolveRunConfig(runCtx, input)
 	if resolverErr != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, resolverErr)
-		return a.fail(runID, input, 0, resolverErr)
+		return a.failWithPriorAttempts(runID, input, resolverErr, allAttempts)
 	}
 	compactor, compactErr := a.contextCompactor.forRun(runConfig.modelForSummary(), runConfig.modelName)
 	if compactErr != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, compactErr)
-		return a.fail(runID, input, 0, compactErr)
+		return a.failWithPriorAttempts(runID, input, compactErr, allAttempts)
 	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	transcript, err := a.buildInitialTranscript(input, runConfig.instructions)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	toolDefinitions, err := a.resolveToolDefinitions()
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	outputSchema, compiledOutput, err := a.resolveOutputSchema(input)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	firstStep := 1
@@ -1904,6 +1901,14 @@ func (a *Agent) fail(runID RunID, input RunInput, step int, err error) (RunResul
 		Messages: cloneMessages(input.Messages),
 		Metadata: cloneMetadata(input.Metadata),
 	}, err
+}
+
+// failWithPriorAttempts fails a run during setup while preserving any model
+// attempts carried in from before a durable suspension.
+func (a *Agent) failWithPriorAttempts(runID RunID, input RunInput, err error, attempts []ModelAttempt) (RunResult, error) {
+	result, err := a.fail(runID, input, 0, err)
+	result.ModelAttempts = attempts
+	return result, err
 }
 
 func (a *Agent) failWithAttemptsResult(runID RunID, metadata map[string]string, step int, messages []Message, agentErr *AgentError, attempts []ModelAttempt) RunResult {

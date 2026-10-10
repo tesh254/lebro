@@ -244,6 +244,64 @@ func TestLegacyRedactorStillRemovesCanonicalReasoningParts(t *testing.T) {
 	}
 }
 
+func TestLegacyRedactorKeepingReasoningDetailsRemovesReasoningText(t *testing.T) {
+	details := lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque"}]`))
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{
+			Parts: []lebro.StreamContentPart{
+				{Kind: lebro.StreamContentPartReasoning, Text: "private", ReasoningDetails: details},
+				{Kind: lebro.StreamContentPartText, Text: "answer"},
+			},
+			Text:      "answer",
+			Reasoning: lebro.ModelReasoning{Text: "private", Details: details},
+		},
+		{FinishReason: lebro.FinishReasonStop},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{Redactor: func(delta lebro.StreamDelta) lebro.StreamDelta {
+		delta.Reasoning.Text = ""
+		return delta
+	}})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	if strings.Contains(recorder.Body.String(), "private") {
+		t.Fatalf("redactor that kept replay details leaked reasoning text: %s", recorder.Body.String())
+	}
+	events := readSSE(t, recorder.Body)
+	if len(events) < 2 || len(events[0].data.Parts) != 1 || events[0].data.Parts[0].Kind != lebro.StreamContentPartText {
+		t.Fatalf("redacted events = %#v", events)
+	}
+}
+
+func TestStreamSkipsDetailsOnlyReasoningParts(t *testing.T) {
+	details := lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque"}]`))
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{Parts: []lebro.StreamContentPart{{Kind: lebro.StreamContentPartText, Text: "answer"}}, Text: "answer"},
+		{Parts: []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, ReasoningDetails: details}}, Reasoning: lebro.ModelReasoning{Details: details}},
+		{FinishReason: lebro.FinishReasonStop},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	events := readSSE(t, recorder.Body)
+	var deltas int
+	for _, event := range events {
+		if event.name != "model_delta" {
+			continue
+		}
+		deltas++
+		for _, part := range event.data.Parts {
+			if part.Text == "" {
+				t.Fatalf("model_delta carries an empty part: %#v", event.data)
+			}
+		}
+	}
+	if deltas != 2 {
+		t.Fatalf("model_delta events = %d, want the text delta and the finish delta: %#v", deltas, events)
+	}
+}
+
 // A failing run must still terminate the stream with a typed error rather than
 // dropping the connection, so a client can distinguish failure from a network
 // fault.

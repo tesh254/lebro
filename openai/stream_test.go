@@ -243,6 +243,50 @@ func TestModelStreamPreservesOrderedContentParts(t *testing.T) {
 	}
 }
 
+func TestModelStreamIgnoresNullReasoningMemberWhenOrderingParts(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// A null reasoning_details member precedes the content; the reasoning
+		// text that actually follows the content must stay after it.
+		_, _ = io.WriteString(w, "data: "+`{"id":"chatcmpl-null","choices":[{"index":0,"delta":{"reasoning_details":null,"content":"answer","reasoning":"after"},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	t.Cleanup(server.Close)
+
+	model := newAdapter(t, server, Config{APIKey: "test-key", Model: "gpt-4o"})
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	var parts []lebro.StreamContentPart
+	for {
+		delta, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts = append(parts, delta.Parts...)
+	}
+	want := []lebro.StreamContentPart{
+		{Kind: lebro.StreamContentPartText, Text: "answer"},
+		{Kind: lebro.StreamContentPartReasoning, Text: "after"},
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("parts = %#v, want %#v", parts, want)
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Fatalf("part %d = %#v, want %#v", i, parts[i], want[i])
+		}
+	}
+}
+
 // streamToolCallFixture events model the canonical fragmented streamed tool
 // call: fragment one carries id and name; fragments two and three append
 // argument JSON across separate SSE events, as OpenAI-compatible providers do.

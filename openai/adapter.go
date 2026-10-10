@@ -1485,13 +1485,27 @@ func (d *chatStreamDelta) UnmarshalJSON(data []byte) error {
 				seenText = true
 			}
 		case "reasoning", "reasoning_details":
-			if (d.ReasoningText != "" || len(d.ReasoningDetails) > 0) && !seenReasoning {
+			// Position reasoning at the first member that itself carries
+			// data; a null or empty member must not claim the slot for a
+			// later sibling that follows the text.
+			if chatStreamReasoningMemberHasData(key, value) && !seenReasoning {
 				d.contentOrder = append(d.contentOrder, chatStreamContentReasoning)
 				seenReasoning = true
 			}
 		}
 	}
 	return nil
+}
+
+// chatStreamReasoningMemberHasData mirrors how chatMessageReasoning reads each
+// member: reasoning text counts when non-empty, and reasoning details count
+// whenever present and not null.
+func chatStreamReasoningMemberHasData(key string, value json.RawMessage) bool {
+	if key == "reasoning_details" {
+		return len(value) > 0 && string(value) != "null"
+	}
+	var text string
+	return json.Unmarshal(value, &text) == nil && text != ""
 }
 
 func (d chatStreamDelta) orderedContentParts() ([]lebro.StreamContentPart, string, lebro.ModelReasoning, error) {

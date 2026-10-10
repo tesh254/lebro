@@ -192,19 +192,21 @@ func TestAgentToolApprovalConcurrentDecisionExecutesExactlyOnce(t *testing.T) {
 	wait.Wait()
 	close(errs)
 
-	var succeeded, stale int
+	// The losing decision either fails the pending-state transition (stale) or
+	// observes the winner's executing marker (uncertain); both reject it.
+	var succeeded, rejected int
 	for err := range errs {
 		switch {
 		case err == nil:
 			succeeded++
-		case errors.Is(err, ErrToolApprovalStale):
-			stale++
+		case errors.Is(err, ErrToolApprovalStale), errors.Is(err, ErrToolApprovalUncertain):
+			rejected++
 		default:
 			t.Fatalf("concurrent decision error = %v", err)
 		}
 	}
-	if succeeded != 1 || stale != 1 || calls.Load() != 1 {
-		t.Fatalf("succeeded = %d, stale = %d, handler calls = %d", succeeded, stale, calls.Load())
+	if succeeded != 1 || rejected != 1 || calls.Load() != 1 {
+		t.Fatalf("succeeded = %d, rejected = %d, handler calls = %d", succeeded, rejected, calls.Load())
 	}
 }
 
@@ -472,5 +474,131 @@ func TestAgentRunStreamToolApprovalSuspendsBeforeHandler(t *testing.T) {
 	result, err := run.Wait()
 	if err != nil || result.Status != RunStatusSuspended || result.ToolApproval == nil || calls.Load() != 0 {
 		t.Fatalf("result = %#v, calls = %d, err = %v", result, calls.Load(), err)
+	}
+}
+
+func TestAgentToolApprovalAllowDenyPolicyNeedsNoStore(t *testing.T) {
+	ctx := context.Background()
+	registry, _ := newAgentTestRegistry(t)
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "allow-only", Tools: []ToolID{"lookup"}},
+		Model:      newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-allow", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}), textResponse("done")),
+		Tools:      registry,
+		ToolApprovalPolicy: ToolApprovalPolicyFunc(func(context.Context, ToolApprovalInvocation) (ToolApprovalResolution, error) {
+			return ToolApprovalResolution{Outcome: ToolApprovalAllow}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("allow-only policy without a store: %v", err)
+	}
+	result, err := agent.Run(ctx, RunInput{Messages: []Message{{Role: RoleUser, Content: "look"}}})
+	if err != nil || result.Status != RunStatusSucceeded {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+
+	registry, handler := newAgentTestRegistry(t)
+	var calls atomic.Int32
+	handler.execute = func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		calls.Add(1)
+		return json.RawMessage(`{}`), nil
+	}
+	requiring, err := NewAgent(AgentConfig{
+		Definition:         AgentDefinition{ID: "require-no-store", Tools: []ToolID{"lookup"}},
+		Model:              newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-require", ToolID: "lookup", Arguments: json.RawMessage(`{}`)})),
+		Tools:              registry,
+		ToolApprovalPolicy: ToolApprovalPolicyFunc(approvalPolicyRequire),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err = requiring.Run(ctx, RunInput{Messages: []Message{{Role: RoleUser, Content: "write"}}})
+	if err == nil || result.Status != RunStatusFailed || calls.Load() != 0 {
+		t.Fatalf("require without store: result = %#v, err = %v, handler calls = %d", result, err, calls.Load())
+	}
+}
+
+func TestAgentToolApprovalResumeEmitsRequestedForEveryLaterCall(t *testing.T) {
+	ctx := context.Background()
+	registry, _ := newAgentTestRegistry(t)
+	toolCalls, err := NewModelToolCalls(
+		ModelToolCall{ID: "call-protected", ToolID: "lookup", Arguments: json.RawMessage(`{"n":1}`)},
+		ModelToolCall{ID: "call-allowed", ToolID: "lookup", Arguments: json.RawMessage(`{"n":2}`)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "later-allowed", Tools: []ToolID{"lookup"}},
+		Model: newScriptedModel(
+			scriptedResponse{response: ModelResponse{Message: Message{Role: RoleAssistant, ToolCalls: toolCalls}, FinishReason: FinishReasonToolCalls}},
+			textResponse("done"),
+		),
+		Tools:    registry,
+		Store:    NewMemoryStore(),
+		Listener: recorder,
+		ToolApprovalPolicy: ToolApprovalPolicyFunc(func(_ context.Context, invocation ToolApprovalInvocation) (ToolApprovalResolution, error) {
+			if invocation.ToolCallID == "call-protected" {
+				return ToolApprovalResolution{Outcome: ToolApprovalRequire}, nil
+			}
+			return ToolApprovalResolution{Outcome: ToolApprovalAllow}, nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := agent.Run(ctx, RunInput{RunID: "later-allowed-run", Messages: []Message{{Role: RoleUser, Content: "write"}}})
+	if err != nil || suspended.ToolApproval == nil {
+		t.Fatalf("suspended = %#v, err = %v", suspended, err)
+	}
+	final, err := agent.ResumeToolApproval(ctx, ToolApprovalDecision{RunID: suspended.ID, RequestID: suspended.ToolApproval.ID, Approved: true, DecidedAt: time.Now().UTC()})
+	if err != nil || final.Status != RunStatusSucceeded {
+		t.Fatalf("final = %#v, err = %v", final, err)
+	}
+	requested := map[string]int{}
+	for _, event := range recorder.Events() {
+		if event.Type == RunEventToolRequested {
+			requested[event.ToolCallID]++
+		}
+	}
+	if requested["call-protected"] != 1 || requested["call-allowed"] != 1 {
+		t.Fatalf("tool_requested events by call = %#v", requested)
+	}
+}
+
+func TestAgentToolApprovalResumeCancellationIsCancelled(t *testing.T) {
+	store := NewMemoryStore()
+	registry, handler := newAgentTestRegistry(t)
+	resumeCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler.execute = func(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	agent, err := NewAgent(AgentConfig{
+		Definition:         AgentDefinition{ID: "cancelled-approval", Tools: []ToolID{"lookup"}},
+		Model:              newScriptedModel(toolCallResponse(ModelToolCall{ID: "call-cancel", ToolID: "lookup", Arguments: json.RawMessage(`{}`)})),
+		Tools:              registry,
+		Store:              store,
+		ToolApprovalPolicy: ToolApprovalPolicyFunc(approvalPolicyRequire),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := agent.Run(context.Background(), RunInput{RunID: "cancelled-approval-run", Messages: []Message{{Role: RoleUser, Content: "write"}}})
+	if err != nil || suspended.ToolApproval == nil {
+		t.Fatalf("suspended = %#v, err = %v", suspended, err)
+	}
+	result, err := agent.ResumeToolApproval(resumeCtx, ToolApprovalDecision{RunID: suspended.ID, RequestID: suspended.ToolApproval.ID, Approved: true, DecidedAt: time.Now().UTC()})
+	if result.Status != RunStatusCancelled || !errors.Is(err, ErrAgentCancelled) {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+	record, err := store.WorkflowRuns().GetWorkflowRun(context.Background(), suspended.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != RunStatusCancelled || record.Failure == nil || record.Failure.Kind != WorkflowErrorCancelled {
+		t.Fatalf("persisted run = %#v", record)
 	}
 }

@@ -118,6 +118,11 @@ func (w *aiSDKStreamWriter) start() bool {
 func (w *aiSDKStreamWriter) delta(delta lebro.StreamDelta) bool {
 	if len(delta.Parts) > 0 {
 		for _, part := range delta.Parts {
+			// Details-only reasoning parts carry opaque replay state with no
+			// displayable text; emitting them would send empty frames.
+			if part.Text == "" {
+				continue
+			}
 			switch part.Kind {
 			case lebro.StreamContentPartText:
 				if !w.text(part.Text) {

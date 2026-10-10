@@ -2018,3 +2018,53 @@ func TestAgentRoutingFailureAfterSuccessNeverRelabelsEarlierAttempts(t *testing.
 		}
 	}
 }
+
+func TestAgentRunStreamProjectionOnlyProcessorTransformWinsOverParts(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel([]StreamDelta{
+		{
+			Parts: []StreamContentPart{{Kind: StreamContentPartText, Text: "secret"}},
+			Text:  "secret",
+		},
+		{FinishReason: FinishReasonStop},
+	})
+	// This processor predates Parts: it rewrites only the Text projection.
+	pipeline, err := NewProcessorPipeline(runtimeProcessor{name: "legacy-redactor", delta: func(request ProcessorStreamDeltaRequest) ProcessorStreamDeltaResult {
+		delta := request.Delta
+		if delta.Text != "" {
+			delta.Text = "[redacted]"
+		}
+		return ProcessorStreamDeltaResult{Decision: ProcessorDecision{Kind: ProcessorTransform}, Delta: delta}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "projection-transform", Model: "fixture-model"},
+		Model:      model,
+		Processors: pipeline,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "solve"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for delta := range run.Deltas {
+		for _, part := range delta.Parts {
+			if part.Text == "secret" {
+				t.Fatalf("streamed delta kept the replaced part: %#v", delta)
+			}
+		}
+	}
+	result, err := run.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Messages[len(result.Messages)-1].Content; got != "[redacted]" {
+		t.Fatalf("assistant content = %q, want the transformed projection", got)
+	}
+}

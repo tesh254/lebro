@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"slices"
 )
 
 // ProcessorContext is internal execution state used to dispatch the stable
@@ -114,7 +115,7 @@ func (a *Agent) processOne(ctx context.Context, processor Processor, run Process
 		}
 		out = out.Clone()
 		if out.Decision.Kind == ProcessorTransform {
-			value.Delta = out.Delta
+			value.Delta = reconcileStreamDeltaParts(value.Delta, out.Delta)
 		}
 		return out.Decision, value, true, nil
 	case ProcessorPhaseOutput:
@@ -141,4 +142,20 @@ func processorAgentError(step int, err error) *AgentError {
 
 func processorCancelled(err error) bool {
 	return errors.Is(err, ErrProcessorCancelled) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// reconcileStreamDeltaParts keeps a projection-only transform authoritative.
+// Parts are canonical, so leaving the original Parts beside a rewritten Text
+// or Reasoning would stream and persist the content the transform replaced.
+// One projection string can span several ordered parts, so the stale Parts are
+// dropped rather than guessed at; the delta then falls back to its projection.
+func reconcileStreamDeltaParts(before, after StreamDelta) StreamDelta {
+	if len(after.Parts) == 0 || !slices.Equal(before.Parts, after.Parts) {
+		return after
+	}
+	if after.Text == before.Text && after.Reasoning == before.Reasoning {
+		return after
+	}
+	after.Parts = nil
+	return after
 }
