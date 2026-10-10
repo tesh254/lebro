@@ -1,0 +1,36 @@
+anthropic/adapter.go
+  s_a12185801d8231::t_f9fd86a13eaec8 23-26
+  s_a12185801d8231::t_70f53532b17bf3 171-181,198,387-393,457,478,481,498,501,513,521,523,556-558,586,599,635,644-646,656-657
+  s_a12185801d8231::t_19e35aca61bc70 12,15,29-34,36-51,53-70,75-80,86-91,93,95-96,98-100,102-107,116-161,163
+CHANGELOG.md
+  s_a12185801d8231::t_5455fb70c14657 15-28
+anthropic/doc.go
+  s_a12185801d8231::t_5455fb70c14657 4-8,14-15
+README.md
+  s_a12185801d8231::t_5455fb70c14657 432-434,442-477
+internal/runtime/cost.go
+  s_a12185801d8231::t_f9fd86a13eaec8 96-101
+anthropic/compatible_test.go
+  s_a12185801d8231::t_fd11f296f70918 1-11,13-188,190-253
+  s_a12185801d8231::t_095095fb373867 12,189
+api_types.go
+  s_a12185801d8231::t_f9fd86a13eaec8 563
+docs/run-records.md
+  s_a12185801d8231::t_5455fb70c14657 221-222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "44d7613a4c92a65a86f6c18c99af66662de3afff",
+  "prompts": {},
+  "sessions": {
+    "s_a12185801d8231": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b0539db-ef7f-4a8d-9e50-f8250e23ec40",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
