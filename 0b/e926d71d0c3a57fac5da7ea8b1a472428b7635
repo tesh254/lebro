@@ -1,0 +1,68 @@
+api_types.go
+  s_07eba7bc13ad21::t_c4b4f473aa4776 107-108,358-359
+httpapi/stream_test.go
+  s_07eba7bc13ad21::t_43aff02c898df0 179-218
+  s_07eba7bc13ad21::t_a6bd5f479fa6f6 219-246
+httpapi/schemas.go
+  s_07eba7bc13ad21::t_cd4aa56c69c502 259
+internal/geminiapi/adapter_test.go
+  s_07eba7bc13ad21::t_24cc2c8cd81af5 55-91
+internal/geminiapi/adapter.go
+  s_07eba7bc13ad21::t_f462b71c16cd44 522-526,533-536
+openai/adapter.go
+  s_07eba7bc13ad21::t_2a110c98e0f0e3 1169-1171,1173-1175,1441-1526
+internal/runtime/run_record_test.go
+  s_07eba7bc13ad21::t_ed16066db83200 71-73,77,83-84
+httpapi/ai_sdk_stream.go
+  s_07eba7bc13ad21::t_4e831517d80c06 133-138
+  s_07eba7bc13ad21::t_a6bd5f479fa6f6 76
+  s_07eba7bc13ad21::t_cd4aa56c69c502 119-132
+internal/runtime/agent_stream_test.go
+  s_07eba7bc13ad21::t_870243294a15c9 368-370
+  s_07eba7bc13ad21::t_5f5bb5535ea226 839-867
+  s_07eba7bc13ad21::t_3e50ae5e52455b 279-367,371-393
+openai/stream_test.go
+  s_07eba7bc13ad21::t_43aff02c898df0 192-245
+httpapi/redact.go
+  s_07eba7bc13ad21::t_cd4aa56c69c502 60-68
+  s_07eba7bc13ad21::t_a6bd5f479fa6f6 18-44
+  s_07eba7bc13ad21::t_8fe5fff780da99 11-13
+internal/runtime/processor.go
+  s_07eba7bc13ad21::t_c4b4f473aa4776 220
+internal/runtime/model.go
+  s_07eba7bc13ad21::t_c4b4f473aa4776 114-138,143-165,399-402,423,426-429
+  s_07eba7bc13ad21::t_088feec34ed5aa 139-142
+internal/runtime/run_record.go
+  s_07eba7bc13ad21::t_c4b4f473aa4776 160,454
+  s_07eba7bc13ad21::t_8fe5fff780da99 278-282,294,305-309,332
+httpapi/stream.go
+  s_07eba7bc13ad21::t_a6bd5f479fa6f6 86
+  s_07eba7bc13ad21::t_cd4aa56c69c502 168-173,204-205
+httpapi/ai_sdk_stream_test.go
+  s_07eba7bc13ad21::t_43aff02c898df0 116-155
+anthropic/adapter_test.go
+  s_07eba7bc13ad21::t_d782287e679a8e 75-140
+httpapi/contracts.go
+  s_07eba7bc13ad21::t_4e831517d80c06 169-170,175-182
+  s_07eba7bc13ad21::t_cd4aa56c69c502 171-174,183-189
+anthropic/adapter.go
+  s_07eba7bc13ad21::t_32fd60c2d70017 482-485,488-491,502-506,534-538,545-549
+internal/runtime/agent.go
+  s_07eba7bc13ad21::t_ff6e7dad336e5e 1439,1472-1494
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "0be926d71d0c3a57fac5da7ea8b1a472428b7635",
+  "prompts": {},
+  "sessions": {
+    "s_07eba7bc13ad21": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1212b-6c8b-7cf1-9fbb-084dd7610dc5",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
