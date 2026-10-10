@@ -157,6 +157,7 @@ type RunEvent struct {
 	ToolCallID            string
 	ToolID                ToolID
 	ToolState             ToolExecutionState
+	DeltaParts            []StreamContentPart
 	DeltaText             string
 	DeltaReasoning        ModelReasoning
 	DeltaStructuredOutput ModelStructuredOutput
@@ -274,6 +275,11 @@ type RunRecorder struct {
 	events []RunEvent
 }
 
+func cloneRunEventContentParts(event RunEvent) RunEvent {
+	event.DeltaParts = cloneStreamContentParts(event.DeltaParts)
+	return event
+}
+
 // NewRunRecorder creates an empty recorder ready to receive events.
 func NewRunRecorder() *RunRecorder {
 	return &RunRecorder{}
@@ -285,7 +291,7 @@ func (r *RunRecorder) OnRunEvent(event RunEvent) {
 		return
 	}
 	r.mu.Lock()
-	r.events = append(r.events, event)
+	r.events = append(r.events, cloneRunEventContentParts(event))
 	r.mu.Unlock()
 }
 
@@ -296,7 +302,11 @@ func (r *RunRecorder) Events() []RunEvent {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]RunEvent(nil), r.events...)
+	events := make([]RunEvent, len(r.events))
+	for i := range r.events {
+		events[i] = cloneRunEventContentParts(r.events[i])
+	}
+	return events
 }
 
 // EventCount returns the number of recorded events.
@@ -319,7 +329,7 @@ func (r *RunRecorder) TerminalEvent() (RunEvent, bool) {
 	defer r.mu.Unlock()
 	for i := len(r.events) - 1; i >= 0; i-- {
 		if r.events[i].Type.IsTerminal() {
-			return r.events[i], true
+			return cloneRunEventContentParts(r.events[i]), true
 		}
 	}
 	return RunEvent{}, false
@@ -441,6 +451,7 @@ func (e *runEmitter) emitDelta(runID RunID, step int, stepID StepID, delta Strea
 		DeltaStructuredOutput: delta.StructuredOutput,
 		ToolCallID:            toolCallID,
 		ToolID:                toolID,
+		DeltaParts:            cloneStreamContentParts(delta.Parts),
 		FinishReason:          delta.FinishReason,
 		Usage:                 delta.Usage,
 		Accounting:            delta.Accounting.Clone(),

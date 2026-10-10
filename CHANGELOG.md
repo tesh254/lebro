@@ -12,6 +12,36 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- Anthropic-compatible endpoints. `anthropic.Config` adds `AuthToken`
+  (Authorization Bearer, as OpenRouter and many gateways expect, as an
+  alternative to `APIKey`), `Headers`, `Timeout`, `MaxRetries`, `ProviderID`,
+  and `PricingDomain`. Both default from the `BaseURL` host. `ProviderID` is
+  `openrouter` for openrouter.ai and `anthropic` otherwise. `PricingDomain` is
+  `anthropic_api` only for api.anthropic.com, `openrouter` for openrouter.ai,
+  and the new unpriced `anthropic_compatible`
+  (`PricingDomainAnthropicCompatible`) for any other host, so a gateway is never
+  estimated at Anthropic list prices. Thinking
+  streamed without a signature is kept as display-only reasoning instead of
+  failing the stream, and is not replayed. Non-streaming requests the SDK
+  would refuse as too long now fail as invalid requests rather than
+  unavailable ones. Behavior change: the adapter no longer reads
+  `ANTHROPIC_BASE_URL` or other `ANTHROPIC_*` environment variables; pass
+  `BaseURL` explicitly.
+
+- Durable agent tool approvals. `AgentConfig.ToolApprovalPolicy` can allow,
+  deny, or require human approval for each model-requested tool call. Required
+  calls suspend before the handler starts and persist an immutable
+  `ToolApprovalRequest` in the existing workflow-state contract, so Memory,
+  SQLite, Postgres, and compatible runtime stores can reload the exact tool ID
+  and canonical arguments after a restart. `PendingToolApproval` renders that
+  request; `ResumeToolApproval` takes a `ToolApprovalDecision` (approval,
+  decider, reason, and decision time) bound to that request's `RunID` and
+  `ID`, so a decision cannot replace the persisted tool input. An approved call
+  executes at most once: rejection, expiry, stale decisions, and an action left
+  uncertain after a crash are typed errors, and uncertain actions are
+  deliberately never replayed. This is an additive public API requiring the
+  next minor release.
+
 - Retry-safe execution identity for durable diagnostics. `RunInput.ExecutionID`
   distinguishes separate external executions of one logical run (queue retries,
   for example): model attempts, run events, and tool executions embed the

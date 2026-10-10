@@ -429,8 +429,9 @@ if err != nil {
 }
 ```
 
-OpenRouter normalizes an OpenAI-compatible Chat Completions API, so it belongs
-behind `openai.New`, not `anthropic.New`. The OpenAI adapter supports text
+OpenRouter's Chat Completions API belongs behind `openai.New`; its
+Anthropic-compatible Messages API belongs behind `anthropic.New` (below). The
+OpenAI adapter supports text
 generation, function tool calls, streaming, and JSON-schema structured output;
 OpenRouter responses also preserve `usage.cost`, upstream inference cost,
 cache usage, and generation ID. Native OpenAI, Anthropic, Gemini, and Vertex
@@ -438,12 +439,42 @@ responses explicitly mark cost unavailable when their response omits it. Add
 `CostResolver: lebro.NewOfficialPricingResolver()` to an agent for opt-in,
 versioned standard text-token estimates; unknown models and unsupported billing
 dimensions remain explicit unavailable results.
-the returned structured value is validated locally, while provider-side
-restrictions (model support for `json_schema` output, strict-mode field
-requirements) stay enforced by the endpoint and surface as normalized model
-errors. Use the native `anthropic` adapter for Anthropic Messages API
-conventions. `anthropic.New` also accepts `BaseURL` for an Anthropic-compatible
-proxy or gateway, not OpenRouter's OpenAI-compatible endpoint.
+For structured output, the returned value is validated locally, while
+provider-side restrictions (model support for `json_schema` output,
+strict-mode field requirements) stay enforced by the endpoint and surface as
+normalized model errors.
+
+### Anthropic-compatible endpoints
+
+`anthropic.New` speaks the Anthropic Messages API to Anthropic or to any
+endpoint that implements it: OpenRouter's Anthropic API, gateways such as
+LiteLLM, and providers that expose an Anthropic-compatible route. Swap the
+endpoint with `BaseURL`, and pick the credential style the endpoint expects:
+`APIKey` is sent as `X-Api-Key`, `AuthToken` as an `Authorization: Bearer`
+token. The adapter reads no `ANTHROPIC_*` environment variables, so the
+configured endpoint and credential are the only ones a request uses.
+
+```go
+model, err := anthropic.New(anthropic.Config{
+	BaseURL:   "https://openrouter.ai/api",
+	AuthToken: os.Getenv("OPENROUTER_API_KEY"),
+	Model:     "anthropic/claude-sonnet-4.6",
+	Headers:   map[string]string{"X-Title": "my-app"},
+})
+```
+
+`Headers` adds `anthropic-beta` flags, an `anthropic-version` override, or
+gateway attribution headers. `Timeout` caps non-streaming requests (without it,
+non-streaming requests the SDK expects to exceed ten minutes are rejected as
+invalid; use `Stream` instead), and `MaxRetries` overrides the SDK's retry
+count. Attempts are labelled `openrouter` for openrouter.ai and `anthropic`
+otherwise; set `ProviderID` to name another provider. Cost accounting uses the
+Anthropic API pricing domain only for api.anthropic.com, OpenRouter's for
+openrouter.ai, and the unpriced `anthropic_compatible` domain for any other
+host, so a gateway is never estimated at Anthropic list prices; set
+`PricingDomain` when you resolve costs for a specific contract. Thinking blocks
+a compatible provider streams without a signature are kept as display-only
+reasoning and are not replayed on later turns.
 
 Anthropic JSON output requires a model with structured-output support. Gemini
 accepts only its documented JSON Schema subset. Provider schema rejection is an

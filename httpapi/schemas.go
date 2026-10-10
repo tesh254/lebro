@@ -256,6 +256,7 @@ var componentSchemas = map[string]json.RawMessage{
 		"properties": {
 			"type": {"type": "string", "description": "Event name, matching the SSE event field.", "enum": ["model_delta", "run_succeeded", "run_failed", "run_cancelled"]},
 			"run_id": {"type": "string", "description": "Present on the terminal event."},
+			"parts": {"type": "array", "description": "Canonical ordered displayable text and reasoning parts. Opaque provider replay details are never exposed.", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["text", "reasoning"]}, "text": {"type": "string"}}, "required": ["kind"], "additionalProperties": false}},
 			"text": {"type": "string"},
 			"reasoning": {"type": "string", "description": "Displayable reasoning text."},
 			"tool_call": {

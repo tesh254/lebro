@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/tesh254/lebro"
 )
@@ -83,7 +84,7 @@ func (s *Server) handleAgentStream(w http.ResponseWriter, r *http.Request) {
 	var total lebro.ModelUsage
 	for delta := range run.Deltas {
 		accumulateUsage(&total, delta.Usage)
-		redacted := s.config.Redactor(delta)
+		redacted := redactStreamDelta(s.config.Redactor, delta)
 		if !hasStreamableContent(redacted) {
 			continue
 		}
@@ -165,6 +166,13 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 		Reasoning:    delta.Reasoning.Text,
 		FinishReason: string(delta.FinishReason),
 	}
+	// Reasoning details are opaque replay state the wire never carries, so a
+	// details-only part has nothing to project.
+	for _, part := range delta.Parts {
+		if part.Text != "" {
+			event.Parts = append(event.Parts, StreamContentPart{Kind: part.Kind, Text: part.Text})
+		}
+	}
 	if delta.StructuredOutput != "" {
 		event.StructuredOutput = delta.StructuredOutput.Raw()
 	}
@@ -194,8 +202,13 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 //
 // Redactor suppression rides on the same predicate: a redactor that returns the
 // zero delta produces no content and is skipped.
+//
+// Only parts with displayable text count: a details-only reasoning part, such
+// as the signature Anthropic sends when a thinking block closes, has no wire
+// projection and would otherwise produce an empty model_delta event.
 func hasStreamableContent(delta lebro.StreamDelta) bool {
-	return delta.Text != "" ||
+	return slices.ContainsFunc(delta.Parts, func(part lebro.StreamContentPart) bool { return part.Text != "" }) ||
+		delta.Text != "" ||
 		delta.Reasoning.Text != "" ||
 		delta.ToolCall != nil ||
 		delta.StructuredOutput != "" ||

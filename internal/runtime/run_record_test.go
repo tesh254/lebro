@@ -68,14 +68,20 @@ func TestRunRecorderEventsReturnsCopy(t *testing.T) {
 	t.Parallel()
 
 	recorder := NewRunRecorder()
-	recorder.OnRunEvent(RunEvent{Sequence: 1, Type: RunEventStarted, RunID: "run-1"})
+	parts := []StreamContentPart{{Kind: StreamContentPartText, Text: "original"}}
+	recorder.OnRunEvent(RunEvent{Sequence: 1, Type: RunEventStarted, RunID: "run-1", DeltaParts: parts})
+	parts[0].Text = "mutated before read"
 
 	events := recorder.Events()
 	events[0].Type = RunEventFailed
+	events[0].DeltaParts[0].Text = "mutated after read"
 
 	original := recorder.Events()
 	if original[0].Type != RunEventStarted {
 		t.Fatalf("Events() did not return a copy: type = %q", original[0].Type)
+	}
+	if original[0].DeltaParts[0].Text != "original" {
+		t.Fatalf("Events() did not copy delta parts: %#v", original[0].DeltaParts)
 	}
 }
 

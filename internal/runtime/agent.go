@@ -268,6 +268,14 @@ type AgentConfig struct {
 	// result and events. When nil, no authorization is applied and agent
 	// behavior is unchanged.
 	Policy Policy
+	// ToolApprovalPolicy optionally classifies one model-requested tool call as
+	// allowed, denied, or requiring durable human approval. A policy that can
+	// require approval needs a Store with workflow-state capability so the
+	// exact model request can survive a process restart before its handler
+	// starts; the capability is checked when a call actually suspends, so
+	// policies that only allow or deny run without durable storage. Nil
+	// preserves the existing immediate-execution behavior.
+	ToolApprovalPolicy ToolApprovalPolicy
 	// Processors are ordered, provider-neutral hooks around input, model calls,
 	// stream deltas, and terminal output. They operate independently of Policy.
 	Processors ProcessorPipeline
@@ -307,6 +315,7 @@ type Agent struct {
 	store                Store
 	storeCaps            StoreCapabilities
 	policy               Policy
+	toolApprovalPolicy   ToolApprovalPolicy
 	processors           ProcessorPipeline
 	instructionsResolver InstructionsResolver
 	modelResolver        ModelResolver
@@ -432,6 +441,7 @@ func NewAgent(config AgentConfig) (*Agent, error) {
 		store:                store,
 		storeCaps:            storeCaps,
 		policy:               config.Policy,
+		toolApprovalPolicy:   config.ToolApprovalPolicy,
 		processors:           processors,
 		instructionsResolver: config.InstructionsResolver,
 		modelResolver:        config.ModelResolver,
@@ -468,6 +478,9 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		return RunResult{}, &AgentError{Kind: AgentErrorProviderFailure, Err: err}
 	}
 	emitter := newRunEmitter(ctx, a.listener, a.clock, a.idSource)
+	if input.resumeEventSequence > 0 {
+		emitter.seq = input.resumeEventSequence
+	}
 	if err := ctx.Err(); err != nil {
 		runID := a.runID(input.RunID)
 		journal := newRunJournal(a.clock, a.store, runID, input.ThreadID, input.ExecutionID, input.ObservabilityScope, input.Annotations)
@@ -506,62 +519,70 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}()
 		emitter.setListener(fanoutListener{listeners: []RunListener{a.listener, journal}})
 	}
-	emitter.emit(runID, 0, "", RunEventStarted)
+	if !input.resumeSkipInputPhase {
+		emitter.emit(runID, 0, "", RunEventStarted)
+	}
 	metadata := cloneMetadata(input.Metadata)
-	var allAttempts []ModelAttempt
+	allAttempts := cloneModelAttempts(input.resumePriorAttempts)
 
 	if err := a.authorizeRun(runCtx); err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, nil), err
+		return a.failWithAttemptsResult(runID, metadata, 0, nil, err, allAttempts), err
 	}
-	if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Memory: input.Memory.Clone(), Input: input}); err != nil {
-		if processorCancelled(err) {
-			emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
-			return a.cancelledWithAttempts(runID, nil, metadata, 0, err, nil)
+	if !input.resumeSkipInputPhase {
+		if decision, err := a.process(runCtx, emitter, runID, 0, "", ProcessorContext{Phase: ProcessorPhaseInput, ThreadID: input.ThreadID, Metadata: input.Metadata, Memory: input.Memory.Clone(), Input: input}); err != nil {
+			if processorCancelled(err) {
+				emitter.terminal(runID, 0, "", RunEventCancelled, RunStatusCancelled, err)
+				return a.cancelledWithAttempts(runID, nil, metadata, 0, err, allAttempts)
+			}
+			agentErr := processorAgentError(0, err)
+			emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
+			return a.failWithPriorAttempts(runID, input, agentErr, allAttempts)
+		} else {
+			input = *decision.Input
 		}
-		agentErr := processorAgentError(0, err)
-		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, agentErr)
-		return a.fail(runID, input, 0, agentErr)
-	} else {
-		input = *decision.Input
 	}
 	metadata = cloneMetadata(input.Metadata)
 	runConfig, resolverErr := a.resolveRunConfig(runCtx, input)
 	if resolverErr != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, resolverErr)
-		return a.fail(runID, input, 0, resolverErr)
+		return a.failWithPriorAttempts(runID, input, resolverErr, allAttempts)
 	}
 	compactor, compactErr := a.contextCompactor.forRun(runConfig.modelForSummary(), runConfig.modelName)
 	if compactErr != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, compactErr)
-		return a.fail(runID, input, 0, compactErr)
+		return a.failWithPriorAttempts(runID, input, compactErr, allAttempts)
 	}
 
 	loadedCount, err := a.loadPriorMessages(ctx, &input)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	transcript, err := a.buildInitialTranscript(input, runConfig.instructions)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	toolDefinitions, err := a.resolveToolDefinitions()
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
 	outputSchema, compiledOutput, err := a.resolveOutputSchema(input)
 	if err != nil {
 		emitter.terminal(runID, 0, "", RunEventFailed, RunStatusFailed, err)
-		return a.fail(runID, input, 0, err)
+		return a.failWithPriorAttempts(runID, input, err, allAttempts)
 	}
 
-	for step := 1; step <= a.maxSteps; step++ {
+	firstStep := 1
+	if input.resumeStartStep > firstStep {
+		firstStep = input.resumeStartStep
+	}
+	for step := firstStep; step <= a.maxSteps; step++ {
 		if err := runCtx.Err(); err != nil {
 			emitter.terminal(runID, step, "", RunEventCancelled, RunStatusCancelled, err)
 			return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
@@ -684,12 +705,33 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 		}
 
 		toolCalls := response.Message.ToolCalls.Values()
-		for _, call := range toolCalls {
+		for callIndex, call := range toolCalls {
 			if err := runCtx.Err(); err != nil {
 				emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
 				return a.cancelledWithAttempts(runID, transcript, metadata, step, err, allAttempts)
 			}
 			emitter.emitToolRequested(runID, step, stepID, call.ID, call.ToolID)
+			resolution, approvalErr := a.evaluateToolApproval(runCtx, runID, executionID, step, stepID, input.ThreadID, call, metadata)
+			if approvalErr != nil {
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+			}
+			if resolution.Outcome == ToolApprovalDeny {
+				approvalErr := &ToolApprovalError{Kind: ToolApprovalErrorDenied, RequestID: fmt.Sprintf("%s:%d:%s:%s", runID, step, stepID, call.ID), Err: ErrToolApprovalDenied}
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+			}
+			if resolution.Outcome == ToolApprovalRequire {
+				request, persistErr := a.suspendAgentToolApproval(runCtx, input, runID, executionID, step, stepID, metadata, transcript, toolCalls, callIndex, allAttempts, loadedCount, emitter, resolution)
+				if persistErr != nil {
+					agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
+					emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+					return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+				}
+				return RunResult{ID: runID, Status: RunStatusSuspended, Messages: cloneMessages(transcript), Metadata: metadata, ModelAttempts: allAttempts, ToolApproval: &request}, nil
+			}
 
 			toolStart := emitter.emitToolStarted(runID, step, stepID, call.ID, call.ToolID)
 			journal.toolStarted(step, stepID, call)
@@ -961,6 +1003,7 @@ func (a *Agent) RunStream(ctx context.Context, input RunInput) (*StreamRun, erro
 		annotations:      input.Annotations,
 		priorMessages:    input.priorMessages,
 		contextCompactor: compactor,
+		approvalInput:    input,
 	})
 
 	return run, nil
@@ -1005,6 +1048,7 @@ type streamRunParams struct {
 	annotations      Metadata
 	priorMessages    []MessageRecord
 	contextCompactor *contextCompactor
+	approvalInput    RunInput
 }
 
 func (a *Agent) runStreamLoop(p streamRunParams) {
@@ -1156,13 +1200,38 @@ func (a *Agent) runStreamLoop(p streamRunParams) {
 		}
 
 		toolCalls := response.Message.ToolCalls.Values()
-		for _, call := range toolCalls {
+		for callIndex, call := range toolCalls {
 			if err := p.ctx.Err(); err != nil {
 				p.emitter.terminal(p.runID, step, stepID, RunEventCancelled, RunStatusCancelled, err)
 				p.done <- streamOutcome{result: a.cancelledWithAttemptsResult(p.runID, transcript, p.metadata, step, err, allAttempts), err: a.cancelledError(step, err)}
 				return
 			}
 			p.emitter.emitToolRequested(p.runID, step, stepID, call.ID, call.ToolID)
+			resolution, approvalErr := a.evaluateToolApproval(p.ctx, p.runID, p.executionID, step, stepID, p.threadID, call, p.metadata)
+			if approvalErr != nil {
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+				return
+			}
+			if resolution.Outcome == ToolApprovalDeny {
+				approvalErr := &ToolApprovalError{Kind: ToolApprovalErrorDenied, RequestID: fmt.Sprintf("%s:%d:%s:%s", p.runID, step, stepID, call.ID), Err: ErrToolApprovalDenied}
+				agentErr := &AgentError{Kind: AgentErrorToolFailure, Step: step, Err: approvalErr}
+				p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+				return
+			}
+			if resolution.Outcome == ToolApprovalRequire {
+				request, persistErr := a.suspendAgentToolApproval(p.ctx, p.approvalInput, p.runID, p.executionID, step, stepID, p.metadata, transcript, toolCalls, callIndex, allAttempts, p.loadedCount, p.emitter, resolution)
+				if persistErr != nil {
+					agentErr := &AgentError{Kind: AgentErrorProviderFailure, Step: step, Err: persistErr}
+					p.emitter.terminal(p.runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+					p.done <- streamOutcome{result: a.failWithAttemptsResult(p.runID, p.metadata, step, transcript, agentErr, allAttempts), err: agentErr}
+					return
+				}
+				p.done <- streamOutcome{result: RunResult{ID: p.runID, Status: RunStatusSuspended, Messages: cloneMessages(transcript), Metadata: p.metadata, ModelAttempts: allAttempts, ToolApproval: &request}}
+				return
+			}
 			toolStart := p.emitter.emitToolStarted(p.runID, step, stepID, call.ID, call.ToolID)
 			p.journal.toolStarted(step, stepID, call)
 			observationStart := a.clock.Now()
@@ -1363,11 +1432,8 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			response, streamErr := partialFailure(context.Canceled)
 			return response, attempts, resolved, streamErr
 		}
-		if delta.Text != "" {
-			contentBuilder.WriteString(delta.Text)
-		}
 		var reasoningErr error
-		reasoning, reasoningErr = appendReasoning(reasoning, delta.Reasoning)
+		reasoning, reasoningErr = appendStreamDeltaContent(&contentBuilder, reasoning, delta)
 		if reasoningErr != nil {
 			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr})
 			return response, attempts, resolved, streamErr
@@ -1398,6 +1464,31 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		return response, attempts, resolved, err
 	}
 	return response, attempts, resolved, nil
+}
+
+// appendStreamDeltaContent keeps the compatibility fields for old adapters,
+// but treats ordered Parts as authoritative whenever an adapter provides them.
+// In particular, a legacy delta that happens to contain both Text and
+// Reasoning is deliberately not turned into parts: its relative order was
+// never represented by the old contract.
+func appendStreamDeltaContent(content *strings.Builder, current ModelReasoning, delta StreamDelta) (ModelReasoning, error) {
+	if len(delta.Parts) == 0 {
+		content.WriteString(delta.Text)
+		return appendReasoning(current, delta.Reasoning)
+	}
+	for _, part := range delta.Parts {
+		switch part.Kind {
+		case StreamContentPartText:
+			content.WriteString(part.Text)
+		case StreamContentPartReasoning:
+			var err error
+			current, err = appendReasoning(current, ModelReasoning{Text: part.Text, Details: part.ReasoningDetails})
+			if err != nil {
+				return current, err
+			}
+		}
+	}
+	return current, nil
 }
 
 func hasPartialStreamResponse(response ModelResponse) bool {
@@ -1810,6 +1901,14 @@ func (a *Agent) fail(runID RunID, input RunInput, step int, err error) (RunResul
 		Messages: cloneMessages(input.Messages),
 		Metadata: cloneMetadata(input.Metadata),
 	}, err
+}
+
+// failWithPriorAttempts fails a run during setup while preserving any model
+// attempts carried in from before a durable suspension.
+func (a *Agent) failWithPriorAttempts(runID RunID, input RunInput, err error, attempts []ModelAttempt) (RunResult, error) {
+	result, err := a.fail(runID, input, 0, err)
+	result.ModelAttempts = attempts
+	return result, err
 }
 
 func (a *Agent) failWithAttemptsResult(runID RunID, metadata map[string]string, step int, messages []Message, agentErr *AgentError, attempts []ModelAttempt) RunResult {

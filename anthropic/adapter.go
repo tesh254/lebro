@@ -9,8 +9,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	claude "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -18,42 +20,91 @@ import (
 )
 
 const (
-	providerName           = "anthropic"
-	defaultMaxTokens int64 = 4096
+	providerName                 = "anthropic"
+	openRouterProviderName       = "openrouter"
+	defaultBaseURL               = "https://api.anthropic.com"
+	defaultMaxTokens       int64 = 4096
 )
 
-// Config configures an Anthropic Messages adapter. APIKey is required.
+// Config configures an adapter for the Anthropic Messages API or any endpoint
+// that speaks it, such as OpenRouter's Anthropic-compatible API or a gateway.
+// Exactly one of APIKey or AuthToken is required. The adapter reads nothing
+// from the environment: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, and
+// ANTHROPIC_BASE_URL are ignored so the configured endpoint and credential are
+// the only ones a request can use.
 type Config struct {
-	APIKey     string
-	Model      string
-	BaseURL    string
+	// APIKey is sent in the X-Api-Key header, as the Anthropic API expects.
+	APIKey string
+	// AuthToken is sent as an Authorization Bearer token, as OpenRouter and
+	// many Anthropic-compatible gateways expect.
+	AuthToken string
+	// Model is the default model id used when a request omits
+	// ModelRequest.Model. Any id the endpoint accepts is allowed.
+	Model string
+	// BaseURL is the API root, for example "https://api.anthropic.com" or
+	// "https://openrouter.ai/api". It defaults to the Anthropic API.
+	BaseURL string
+	// Headers are sent on every request, for example anthropic-beta flags,
+	// an anthropic-version override, or gateway attribution headers. They
+	// cannot replace the credential headers.
+	Headers map[string]string
+	// HTTPClient issues requests. Its Timeout, when set, also bounds streams.
 	HTTPClient *http.Client
-	MaxTokens  int64
+	// Timeout caps each non-streaming request. Zero lets the SDK derive a
+	// limit from MaxTokens and reject non-streaming requests that would
+	// likely exceed ten minutes. Streams are bounded by the caller context.
+	Timeout time.Duration
+	// MaxRetries overrides the SDK's retry count for retryable failures.
+	// Nil keeps the SDK default; zero disables retries so a router or the
+	// caller owns retry policy.
+	MaxRetries *int
+	// MaxTokens is the default output-token limit. It defaults to 4096.
+	MaxTokens int64
+	// ProviderID labels attempts, errors, and metrics. It defaults to
+	// "openrouter" for openrouter.ai and "anthropic" otherwise.
+	ProviderID lebro.ProviderID
+	// PricingDomain identifies the billing contract behind the endpoint. It
+	// defaults from the BaseURL host: the Anthropic API, OpenRouter, or the
+	// unpriced anthropic_compatible domain for any other gateway, so a proxy
+	// is never priced as the Anthropic API by accident.
+	PricingDomain lebro.PricingDomain
 }
 
 // Model implements lebro.Model and lebro.StreamingModel.
 type Model struct {
-	client    *claude.Client
-	model     string
-	maxTokens int64
+	client        *claude.Client
+	model         string
+	maxTokens     int64
+	timeout       time.Duration
+	providerID    lebro.ProviderID
+	pricingDomain lebro.PricingDomain
 }
 
 var _ lebro.Model = (*Model)(nil)
 var _ lebro.StreamingModel = (*Model)(nil)
 
-func (*Model) ProviderID() lebro.ProviderID { return providerName }
+func (m *Model) ProviderID() lebro.ProviderID {
+	if m == nil || m.providerID == "" {
+		return providerName
+	}
+	return m.providerID
+}
 
-// New creates an Anthropic adapter safe for concurrent use.
+// New creates an Anthropic Messages adapter safe for concurrent use.
 func New(config Config) (*Model, error) {
-	if config.APIKey == "" {
-		return nil, errors.New("lebro: API key is required")
+	if (config.APIKey == "") == (config.AuthToken == "") {
+		return nil, errors.New("lebro: exactly one of API key or auth token is required")
 	}
-	opts := []option.RequestOption{option.WithAPIKey(config.APIKey)}
-	if config.BaseURL != "" {
-		opts = append(opts, option.WithBaseURL(config.BaseURL))
+	baseURL := config.BaseURL
+	if baseURL == "" {
+		baseURL = defaultBaseURL
 	}
-	if config.HTTPClient != nil {
-		opts = append(opts, option.WithHTTPClient(config.HTTPClient))
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: invalid base URL: %w", err)
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, fmt.Errorf("lebro: base URL %q must be an absolute http or https URL", baseURL)
 	}
 	maxTokens := config.MaxTokens
 	if maxTokens == 0 {
@@ -62,8 +113,54 @@ func New(config Config) (*Model, error) {
 	if maxTokens < 1 {
 		return nil, errors.New("lebro: max tokens must be positive")
 	}
+	if config.Timeout < 0 {
+		return nil, errors.New("lebro: timeout must not be negative")
+	}
+	if config.MaxRetries != nil && *config.MaxRetries < 0 {
+		return nil, errors.New("lebro: max retries must not be negative")
+	}
+
+	opts := []option.RequestOption{option.WithoutEnvironmentDefaults(), option.WithBaseURL(baseURL)}
+	for key, value := range config.Headers {
+		switch strings.ToLower(key) {
+		case "x-api-key", "authorization":
+			return nil, fmt.Errorf("lebro: header %q is set from APIKey or AuthToken", key)
+		}
+		opts = append(opts, option.WithHeader(key, value))
+	}
+	if config.APIKey != "" {
+		opts = append(opts, option.WithAPIKey(config.APIKey))
+	} else {
+		opts = append(opts, option.WithAuthToken(config.AuthToken))
+	}
+	if config.HTTPClient != nil {
+		opts = append(opts, option.WithHTTPClient(config.HTTPClient))
+	}
+	if config.MaxRetries != nil {
+		opts = append(opts, option.WithMaxRetries(*config.MaxRetries))
+	}
+
+	host := strings.ToLower(parsed.Hostname())
+	providerID := config.ProviderID
+	if providerID == "" {
+		providerID = providerName
+		if host == "openrouter.ai" {
+			providerID = openRouterProviderName
+		}
+	}
+	pricingDomain := config.PricingDomain
+	if pricingDomain == "" {
+		switch host {
+		case "api.anthropic.com":
+			pricingDomain = lebro.PricingDomainAnthropic
+		case "openrouter.ai":
+			pricingDomain = lebro.PricingDomainOpenRouter
+		default:
+			pricingDomain = lebro.PricingDomainAnthropicCompatible
+		}
+	}
 	client := claude.NewClient(opts...)
-	return &Model{client: &client, model: config.Model, maxTokens: maxTokens}, nil
+	return &Model{client: &client, model: config.Model, maxTokens: maxTokens, timeout: config.Timeout, providerID: providerID, pricingDomain: pricingDomain}, nil
 }
 
 func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro.ModelResponse, error) {
@@ -71,7 +168,17 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	if err != nil {
 		return lebro.ModelResponse{}, err
 	}
-	response, err := m.client.Messages.New(ctx, params)
+	var opts []option.RequestOption
+	if m.timeout > 0 {
+		opts = append(opts, option.WithRequestTimeout(m.timeout))
+	}
+	// The SDK refuses non-streaming requests it expects to outlast its
+	// default timeout. Check first so that refusal is an invalid request a
+	// router will not retry, rather than an opaque unavailable error.
+	if _, err := claude.CalculateNonStreamingTimeout(int(params.MaxTokens), params.Model, opts); err != nil {
+		return lebro.ModelResponse{}, m.invalid(fmt.Errorf("lebro: %w; use Stream or set Config.Timeout", err))
+	}
+	response, err := m.client.Messages.New(ctx, params, opts...)
 	if err != nil {
 		return lebro.ModelResponse{}, m.error(ctx, err)
 	}
@@ -88,7 +195,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 		return nil, err
 	}
 	stream := m.client.Messages.NewStreaming(ctx, params)
-	reader := &anthropicStream{stream: stream, values: make(chan lebro.StreamDelta, 8), done: make(chan struct{}), errorFn: m.error}
+	reader := &anthropicStream{stream: stream, values: make(chan lebro.StreamDelta, 8), done: make(chan struct{}), errorFn: m.error, provider: string(m.ProviderID()), pricingDomain: m.pricingDomain}
 	reader.start(ctx, request)
 	return reader, nil
 }
@@ -277,7 +384,13 @@ func anthropicReasoningBlocks(reasoning lebro.ModelReasoning) ([]claude.ContentB
 	for _, detail := range details {
 		switch detail.Type {
 		case "thinking":
-			if detail.Signature == "" || detail.Thinking == "" {
+			// Compatible providers may stream thinking without a signature.
+			// Such reasoning is display-only: without a signature the endpoint
+			// cannot verify it, so it is not sent back.
+			if detail.Signature == "" {
+				continue
+			}
+			if detail.Thinking == "" {
 				return nil, errors.New("lebro: Anthropic thinking details require signature and thinking text")
 			}
 			blocks = append(blocks, claude.NewThinkingBlock(detail.Signature, detail.Thinking))
@@ -341,7 +454,7 @@ func (m *Model) response(request lebro.ModelRequest, result *claude.Message) (le
 		}
 		message.StructuredOutput = lebro.NewModelStructuredOutput(json.RawMessage(message.Content))
 	}
-	response := lebro.ModelResponse{Message: message, FinishReason: mapFinish(result.StopReason), Usage: mapUsage(result.Usage), Accounting: unavailableAccounting(result.ID, result.Usage)}
+	response := lebro.ModelResponse{Message: message, FinishReason: mapFinish(result.StopReason), Usage: mapUsage(result.Usage), Accounting: unavailableAccounting(m.pricingDomain, result.ID, result.Usage)}
 	if result.ID != "" {
 		response.Extension, _ = json.Marshal(map[string]string{"anthropic_id": result.ID, "anthropic_model": string(result.Model)})
 	}
@@ -362,10 +475,10 @@ func mapUsage(usage claude.Usage) lebro.ModelUsage {
 	}
 }
 
-func unavailableAccounting(id string, usage claude.Usage) lebro.ModelAccounting {
+func unavailableAccounting(domain lebro.PricingDomain, id string, usage claude.Usage) lebro.ModelAccounting {
 	return lebro.ModelAccounting{
 		ProviderRequestID: id, ServiceTier: string(usage.ServiceTier), Region: usage.InferenceGeo,
-		Costs: []lebro.ModelCost{lebro.UnavailableModelCost(lebro.PricingDomainAnthropic, lebro.CostUnavailableProviderOmitted)},
+		Costs: []lebro.ModelCost{lebro.UnavailableModelCost(domain, lebro.CostUnavailableProviderOmitted)},
 	}
 }
 
@@ -382,10 +495,10 @@ func mapFinish(reason claude.StopReason) lebro.FinishReason {
 	}
 }
 func (m *Model) invalid(err error) error {
-	return &lebro.ModelError{Kind: lebro.ModelErrorInvalidRequest, Provider: providerName, Message: err.Error(), Err: err}
+	return &lebro.ModelError{Kind: lebro.ModelErrorInvalidRequest, Provider: string(m.ProviderID()), Message: err.Error(), Err: err}
 }
 func (m *Model) malformed(err error) error {
-	return &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: providerName, Message: err.Error(), Err: err}
+	return &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: string(m.ProviderID()), Message: err.Error(), Err: err}
 }
 func (m *Model) error(ctx context.Context, err error) error {
 	if errors.Is(err, context.Canceled) || ctx.Err() == context.Canceled {
@@ -397,7 +510,7 @@ func (m *Model) error(ctx context.Context, err error) error {
 	var apiErr *claude.Error
 	if errors.As(err, &apiErr) {
 		status := apiErr.StatusCode
-		return &lebro.ModelError{Kind: statusToKind(status), Provider: providerName, StatusCode: status, Message: err.Error(), Err: err}
+		return &lebro.ModelError{Kind: statusToKind(status), Provider: string(m.ProviderID()), StatusCode: status, Message: err.Error(), Err: err}
 	}
 	var networkErr net.Error
 	if errors.As(err, &networkErr) {
@@ -405,9 +518,9 @@ func (m *Model) error(ctx context.Context, err error) error {
 		if networkErr.Timeout() {
 			kind = lebro.ModelErrorTimeout
 		}
-		return &lebro.ModelError{Kind: kind, Provider: providerName, Message: err.Error(), Err: err}
+		return &lebro.ModelError{Kind: kind, Provider: string(m.ProviderID()), Message: err.Error(), Err: err}
 	}
-	return &lebro.ModelError{Kind: lebro.ModelErrorUnavailable, Provider: providerName, Message: err.Error(), Err: err}
+	return &lebro.ModelError{Kind: lebro.ModelErrorUnavailable, Provider: string(m.ProviderID()), Message: err.Error(), Err: err}
 }
 
 func statusToKind(status int) lebro.ModelErrorKind {
@@ -440,6 +553,9 @@ type anthropicStream struct {
 	done    chan struct{}
 	errorFn func(context.Context, error) error
 	once    sync.Once
+	// provider labels stream-level errors; pricingDomain labels accounting.
+	provider      string
+	pricingDomain lebro.PricingDomain
 }
 
 func (r *anthropicStream) send(delta lebro.StreamDelta) bool {
@@ -467,7 +583,7 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 			switch event.Type {
 			case "message_start":
 				usage = mapUsage(event.Message.Usage)
-				accounting = unavailableAccounting(event.Message.ID, event.Message.Usage)
+				accounting = unavailableAccounting(r.pricingDomain, event.Message.ID, event.Message.Usage)
 			case "content_block_start":
 				if event.ContentBlock.Type == "tool_use" {
 					tools[event.Index] = &lebro.ModelToolCall{ID: event.ContentBlock.ID, ToolID: lebro.ToolID(event.ContentBlock.Name)}
@@ -479,9 +595,16 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 					redacted[event.Index] = event.ContentBlock.Data
 				}
 			case "content_block_delta":
+				if event.Delta.Text != "" && event.Delta.Thinking != "" {
+					r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: r.provider, Message: "lebro: Anthropic stream delta contains text and thinking in one content block"}})
+					return
+				}
 				if event.Delta.Text != "" {
 					text.WriteString(event.Delta.Text)
-					if !r.send(lebro.StreamDelta{Text: event.Delta.Text}) {
+					if !r.send(lebro.StreamDelta{
+						Parts: []lebro.StreamContentPart{{Kind: lebro.StreamContentPartText, Text: event.Delta.Text}},
+						Text:  event.Delta.Text,
+					}) {
 						return
 					}
 				}
@@ -492,7 +615,11 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 					if block := thinking[event.Index]; block != nil {
 						block.WriteString(event.Delta.Thinking)
 					}
-					if !r.send(lebro.StreamDelta{Reasoning: lebro.ModelReasoning{Text: event.Delta.Thinking}}) {
+					reasoning := lebro.ModelReasoning{Text: event.Delta.Thinking}
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, Text: reasoning.Text}},
+						Reasoning: reasoning,
+					}) {
 						return
 					}
 				}
@@ -505,7 +632,7 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 						call.Arguments = json.RawMessage(`{}`)
 					}
 					if !json.Valid(call.Arguments) {
-						r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: providerName, Message: "lebro: Anthropic streamed tool arguments are not valid JSON"}})
+						r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: r.provider, Message: "lebro: Anthropic streamed tool arguments are not valid JSON"}})
 						return
 					}
 					copy := *call
@@ -514,20 +641,26 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 					}
 					delete(tools, event.Index)
 				}
-				if block := thinking[event.Index]; block != nil {
+				// An unsigned block from a compatible provider is kept as
+				// display-only detail; replay later skips it.
+				if block := thinking[event.Index]; block != nil && (block.Len() > 0 || thinkingSignatures[event.Index] != "") {
 					detail := anthropicReasoningDetail{Type: "thinking", Thinking: block.String(), Signature: thinkingSignatures[event.Index]}
-					if detail.Signature == "" {
-						r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: providerName, Message: "lebro: Anthropic thinking block has no signature"}})
+					reasoning := newAnthropicReasoning("", []anthropicReasoningDetail{detail})
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, ReasoningDetails: reasoning.Details}},
+						Reasoning: reasoning,
+					}) {
 						return
 					}
-					if !r.send(lebro.StreamDelta{Reasoning: newAnthropicReasoning("", []anthropicReasoningDetail{detail})}) {
-						return
-					}
-					delete(thinking, event.Index)
-					delete(thinkingSignatures, event.Index)
 				}
+				delete(thinking, event.Index)
+				delete(thinkingSignatures, event.Index)
 				if data, ok := redacted[event.Index]; ok {
-					if !r.send(lebro.StreamDelta{Reasoning: newAnthropicReasoning("", []anthropicReasoningDetail{{Type: "redacted_thinking", Data: data}})}) {
+					reasoning := newAnthropicReasoning("", []anthropicReasoningDetail{{Type: "redacted_thinking", Data: data}})
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, ReasoningDetails: reasoning.Details}},
+						Reasoning: reasoning,
+					}) {
 						return
 					}
 					delete(redacted, event.Index)

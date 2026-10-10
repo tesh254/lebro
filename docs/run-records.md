@@ -218,7 +218,8 @@ final streaming usage frame. OpenAI, Anthropic, Gemini Developer API, and
 Vertex AI adapters preserve their detailed token usage and explicitly report
 that provider cost was omitted. Generic OpenAI-compatible endpoints use the
 separate `openai_compatible` pricing domain so a proxy is never priced as the
-OpenAI API by accident.
+OpenAI API by accident; Anthropic-compatible endpoints other than
+api.anthropic.com and openrouter.ai likewise use `anthropic_compatible`.
 
 Applications can opt into the bundled standard pay-as-you-go text catalog:
 

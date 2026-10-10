@@ -519,14 +519,21 @@ func (r *stream) run(ctx context.Context, request lebro.ModelRequest, sequence f
 			for _, part := range candidate.Content.Parts {
 				if part.Thought {
 					detail := geminiReasoningDetail{Text: part.Text, ThoughtSignature: append([]byte(nil), part.ThoughtSignature...)}
-					if !r.send(lebro.StreamDelta{Reasoning: newGeminiReasoning(part.Text, []geminiReasoningDetail{detail})}) {
+					reasoning := newGeminiReasoning(part.Text, []geminiReasoningDetail{detail})
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, Text: reasoning.Text, ReasoningDetails: reasoning.Details}},
+						Reasoning: reasoning,
+					}) {
 						return false
 					}
 					continue
 				}
 				if part.Text != "" {
 					text.WriteString(part.Text)
-					if !r.send(lebro.StreamDelta{Text: part.Text}) {
+					if !r.send(lebro.StreamDelta{
+						Parts: []lebro.StreamContentPart{{Kind: lebro.StreamContentPartText, Text: part.Text}},
+						Text:  part.Text,
+					}) {
 						return false
 					}
 				}

@@ -52,6 +52,43 @@ func TestStreamSendUnblocksOnClose(t *testing.T) {
 	}
 }
 
+func TestStreamRunPreservesOrderedContentParts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &stream{
+		values:   make(chan lebro.StreamDelta, 8),
+		done:     make(chan struct{}),
+		cancel:   cancel,
+		provider: "gemini",
+	}
+	go r.run(ctx, lebro.ModelRequest{}, func(yield func(*genai.GenerateContentResponse, error) bool) {
+		yield(&genai.GenerateContentResponse{Candidates: []*genai.Candidate{{
+			Content: genai.NewContentFromParts([]*genai.Part{
+				{Text: "first ", Thought: true, ThoughtSignature: []byte("opaque-first")},
+				genai.NewPartFromText("answer"),
+				{Text: "second", Thought: true, ThoughtSignature: []byte("opaque-second")},
+			}, genai.RoleModel),
+		}}}, nil)
+	})
+
+	var parts []lebro.StreamContentPart
+	for delta := range r.values {
+		parts = append(parts, delta.Parts...)
+	}
+	want := []lebro.StreamContentPart{
+		{Kind: lebro.StreamContentPartReasoning, Text: "first ", ReasoningDetails: lebro.NewModelReasoningDetails(json.RawMessage(`[{"text":"first ","thought_signature":"b3BhcXVlLWZpcnN0"}]`))},
+		{Kind: lebro.StreamContentPartText, Text: "answer"},
+		{Kind: lebro.StreamContentPartReasoning, Text: "second", ReasoningDetails: lebro.NewModelReasoningDetails(json.RawMessage(`[{"text":"second","thought_signature":"b3BhcXVlLXNlY29uZA=="}]`))},
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("parts = %#v, want %#v", parts, want)
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Fatalf("part %d = %#v, want %#v", i, parts[i], want[i])
+		}
+	}
+}
+
 func TestProviderContractFixturesBuildRequests(t *testing.T) {
 	model := newMappingModel("fixture-model")
 	for _, fixture := range testkit.ProviderContractCases() {

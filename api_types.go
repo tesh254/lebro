@@ -104,6 +104,8 @@ type (
 	ReasoningConfig             = runtime.ReasoningConfig
 	ModelReasoningDetails       = runtime.ModelReasoningDetails
 	ModelReasoning              = runtime.ModelReasoning
+	StreamContentPartKind       = runtime.StreamContentPartKind
+	StreamContentPart           = runtime.StreamContentPart
 	ModelUsage                  = runtime.ModelUsage
 	Decimal                     = runtime.Decimal
 	CostSource                  = runtime.CostSource
@@ -165,6 +167,15 @@ type (
 	ApprovalDecision            = runtime.ApprovalDecision
 	ApprovalRequirement         = runtime.ApprovalRequirement
 	ApprovalGate                = runtime.ApprovalGate
+	ToolApprovalOutcome         = runtime.ToolApprovalOutcome
+	ToolApprovalInvocation      = runtime.ToolApprovalInvocation
+	ToolApprovalResolution      = runtime.ToolApprovalResolution
+	ToolApprovalPolicy          = runtime.ToolApprovalPolicy
+	ToolApprovalPolicyFunc      = runtime.ToolApprovalPolicyFunc
+	ToolApprovalRequest         = runtime.ToolApprovalRequest
+	ToolApprovalDecision        = runtime.ToolApprovalDecision
+	ToolApprovalError           = runtime.ToolApprovalError
+	ToolApprovalErrorKind       = runtime.ToolApprovalErrorKind
 	RetryPolicy                 = runtime.RetryPolicy
 	RetryablePredicate          = runtime.RetryablePredicate
 	PageRequest                 = runtime.PageRequest
@@ -344,6 +355,9 @@ const (
 	ReasoningXHigh   = runtime.ReasoningXHigh
 	ReasoningMax     = runtime.ReasoningMax
 
+	StreamContentPartText      = runtime.StreamContentPartText
+	StreamContentPartReasoning = runtime.StreamContentPartReasoning
+
 	RunStatusPending   = runtime.RunStatusPending
 	RunStatusRunning   = runtime.RunStatusRunning
 	RunStatusSucceeded = runtime.RunStatusSucceeded
@@ -367,6 +381,15 @@ const (
 	ToolExecutionCancelled     = runtime.ToolExecutionCancelled
 	ToolExecutionNotFound      = runtime.ToolExecutionNotFound
 	ToolExecutionUnauthorized  = runtime.ToolExecutionUnauthorized
+
+	ToolApprovalAllow   = runtime.ToolApprovalAllow
+	ToolApprovalRequire = runtime.ToolApprovalRequire
+	ToolApprovalDeny    = runtime.ToolApprovalDeny
+
+	ToolApprovalErrorDenied    = runtime.ToolApprovalErrorDenied
+	ToolApprovalErrorExpired   = runtime.ToolApprovalErrorExpired
+	ToolApprovalErrorStale     = runtime.ToolApprovalErrorStale
+	ToolApprovalErrorUncertain = runtime.ToolApprovalErrorUncertain
 
 	ValidationTargetToolInput        = runtime.ValidationTargetToolInput
 	ValidationTargetToolOutput       = runtime.ValidationTargetToolOutput
@@ -537,6 +560,7 @@ const (
 	PricingDomainOpenAI                  = runtime.PricingDomainOpenAI
 	PricingDomainOpenAICompatible        = runtime.PricingDomainOpenAICompatible
 	PricingDomainAnthropic               = runtime.PricingDomainAnthropic
+	PricingDomainAnthropicCompatible     = runtime.PricingDomainAnthropicCompatible
 	PricingDomainGemini                  = runtime.PricingDomainGemini
 	PricingDomainVertexAI                = runtime.PricingDomainVertexAI
 	CostUnavailableProviderOmitted       = runtime.CostUnavailableProviderOmitted
@@ -638,6 +662,11 @@ var (
 	ErrApprovalRejected        = runtime.ErrApprovalRejected
 	ErrApprovalExpired         = runtime.ErrApprovalExpired
 	ErrApprovalInvalidDecision = runtime.ErrApprovalInvalidDecision
+
+	ErrToolApprovalDenied    = runtime.ErrToolApprovalDenied
+	ErrToolApprovalExpired   = runtime.ErrToolApprovalExpired
+	ErrToolApprovalStale     = runtime.ErrToolApprovalStale
+	ErrToolApprovalUncertain = runtime.ErrToolApprovalUncertain
 
 	ErrWorkflowNoBranchMatched         = runtime.ErrWorkflowNoBranchMatched
 	ErrWorkflowBranchConditionFailed   = runtime.ErrWorkflowBranchConditionFailed
