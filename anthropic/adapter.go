@@ -103,8 +103,8 @@ func New(config Config) (*Model, error) {
 	if err != nil {
 		return nil, fmt.Errorf("lebro: invalid base URL: %w", err)
 	}
-	if !parsed.IsAbs() {
-		return nil, fmt.Errorf("lebro: base URL %q must be absolute", baseURL)
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, fmt.Errorf("lebro: base URL %q must be an absolute http or https URL", baseURL)
 	}
 	maxTokens := config.MaxTokens
 	if maxTokens == 0 {

@@ -15,10 +15,12 @@ All notable changes to this project are documented in this file.
 - Anthropic-compatible endpoints. `anthropic.Config` adds `AuthToken`
   (Authorization Bearer, as OpenRouter and many gateways expect, as an
   alternative to `APIKey`), `Headers`, `Timeout`, `MaxRetries`, `ProviderID`,
-  and `PricingDomain`. Provider identity and pricing domain default from the
-  `BaseURL` host: `anthropic_api` only for api.anthropic.com, `openrouter` for
-  openrouter.ai, and the new unpriced `PricingDomainAnthropicCompatible`
-  otherwise, so a gateway is never estimated at Anthropic list prices. Thinking
+  and `PricingDomain`. Both default from the `BaseURL` host. `ProviderID` is
+  `openrouter` for openrouter.ai and `anthropic` otherwise. `PricingDomain` is
+  `anthropic_api` only for api.anthropic.com, `openrouter` for openrouter.ai,
+  and the new unpriced `anthropic_compatible`
+  (`PricingDomainAnthropicCompatible`) for any other host, so a gateway is never
+  estimated at Anthropic list prices. Thinking
   streamed without a signature is kept as display-only reasoning instead of
   failing the stream, and is not replayed. Non-streaming requests the SDK
   would refuse as too long now fail as invalid requests rather than

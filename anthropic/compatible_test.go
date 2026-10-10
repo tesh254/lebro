@@ -49,10 +49,13 @@ func TestCompatibleEndpointCredentialsAndHeaders(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var got http.Header
-			var path string
+			type captured struct {
+				header http.Header
+				path   string
+			}
+			requests := make(chan captured, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				got, path = r.Header.Clone(), r.URL.Path
+				requests <- captured{header: r.Header.Clone(), path: r.URL.Path}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(compatibleMessageResponse))
 			}))
@@ -67,6 +70,8 @@ func TestCompatibleEndpointCredentialsAndHeaders(t *testing.T) {
 			if _, err := model.Generate(context.Background(), compatibleRequest()); err != nil {
 				t.Fatal(err)
 			}
+			request := <-requests
+			got, path := request.header, request.path
 			if path != "/api/v1/messages" {
 				t.Fatalf("path = %q, want the configured base URL", path)
 			}
@@ -88,6 +93,9 @@ func TestNewRejectsAmbiguousCompatibleConfig(t *testing.T) {
 		"no credential":          {},
 		"both credentials":       {APIKey: "key", AuthToken: "token"},
 		"relative base URL":      {APIKey: "key", BaseURL: "/api"},
+		"non-HTTP base URL":      {APIKey: "key", BaseURL: "ftp://example.com"},
+		"hostless base URL":      {APIKey: "key", BaseURL: "https:///api"},
+		"opaque base URL":        {APIKey: "key", BaseURL: "mailto:api@example.com"},
 		"credential header":      {APIKey: "key", Headers: map[string]string{"Authorization": "Bearer other"}},
 		"negative timeout":       {APIKey: "key", Timeout: -1},
 		"negative retries count": {APIKey: "key", MaxRetries: new(-1)},

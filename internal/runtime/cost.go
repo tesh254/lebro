@@ -93,9 +93,10 @@ const (
 	PricingDomainOpenAI           PricingDomain = "openai_api"
 	PricingDomainOpenAICompatible PricingDomain = "openai_compatible"
 	PricingDomainAnthropic        PricingDomain = "anthropic_api"
-	// PricingDomainAnthropicCompatible is any non-Anthropic endpoint that
-	// speaks the Messages API. It has no bundled rates, so a gateway is never
-	// priced as the Anthropic API by accident.
+	// PricingDomainAnthropicCompatible is a gateway that speaks the Messages
+	// API and has no separately modeled pricing domain (OpenRouter has its
+	// own). It has no bundled rates, so a gateway is never priced as the
+	// Anthropic API by accident.
 	PricingDomainAnthropicCompatible PricingDomain = "anthropic_compatible"
 	PricingDomainGemini              PricingDomain = "gemini_developer_api"
 	PricingDomainVertexAI            PricingDomain = "vertex_ai"
