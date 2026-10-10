@@ -111,6 +111,58 @@ func (r ModelReasoning) Validate() error {
 	return nil
 }
 
+// StreamContentPartKind identifies one displayable channel in a streamed
+// model response.
+type StreamContentPartKind string
+
+const (
+	// StreamContentPartText is ordinary assistant response text.
+	StreamContentPartText StreamContentPartKind = "text"
+	// StreamContentPartReasoning is displayable model reasoning. Its optional
+	// ReasoningDetails are opaque provider state for replay, not presentation.
+	StreamContentPartReasoning StreamContentPartKind = "reasoning"
+)
+
+// StreamContentPart is one ordered piece of streamed model content. Parts are
+// canonical when StreamDelta.Parts is non-empty: consumers must preserve their
+// order instead of reconstructing one from StreamDelta.Text and Reasoning.
+//
+// Text is displayable content. ReasoningDetails is valid only for reasoning
+// parts and retains provider-issued replay metadata without coupling callers
+// to a provider SDK.
+type StreamContentPart struct {
+	Kind             StreamContentPartKind `json:"kind"`
+	Text             string                `json:"text,omitempty"`
+	ReasoningDetails ModelReasoningDetails `json:"reasoning_details,omitempty"`
+}
+
+func cloneStreamContentParts(parts []StreamContentPart) []StreamContentPart {
+	return append([]StreamContentPart(nil), parts...)
+}
+
+// Validate checks the invariant for an ordered streamed content part.
+func (p StreamContentPart) Validate() error {
+	switch p.Kind {
+	case StreamContentPartText:
+		if p.Text == "" {
+			return errors.New("lebro: text stream content part must contain text")
+		}
+		if p.ReasoningDetails != "" {
+			return errors.New("lebro: text stream content part must not contain reasoning details")
+		}
+	case StreamContentPartReasoning:
+		if p.Text == "" && p.ReasoningDetails == "" {
+			return errors.New("lebro: reasoning stream content part must contain text or reasoning details")
+		}
+		if p.ReasoningDetails != "" && !json.Valid(p.ReasoningDetails.Raw()) {
+			return errors.New("lebro: stream content part reasoning details must be valid JSON")
+		}
+	default:
+		return fmt.Errorf("lebro: unsupported stream content part kind %q", p.Kind)
+	}
+	return nil
+}
+
 // ModelOutputSchema requests a final JSON value that conforms to Schema. Name
 // and Description are provider-facing hints and do not change local validation.
 type ModelOutputSchema struct {
@@ -344,6 +396,10 @@ func AsStreamingModel(model Model) StreamingModel {
 // when the adapter aborts the stream before completion; a terminal delta with
 // a non-nil Err is the last delta produced.
 type StreamDelta struct {
+	// Parts preserves the provider's received ordering between text and
+	// reasoning. When non-empty it is canonical; Text and Reasoning remain
+	// compatibility projections for existing consumers.
+	Parts            []StreamContentPart
 	Text             string
 	Reasoning        ModelReasoning
 	ToolCall         *ModelToolCall
@@ -364,8 +420,13 @@ func (d StreamDelta) IsTerminal() bool {
 // called by the agent runtime as deltas arrive so a malformed stream fails
 // fast instead of corrupting the transcript.
 func (d StreamDelta) Validate() error {
-	if d.Text == "" && d.Reasoning.IsZero() && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && len(d.Accounting.Costs) == 0 && d.Accounting.ProviderRequestID == "" && d.Err == nil {
+	if len(d.Parts) == 0 && d.Text == "" && d.Reasoning.IsZero() && d.ToolCall == nil && d.StructuredOutput == "" && d.FinishReason == "" && d.Usage == (ModelUsage{}) && len(d.Accounting.Costs) == 0 && d.Accounting.ProviderRequestID == "" && d.Err == nil {
 		return errors.New("lebro: stream delta is empty")
+	}
+	for _, part := range d.Parts {
+		if err := part.Validate(); err != nil {
+			return fmt.Errorf("lebro: stream delta part: %w", err)
+		}
 	}
 	if d.ToolCall != nil {
 		if err := d.ToolCall.Validate(); err != nil {

@@ -73,7 +73,7 @@ func (s *Server) handleAgentAISDKStream(w http.ResponseWriter, r *http.Request) 
 	var total lebro.ModelUsage
 	for delta := range run.Deltas {
 		accumulateUsage(&total, delta.Usage)
-		if !writer.delta(s.config.Redactor(delta)) {
+		if !writer.delta(redactStreamDelta(s.config.Redactor, delta)) {
 			run.Cancel()
 			for range run.Deltas {
 			}
@@ -116,11 +116,26 @@ func (w *aiSDKStreamWriter) start() bool {
 }
 
 func (w *aiSDKStreamWriter) delta(delta lebro.StreamDelta) bool {
-	if delta.Text != "" && !w.text(delta.Text) {
-		return false
-	}
-	if delta.Reasoning.Text != "" && !w.reasoning(delta.Reasoning.Text) {
-		return false
+	if len(delta.Parts) > 0 {
+		for _, part := range delta.Parts {
+			switch part.Kind {
+			case lebro.StreamContentPartText:
+				if !w.text(part.Text) {
+					return false
+				}
+			case lebro.StreamContentPartReasoning:
+				if !w.reasoning(part.Text) {
+					return false
+				}
+			}
+		}
+	} else {
+		if delta.Text != "" && !w.text(delta.Text) {
+			return false
+		}
+		if delta.Reasoning.Text != "" && !w.reasoning(delta.Reasoning.Text) {
+			return false
+		}
 	}
 	if delta.ToolCall != nil && !w.toolCall(*delta.ToolCall) {
 		return false

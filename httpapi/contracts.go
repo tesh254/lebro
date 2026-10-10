@@ -166,16 +166,27 @@ type HealthResponse struct {
 // reported once, through the terminal event's Error, rather than as an
 // otherwise-empty delta followed by the real classification.
 type StreamEvent struct {
-	Type             string          `json:"type"`
-	RunID            string          `json:"run_id,omitempty"`
-	Text             string          `json:"text,omitempty"`
-	Reasoning        string          `json:"reasoning,omitempty"`
-	ToolCall         *ToolCallEvent  `json:"tool_call,omitempty"`
-	StructuredOutput json.RawMessage `json:"structured_output,omitempty"`
-	FinishReason     string          `json:"finish_reason,omitempty"`
-	Status           string          `json:"status,omitempty"`
-	Usage            *Usage          `json:"usage,omitempty"`
-	Error            *ErrorBody      `json:"error,omitempty"`
+	Type  string `json:"type"`
+	RunID string `json:"run_id,omitempty"`
+	// Parts is the canonical display ordering when present. Text and
+	// Reasoning remain compatibility projections; provider replay details are
+	// deliberately never exposed on the HTTP wire.
+	Parts            []StreamContentPart `json:"parts,omitempty"`
+	Text             string              `json:"text,omitempty"`
+	Reasoning        string              `json:"reasoning,omitempty"`
+	ToolCall         *ToolCallEvent      `json:"tool_call,omitempty"`
+	StructuredOutput json.RawMessage     `json:"structured_output,omitempty"`
+	FinishReason     string              `json:"finish_reason,omitempty"`
+	Status           string              `json:"status,omitempty"`
+	Usage            *Usage              `json:"usage,omitempty"`
+	Error            *ErrorBody          `json:"error,omitempty"`
+}
+
+// StreamContentPart is one displayable ordered content item on an HTTP model
+// delta. It intentionally omits opaque provider reasoning details.
+type StreamContentPart struct {
+	Kind lebro.StreamContentPartKind `json:"kind"`
+	Text string                      `json:"text,omitempty"`
 }
 
 // ToolCallEvent is a model-requested tool invocation on the stream. Arguments

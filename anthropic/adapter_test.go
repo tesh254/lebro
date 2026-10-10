@@ -72,6 +72,72 @@ func TestStreamInitializesValues(t *testing.T) {
 	}
 }
 
+type scriptedAnthropicStream struct {
+	events []claude.MessageStreamEventUnion
+	next   int
+}
+
+func (s *scriptedAnthropicStream) Next() bool {
+	if s.next >= len(s.events) {
+		return false
+	}
+	s.next++
+	return true
+}
+
+func (s *scriptedAnthropicStream) Current() claude.MessageStreamEventUnion {
+	return s.events[s.next-1]
+}
+
+func (*scriptedAnthropicStream) Err() error   { return nil }
+func (*scriptedAnthropicStream) Close() error { return nil }
+
+func anthropicStreamEvent(t *testing.T, raw string) claude.MessageStreamEventUnion {
+	t.Helper()
+	var event claude.MessageStreamEventUnion
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		t.Fatalf("decode stream event: %v", err)
+	}
+	return event
+}
+
+func TestStreamPreservesOrderedContentParts(t *testing.T) {
+	stream := &scriptedAnthropicStream{events: []claude.MessageStreamEventUnion{
+		anthropicStreamEvent(t, `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`),
+		anthropicStreamEvent(t, `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"first "}}`),
+		anthropicStreamEvent(t, `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`),
+		anthropicStreamEvent(t, `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}`),
+		anthropicStreamEvent(t, `{"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":""}}`),
+		anthropicStreamEvent(t, `{"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"second"}}`),
+		anthropicStreamEvent(t, `{"type":"message_stop"}`),
+	}}
+	r := &anthropicStream{
+		stream:  stream,
+		values:  make(chan lebro.StreamDelta, 8),
+		done:    make(chan struct{}),
+		errorFn: func(_ context.Context, err error) error { return err },
+	}
+	r.start(context.Background(), lebro.ModelRequest{})
+
+	var parts []lebro.StreamContentPart
+	for delta := range r.values {
+		parts = append(parts, delta.Parts...)
+	}
+	want := []lebro.StreamContentPart{
+		{Kind: lebro.StreamContentPartReasoning, Text: "first "},
+		{Kind: lebro.StreamContentPartText, Text: "answer"},
+		{Kind: lebro.StreamContentPartReasoning, Text: "second"},
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("parts = %#v, want %#v", parts, want)
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Fatalf("part %d = %#v, want %#v", i, parts[i], want[i])
+		}
+	}
+}
+
 func TestProviderContractFixturesBuildRequests(t *testing.T) {
 	model, err := New(Config{APIKey: "key", Model: "fixture-model"})
 	if err != nil {

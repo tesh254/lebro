@@ -276,6 +276,121 @@ func TestAgentRunStreamPreservesReasoningDeltasAndTranscript(t *testing.T) {
 	}
 }
 
+func TestAgentRunStreamPreservesOrderedPartsInDeltasAndEvents(t *testing.T) {
+	t.Parallel()
+
+	details := NewModelReasoningDetails(json.RawMessage(`[{"type":"thinking","signature":"opaque"}]`))
+	parts := []StreamContentPart{
+		{Kind: StreamContentPartReasoning, Text: "first "},
+		{Kind: StreamContentPartText, Text: "answer"},
+		{Kind: StreamContentPartReasoning, Text: "second", ReasoningDetails: details},
+	}
+	model := newStreamScriptedModel([]StreamDelta{
+		{
+			Parts:     parts,
+			Text:      "compatibility text",
+			Reasoning: ModelReasoning{Text: "compatibility reasoning"},
+		},
+		{FinishReason: FinishReasonStop},
+	})
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "ordered-parts", Model: "fixture-model"},
+		Model:      model,
+		Listener:   recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "solve"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var streamed []StreamContentPart
+	for delta := range run.Deltas {
+		streamed = append(streamed, delta.Parts...)
+	}
+	result, err := run.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streamed) != len(parts) {
+		t.Fatalf("streamed parts = %#v", streamed)
+	}
+	for i := range parts {
+		if streamed[i] != parts[i] {
+			t.Fatalf("streamed part %d = %#v, want %#v", i, streamed[i], parts[i])
+		}
+	}
+	message := result.Messages[len(result.Messages)-1]
+	if message.Content != "answer" || message.Reasoning.Text != "first second" || message.Reasoning.Details != details {
+		t.Fatalf("assistant message = %#v", message)
+	}
+	for _, event := range recorder.Events() {
+		if event.Type != RunEventDelta || len(event.DeltaParts) == 0 {
+			continue
+		}
+		if len(event.DeltaParts) != len(parts) {
+			t.Fatalf("event parts = %#v", event.DeltaParts)
+		}
+		for i := range parts {
+			if event.DeltaParts[i] != parts[i] {
+				t.Fatalf("event part %d = %#v, want %#v", i, event.DeltaParts[i], parts[i])
+			}
+		}
+		return
+	}
+	t.Fatal("ordered parts did not reach RunEvent")
+}
+
+func TestAgentRunStreamDoesNotInventPartsForLegacyMixedDelta(t *testing.T) {
+	t.Parallel()
+
+	model := newStreamScriptedModel([]StreamDelta{
+		{Text: "answer", Reasoning: ModelReasoning{Text: "thinking"}},
+		{FinishReason: FinishReasonStop},
+	})
+	recorder := NewRunRecorder()
+	agent, err := NewAgent(AgentConfig{
+		Definition: AgentDefinition{ID: "legacy-mixed", Model: "fixture-model"},
+		Model:      model,
+		Listener:   recorder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := agent.RunStream(context.Background(), RunInput{Messages: []Message{{Role: RoleUser, Content: "solve"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for delta := range run.Deltas {
+		if delta.Text == "" && delta.Reasoning.IsZero() {
+			continue
+		}
+		if delta.Text != "answer" || delta.Reasoning.Text != "thinking" || delta.Parts != nil {
+			t.Fatalf("legacy delta = %#v", delta)
+		}
+	}
+	result, err := run.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := result.Messages[len(result.Messages)-1]
+	if message.Content != "answer" || message.Reasoning.Text != "thinking" {
+		t.Fatalf("assistant message = %#v", message)
+	}
+	for _, event := range recorder.Events() {
+		if event.Type == RunEventDelta && event.DeltaText == "answer" {
+			if event.DeltaParts != nil {
+				t.Fatalf("legacy mixed event invented parts: %#v", event.DeltaParts)
+			}
+			return
+		}
+	}
+	t.Fatal("legacy mixed delta did not reach RunEvent")
+}
+
 func TestAgentRunStreamRejectsInvalidReasoningConfigBeforeModelCall(t *testing.T) {
 	t.Parallel()
 
@@ -718,6 +833,35 @@ func TestStreamDeltaValidateRejectsEmptyDelta(t *testing.T) {
 	t.Parallel()
 	if err := (StreamDelta{}).Validate(); err == nil {
 		t.Fatal("empty delta should fail validation")
+	}
+}
+
+func TestStreamDeltaValidateSupportsLegacySingleChannelDeltas(t *testing.T) {
+	t.Parallel()
+	for _, delta := range []StreamDelta{
+		{Text: "answer"},
+		{Reasoning: ModelReasoning{Text: "thinking"}},
+	} {
+		if err := delta.Validate(); err != nil {
+			t.Fatalf("legacy delta %#v: %v", delta, err)
+		}
+		if delta.Parts != nil {
+			t.Fatalf("legacy delta invented parts: %#v", delta.Parts)
+		}
+	}
+}
+
+func TestStreamDeltaValidateRejectsInvalidContentParts(t *testing.T) {
+	t.Parallel()
+	for _, delta := range []StreamDelta{
+		{Parts: []StreamContentPart{{Kind: StreamContentPartText}}},
+		{Parts: []StreamContentPart{{Kind: StreamContentPartText, Text: "text", ReasoningDetails: NewModelReasoningDetails(json.RawMessage(`{}`))}}},
+		{Parts: []StreamContentPart{{Kind: StreamContentPartReasoning}}},
+		{Parts: []StreamContentPart{{Kind: "other", Text: "text"}}},
+	} {
+		if err := delta.Validate(); err == nil {
+			t.Fatalf("invalid parts accepted: %#v", delta)
+		}
 	}
 }
 

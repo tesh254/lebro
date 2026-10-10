@@ -479,9 +479,16 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 					redacted[event.Index] = event.ContentBlock.Data
 				}
 			case "content_block_delta":
+				if event.Delta.Text != "" && event.Delta.Thinking != "" {
+					r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: providerName, Message: "lebro: Anthropic stream delta contains text and thinking in one content block"}})
+					return
+				}
 				if event.Delta.Text != "" {
 					text.WriteString(event.Delta.Text)
-					if !r.send(lebro.StreamDelta{Text: event.Delta.Text}) {
+					if !r.send(lebro.StreamDelta{
+						Parts: []lebro.StreamContentPart{{Kind: lebro.StreamContentPartText, Text: event.Delta.Text}},
+						Text:  event.Delta.Text,
+					}) {
 						return
 					}
 				}
@@ -492,7 +499,11 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 					if block := thinking[event.Index]; block != nil {
 						block.WriteString(event.Delta.Thinking)
 					}
-					if !r.send(lebro.StreamDelta{Reasoning: lebro.ModelReasoning{Text: event.Delta.Thinking}}) {
+					reasoning := lebro.ModelReasoning{Text: event.Delta.Thinking}
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, Text: reasoning.Text}},
+						Reasoning: reasoning,
+					}) {
 						return
 					}
 				}
@@ -520,14 +531,22 @@ func (r *anthropicStream) start(ctx context.Context, request lebro.ModelRequest)
 						r.send(lebro.StreamDelta{Err: &lebro.ModelError{Kind: lebro.ModelErrorMalformedResponse, Provider: providerName, Message: "lebro: Anthropic thinking block has no signature"}})
 						return
 					}
-					if !r.send(lebro.StreamDelta{Reasoning: newAnthropicReasoning("", []anthropicReasoningDetail{detail})}) {
+					reasoning := newAnthropicReasoning("", []anthropicReasoningDetail{detail})
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, ReasoningDetails: reasoning.Details}},
+						Reasoning: reasoning,
+					}) {
 						return
 					}
 					delete(thinking, event.Index)
 					delete(thinkingSignatures, event.Index)
 				}
 				if data, ok := redacted[event.Index]; ok {
-					if !r.send(lebro.StreamDelta{Reasoning: newAnthropicReasoning("", []anthropicReasoningDetail{{Type: "redacted_thinking", Data: data}})}) {
+					reasoning := newAnthropicReasoning("", []anthropicReasoningDetail{{Type: "redacted_thinking", Data: data}})
+					if !r.send(lebro.StreamDelta{
+						Parts:     []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, ReasoningDetails: reasoning.Details}},
+						Reasoning: reasoning,
+					}) {
 						return
 					}
 					delete(redacted, event.Index)

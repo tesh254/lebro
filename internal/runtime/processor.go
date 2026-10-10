@@ -217,6 +217,7 @@ type ProcessorStreamDeltaRequest struct {
 
 func (r ProcessorStreamDeltaRequest) Clone() ProcessorStreamDeltaRequest {
 	r.Run = r.Run.Clone()
+	r.Delta.Parts = cloneStreamContentParts(r.Delta.Parts)
 	if r.Delta.ToolCall != nil {
 		call := *r.Delta.ToolCall
 		call.Arguments = cloneRawMessage(call.Arguments)

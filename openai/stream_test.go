@@ -189,6 +189,60 @@ func TestModelStreamDeliversOrderedReasoningAndUsage(t *testing.T) {
 	}
 }
 
+func TestModelStreamPreservesOrderedContentParts(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		write := func(event string) {
+			_, _ = io.WriteString(w, "data: "+event+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		write(`{"id":"chatcmpl-ordered","choices":[{"index":0,"delta":{"reasoning":"first "}}]}`)
+		// Content deliberately appears before reasoning in one JSON object. The
+		// adapter must retain that received order rather than use a fixed channel
+		// ordering while decoding the frame.
+		write(`{"id":"chatcmpl-ordered","choices":[{"index":0,"delta":{"content":"answer","reasoning":"second"},"finish_reason":"stop"}]}`)
+		write(`[DONE]`)
+	}))
+	t.Cleanup(server.Close)
+
+	model := newAdapter(t, server, Config{APIKey: "test-key", Model: "gpt-4o"})
+	reader, err := model.Stream(context.Background(), lebro.ModelRequest{Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "solve"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+
+	var parts []lebro.StreamContentPart
+	for {
+		delta, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts = append(parts, delta.Parts...)
+	}
+	want := []lebro.StreamContentPart{
+		{Kind: lebro.StreamContentPartReasoning, Text: "first "},
+		{Kind: lebro.StreamContentPartText, Text: "answer"},
+		{Kind: lebro.StreamContentPartReasoning, Text: "second"},
+	}
+	if len(parts) != len(want) {
+		t.Fatalf("parts = %#v, want %#v", parts, want)
+	}
+	for i := range want {
+		if parts[i] != want[i] {
+			t.Fatalf("part %d = %#v, want %#v", i, parts[i], want[i])
+		}
+	}
+}
+
 // streamToolCallFixture events model the canonical fragmented streamed tool
 // call: fragment one carries id and name; fragments two and three append
 // argument JSON across separate SSE events, as OpenAI-compatible providers do.

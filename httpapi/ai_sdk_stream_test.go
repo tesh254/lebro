@@ -113,6 +113,46 @@ func TestAISDKStreamsReasoningWithoutOpaqueDetails(t *testing.T) {
 	}
 }
 
+func TestAISDKStreamsCanonicalContentPartsInOrder(t *testing.T) {
+	for _, version := range []string{"v4", "v5"} {
+		t.Run(version, func(t *testing.T) {
+			model := streamingModel{deltas: []lebro.StreamDelta{
+				{
+					Parts: []lebro.StreamContentPart{
+						{Kind: lebro.StreamContentPartReasoning, Text: "first ", ReasoningDetails: lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque"}]`))},
+						{Kind: lebro.StreamContentPartText, Text: "answer"},
+						{Kind: lebro.StreamContentPartReasoning, Text: "second"},
+					},
+					Text:      "answer",
+					Reasoning: lebro.ModelReasoning{Text: "first second"},
+				},
+				{FinishReason: lebro.FinishReasonStop},
+			}}
+			server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
+			must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+			recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/ai-sdk/stream?version="+version, httpapi.RunRequest{})
+			body := recorder.Body.String()
+			if strings.Contains(body, "opaque") {
+				t.Fatalf("AI SDK stream leaked replay details: %s", body)
+			}
+			var first, text, second string
+			if version == "v4" {
+				first = `2:[{"reasoning":"first "}]`
+				text = `0:"answer"`
+				second = `2:[{"reasoning":"second"}]`
+			} else {
+				first = `{"data":"first ","type":"data-lebro-reasoning"}`
+				text = `{"delta":"answer","id":"text-0","type":"text-delta"}`
+				second = `{"data":"second","type":"data-lebro-reasoning"}`
+			}
+			firstAt, textAt, secondAt := strings.Index(body, first), strings.Index(body, text), strings.Index(body, second)
+			if firstAt < 0 || textAt < firstAt || secondAt < textAt {
+				t.Fatalf("canonical part order missing from stream: %s", body)
+			}
+		})
+	}
+}
+
 func TestAISDKV4StructuredOutputFixture(t *testing.T) {
 	model := streamingModel{deltas: []lebro.StreamDelta{
 		{StructuredOutput: lebro.NewModelStructuredOutput(json.RawMessage(`{"answer":"world"}`))},

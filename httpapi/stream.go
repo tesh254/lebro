@@ -83,7 +83,7 @@ func (s *Server) handleAgentStream(w http.ResponseWriter, r *http.Request) {
 	var total lebro.ModelUsage
 	for delta := range run.Deltas {
 		accumulateUsage(&total, delta.Usage)
-		redacted := s.config.Redactor(delta)
+		redacted := redactStreamDelta(s.config.Redactor, delta)
 		if !hasStreamableContent(redacted) {
 			continue
 		}
@@ -165,6 +165,12 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 		Reasoning:    delta.Reasoning.Text,
 		FinishReason: string(delta.FinishReason),
 	}
+	if len(delta.Parts) > 0 {
+		event.Parts = make([]StreamContentPart, 0, len(delta.Parts))
+		for _, part := range delta.Parts {
+			event.Parts = append(event.Parts, StreamContentPart{Kind: part.Kind, Text: part.Text})
+		}
+	}
 	if delta.StructuredOutput != "" {
 		event.StructuredOutput = delta.StructuredOutput.Raw()
 	}
@@ -195,7 +201,8 @@ func streamEventFromDelta(delta lebro.StreamDelta) StreamEvent {
 // Redactor suppression rides on the same predicate: a redactor that returns the
 // zero delta produces no content and is skipped.
 func hasStreamableContent(delta lebro.StreamDelta) bool {
-	return delta.Text != "" ||
+	return len(delta.Parts) > 0 ||
+		delta.Text != "" ||
 		delta.Reasoning.Text != "" ||
 		delta.ToolCall != nil ||
 		delta.StructuredOutput != "" ||

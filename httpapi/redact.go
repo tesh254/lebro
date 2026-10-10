@@ -8,10 +8,39 @@ import "github.com/tesh254/lebro"
 // A Redactor must not retain the delta it is given or the slices reachable from
 // it: the runtime owns those and reuses the surrounding buffers after the call
 // returns. Return a delta built from values the redactor owns, or the argument
-// with fields cleared.
+// with fields cleared. When Parts is non-empty, it is the canonical streamed
+// content, so a redactor that removes or rewrites text or reasoning must apply
+// the same policy to Parts.
 //
 // Returning the zero StreamDelta suppresses the delta entirely; it is not sent.
 type Redactor func(lebro.StreamDelta) lebro.StreamDelta
+
+// redactStreamDelta preserves the privacy posture of redactors written before
+// ordered parts existed. Clearing a legacy text or reasoning projection also
+// clears the corresponding canonical parts. A redactor that rewrites content
+// rather than removing it must rewrite Parts explicitly, because one legacy
+// string can represent several ordered parts.
+func redactStreamDelta(redactor Redactor, delta lebro.StreamDelta) lebro.StreamDelta {
+	redacted := redactor(delta)
+	if len(delta.Parts) == 0 || len(redacted.Parts) == 0 {
+		return redacted
+	}
+	removeText := delta.Text != "" && redacted.Text == ""
+	removeReasoning := !delta.Reasoning.IsZero() && redacted.Reasoning.IsZero()
+	if !removeText && !removeReasoning {
+		return redacted
+	}
+	parts := make([]lebro.StreamContentPart, 0, len(redacted.Parts))
+	for _, part := range redacted.Parts {
+		if (part.Kind == lebro.StreamContentPartText && removeText) ||
+			(part.Kind == lebro.StreamContentPartReasoning && removeReasoning) {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	redacted.Parts = parts
+	return redacted
+}
 
 // DefaultRedactor removes model-supplied tool-call arguments and reasoning
 // while passing assistant text and structured output through.
@@ -28,6 +57,15 @@ type Redactor func(lebro.StreamDelta) lebro.StreamDelta
 // more. Pass PassthroughRedactor to opt out deliberately.
 func DefaultRedactor(delta lebro.StreamDelta) lebro.StreamDelta {
 	delta.Reasoning = lebro.ModelReasoning{}
+	if len(delta.Parts) > 0 {
+		parts := make([]lebro.StreamContentPart, 0, len(delta.Parts))
+		for _, part := range delta.Parts {
+			if part.Kind == lebro.StreamContentPartText {
+				parts = append(parts, part)
+			}
+		}
+		delta.Parts = parts
+	}
 	if delta.ToolCall == nil {
 		return delta
 	}

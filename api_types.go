@@ -104,6 +104,8 @@ type (
 	ReasoningConfig             = runtime.ReasoningConfig
 	ModelReasoningDetails       = runtime.ModelReasoningDetails
 	ModelReasoning              = runtime.ModelReasoning
+	StreamContentPartKind       = runtime.StreamContentPartKind
+	StreamContentPart           = runtime.StreamContentPart
 	ModelUsage                  = runtime.ModelUsage
 	Decimal                     = runtime.Decimal
 	CostSource                  = runtime.CostSource
@@ -352,6 +354,9 @@ const (
 	ReasoningHigh    = runtime.ReasoningHigh
 	ReasoningXHigh   = runtime.ReasoningXHigh
 	ReasoningMax     = runtime.ReasoningMax
+
+	StreamContentPartText      = runtime.StreamContentPartText
+	StreamContentPartReasoning = runtime.StreamContentPartReasoning
 
 	RunStatusPending   = runtime.RunStatusPending
 	RunStatusRunning   = runtime.RunStatusRunning

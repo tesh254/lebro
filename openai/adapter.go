@@ -1166,12 +1166,13 @@ func (r *sseStreamReader) handleEvent(event chatStreamEvent) (lebro.StreamDelta,
 		return lebro.StreamDelta{}, false, nil
 	}
 	choice := event.Choices[0]
-	if reasoning := chatMessageReasoning(choice.Delta.ReasoningText, choice.Delta.ReasoningDetails); !reasoning.IsZero() {
-		r.pending = append(r.pending, lebro.StreamDelta{Reasoning: reasoning})
+	parts, text, reasoning, err := choice.Delta.orderedContentParts()
+	if err != nil {
+		return lebro.StreamDelta{}, false, r.model.malformedResponse(err.Error(), err)
 	}
-	if choice.Delta.Content != "" {
-		r.textBuf.WriteString(choice.Delta.Content)
-		r.pending = append(r.pending, lebro.StreamDelta{Text: choice.Delta.Content})
+	if len(parts) > 0 {
+		r.textBuf.WriteString(text)
+		r.pending = append(r.pending, lebro.StreamDelta{Parts: parts, Text: text, Reasoning: reasoning})
 	}
 	// A finish reason ends the generation: tool fragments arriving after the
 	// calls were completed cannot belong to a valid response and would
@@ -1437,6 +1438,92 @@ type chatStreamDelta struct {
 	ReasoningText    string                   `json:"reasoning,omitempty"`
 	ReasoningDetails json.RawMessage          `json:"reasoning_details,omitempty"`
 	ToolCalls        []chatStreamToolFragment `json:"tool_calls,omitempty"`
+	contentOrder     []chatStreamContentKind
+}
+
+type chatStreamContentKind uint8
+
+const (
+	chatStreamContentText chatStreamContentKind = iota + 1
+	chatStreamContentReasoning
+)
+
+// UnmarshalJSON retains the member order of displayable content in an
+// OpenAI-compatible delta. The regular Go decoder otherwise discards object
+// member ordering, which would force us to fabricate an order whenever a
+// provider puts text and reasoning in the same SSE frame.
+func (d *chatStreamDelta) UnmarshalJSON(data []byte) error {
+	type plain chatStreamDelta
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*d = chatStreamDelta(decoded)
+
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	seenText, seenReasoning := false, false
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return errors.New("lebro: invalid OpenAI stream delta member")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+		switch key {
+		case "content":
+			if d.Content != "" && !seenText {
+				d.contentOrder = append(d.contentOrder, chatStreamContentText)
+				seenText = true
+			}
+		case "reasoning", "reasoning_details":
+			if (d.ReasoningText != "" || len(d.ReasoningDetails) > 0) && !seenReasoning {
+				d.contentOrder = append(d.contentOrder, chatStreamContentReasoning)
+				seenReasoning = true
+			}
+		}
+	}
+	return nil
+}
+
+func (d chatStreamDelta) orderedContentParts() ([]lebro.StreamContentPart, string, lebro.ModelReasoning, error) {
+	reasoning := chatMessageReasoning(d.ReasoningText, d.ReasoningDetails)
+	if d.Content == "" && reasoning.IsZero() {
+		return nil, "", lebro.ModelReasoning{}, nil
+	}
+	if len(d.contentOrder) == 0 {
+		switch {
+		case d.Content != "":
+			return []lebro.StreamContentPart{{Kind: lebro.StreamContentPartText, Text: d.Content}}, d.Content, lebro.ModelReasoning{}, nil
+		case !reasoning.IsZero():
+			return []lebro.StreamContentPart{{Kind: lebro.StreamContentPartReasoning, Text: reasoning.Text, ReasoningDetails: reasoning.Details}}, "", reasoning, nil
+		}
+	}
+	parts := make([]lebro.StreamContentPart, 0, len(d.contentOrder))
+	for _, kind := range d.contentOrder {
+		switch kind {
+		case chatStreamContentText:
+			if d.Content != "" {
+				parts = append(parts, lebro.StreamContentPart{Kind: lebro.StreamContentPartText, Text: d.Content})
+			}
+		case chatStreamContentReasoning:
+			if !reasoning.IsZero() {
+				parts = append(parts, lebro.StreamContentPart{Kind: lebro.StreamContentPartReasoning, Text: reasoning.Text, ReasoningDetails: reasoning.Details})
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return nil, "", lebro.ModelReasoning{}, errors.New("lebro: OpenAI stream delta omitted displayable content ordering")
+	}
+	return parts, d.Content, reasoning, nil
 }
 
 // chatStreamToolFragment is one incremental piece of a streamed tool call.

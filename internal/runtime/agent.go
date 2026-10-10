@@ -1435,11 +1435,8 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 			response, streamErr := partialFailure(context.Canceled)
 			return response, attempts, resolved, streamErr
 		}
-		if delta.Text != "" {
-			contentBuilder.WriteString(delta.Text)
-		}
 		var reasoningErr error
-		reasoning, reasoningErr = appendReasoning(reasoning, delta.Reasoning)
+		reasoning, reasoningErr = appendStreamDeltaContent(&contentBuilder, reasoning, delta)
 		if reasoningErr != nil {
 			response, streamErr := partialFailure(&ModelError{Kind: ModelErrorMalformedResponse, Provider: "agent", Message: reasoningErr.Error(), Err: reasoningErr})
 			return response, attempts, resolved, streamErr
@@ -1470,6 +1467,31 @@ func (a *Agent) consumeStream(ctx context.Context, runID RunID, step int, stepID
 		return response, attempts, resolved, err
 	}
 	return response, attempts, resolved, nil
+}
+
+// appendStreamDeltaContent keeps the compatibility fields for old adapters,
+// but treats ordered Parts as authoritative whenever an adapter provides them.
+// In particular, a legacy delta that happens to contain both Text and
+// Reasoning is deliberately not turned into parts: its relative order was
+// never represented by the old contract.
+func appendStreamDeltaContent(content *strings.Builder, current ModelReasoning, delta StreamDelta) (ModelReasoning, error) {
+	if len(delta.Parts) == 0 {
+		content.WriteString(delta.Text)
+		return appendReasoning(current, delta.Reasoning)
+	}
+	for _, part := range delta.Parts {
+		switch part.Kind {
+		case StreamContentPartText:
+			content.WriteString(part.Text)
+		case StreamContentPartReasoning:
+			var err error
+			current, err = appendReasoning(current, ModelReasoning{Text: part.Text, Details: part.ReasoningDetails})
+			if err != nil {
+				return current, err
+			}
+		}
+	}
+	return current, nil
 }
 
 func hasPartialStreamResponse(response ModelResponse) bool {

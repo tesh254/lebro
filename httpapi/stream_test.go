@@ -176,6 +176,74 @@ func TestStreamExposesReasoningTextWithoutOpaqueDetails(t *testing.T) {
 	}
 }
 
+func TestStreamPreservesCanonicalContentPartOrderWithoutDetails(t *testing.T) {
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{
+			Parts: []lebro.StreamContentPart{
+				{Kind: lebro.StreamContentPartReasoning, Text: "first ", ReasoningDetails: lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque-first"}]`))},
+				{Kind: lebro.StreamContentPartText, Text: "answer"},
+				{Kind: lebro.StreamContentPartReasoning, Text: "second", ReasoningDetails: lebro.NewModelReasoningDetails(json.RawMessage(`[{"signature":"opaque-second"}]`))},
+			},
+			Text:      "answer",
+			Reasoning: lebro.ModelReasoning{Text: "first second"},
+		},
+		{FinishReason: lebro.FinishReasonStop},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{Redactor: httpapi.PassthroughRedactor})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", recorder.Code, recorder.Body)
+	}
+	if strings.Contains(recorder.Body.String(), "opaque-") {
+		t.Fatalf("stream leaked replay-only reasoning details: %s", recorder.Body.String())
+	}
+	events := readSSE(t, recorder.Body)
+	if len(events) < 2 || len(events[0].data.Parts) != 3 {
+		t.Fatalf("events = %#v", events)
+	}
+	got := events[0].data.Parts
+	want := []httpapi.StreamContentPart{
+		{Kind: lebro.StreamContentPartReasoning, Text: "first "},
+		{Kind: lebro.StreamContentPartText, Text: "answer"},
+		{Kind: lebro.StreamContentPartReasoning, Text: "second"},
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("part %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestLegacyRedactorStillRemovesCanonicalReasoningParts(t *testing.T) {
+	model := streamingModel{deltas: []lebro.StreamDelta{
+		{
+			Parts: []lebro.StreamContentPart{
+				{Kind: lebro.StreamContentPartReasoning, Text: "private"},
+				{Kind: lebro.StreamContentPartText, Text: "answer"},
+			},
+			Text:      "answer",
+			Reasoning: lebro.ModelReasoning{Text: "private"},
+		},
+		{FinishReason: lebro.FinishReasonStop},
+	}}
+	server := httpapi.NewServer(httpapi.ServerConfig{Redactor: func(delta lebro.StreamDelta) lebro.StreamDelta {
+		delta.Reasoning = lebro.ModelReasoning{}
+		return delta
+	}})
+	must(t, server.ExposeAgent(newAgent(t, "assistant", model)))
+
+	recorder := doJSON(t, server.Handler(), http.MethodPost, "/agents/assistant/runs/stream", httpapi.RunRequest{})
+	if strings.Contains(recorder.Body.String(), "private") {
+		t.Fatalf("legacy redactor leaked canonical reasoning: %s", recorder.Body.String())
+	}
+	events := readSSE(t, recorder.Body)
+	if len(events) < 2 || len(events[0].data.Parts) != 1 || events[0].data.Parts[0].Kind != lebro.StreamContentPartText {
+		t.Fatalf("redacted events = %#v", events)
+	}
+}
+
 // A failing run must still terminate the stream with a typed error rather than
 // dropping the connection, so a client can distinguish failure from a network
 // fault.
