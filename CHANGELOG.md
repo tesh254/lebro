@@ -12,6 +12,39 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- BYOK decision models. A new `lebro.DecisionModel` contract evaluates
+  application state against named questions and returns typed answers:
+  `NoulQuestion` for a probability, `ChoiceQuestion` for a selected option and
+  its distribution, and `ScoreQuestion` for an ordered level. The surface sits
+  beside `Model.Generate` instead of inside it, so existing generative clients
+  need no change. New root types include `DecisionRequest`,
+  `DecisionResponse`, `DecisionCapabilities`, `DecisionImage`,
+  `DecisionUsage`, `DecisionGate`, and the `DecisionError` taxonomy with
+  `ErrDecision*` sentinels. `ScoreAnswer` keeps a selected level and a
+  probability-weighted expected level apart, and a provider-reported
+  confidence or distribution is only surfaced when the provider actually
+  reported one, so a value is never fabricated. `DecisionGate` turns an answer
+  into a deterministic `select`, `review`, or `escalate` recommendation and
+  never authorizes an action on the application's behalf.
+
+  The new `decisions` package adapts three System One providers:
+  `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino` (Fastino
+  GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview). Each one is configured
+  with its own endpoint, credential, model, HTTP client, timeout, and retry
+  policy, and every credential is redacted from errors, logs, and fixtures.
+  Retries are bounded, honor `Retry-After`, and never switch providers.
+  SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are
+  encoded as one line of base64 at the HTTP boundary only, at most four images
+  of at most 4 MiB each and 8 MiB in total, and an unsupported or over-limit
+  image fails locally without a request. The decision surface is additive and
+  requires no store migration. Opt-in live runs against a real provider use
+  `LEBRO_TYPESAFE_API_KEY`, `LEBRO_FASTINO_API_KEY`, or
+  `LEBRO_SUBQ_API_KEY` and are skipped without it. See `docs/decisions.md` for
+  the contract and the provider capability matrix, and
+  `docs/decisions-cloud-handoff.md` for the hosted deployment handoff. The
+  native OpenAI Decisions API is not part of this release and remains blocked
+  behind its own contract work.
+
 - Anthropic-compatible endpoints. `anthropic.Config` adds `AuthToken`
   (Authorization Bearer, as OpenRouter and many gateways expect, as an
   alternative to `APIKey`), `Headers`, `Timeout`, `MaxRetries`, `ProviderID`,

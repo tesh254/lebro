@@ -311,6 +311,33 @@ type (
 )
 
 type (
+	JSONValue                 = runtime.JSONValue
+	DecisionQuestionID        = runtime.DecisionQuestionID
+	DecisionOptionID          = runtime.DecisionOptionID
+	DecisionImage             = runtime.DecisionImage
+	DecisionRequest           = runtime.DecisionRequest
+	DecisionQuestion          = runtime.DecisionQuestion
+	NoulQuestion              = runtime.NoulQuestion
+	NoulCriteria              = runtime.NoulCriteria
+	ChoiceQuestion            = runtime.ChoiceQuestion
+	ScoreQuestion             = runtime.ScoreQuestion
+	DecisionAnswer            = runtime.DecisionAnswer
+	NoulAnswer                = runtime.NoulAnswer
+	ChoiceAnswer              = runtime.ChoiceAnswer
+	ScoreAnswer               = runtime.ScoreAnswer
+	ScoreProvenance           = runtime.ScoreProvenance
+	DecisionUsage             = runtime.DecisionUsage
+	DecisionResponse          = runtime.DecisionResponse
+	DecisionImageCapabilities = runtime.DecisionImageCapabilities
+	DecisionCapabilities      = runtime.DecisionCapabilities
+	DecisionModel             = runtime.DecisionModel
+	DecisionOutcome           = runtime.DecisionOutcome
+	DecisionGate              = runtime.DecisionGate
+	DecisionErrorKind         = runtime.DecisionErrorKind
+	DecisionError             = runtime.DecisionError
+)
+
+type (
 	Processor                     = runtime.Processor
 	ProcessorPipeline             = runtime.ProcessorPipeline
 	ProcessorRun                  = runtime.ProcessorRun
@@ -532,6 +559,25 @@ const (
 	ModelErrorMalformedResponse = runtime.ModelErrorMalformedResponse
 	ModelErrorUnknown           = runtime.ModelErrorUnknown
 
+	ScoreNative     = runtime.ScoreNative
+	ScoreNormalized = runtime.ScoreNormalized
+
+	DecisionOutcomeSelect   = runtime.DecisionOutcomeSelect
+	DecisionOutcomeReview   = runtime.DecisionOutcomeReview
+	DecisionOutcomeEscalate = runtime.DecisionOutcomeEscalate
+
+	DecisionErrorInvalidRequest        = runtime.DecisionErrorInvalidRequest
+	DecisionErrorUnsupportedCapability = runtime.DecisionErrorUnsupportedCapability
+	DecisionErrorAuthentication        = runtime.DecisionErrorAuthentication
+	DecisionErrorPermissionDenied      = runtime.DecisionErrorPermissionDenied
+	DecisionErrorRateLimited           = runtime.DecisionErrorRateLimited
+	DecisionErrorUnavailable           = runtime.DecisionErrorUnavailable
+	DecisionErrorTimeout               = runtime.DecisionErrorTimeout
+	DecisionErrorCancelled             = runtime.DecisionErrorCancelled
+	DecisionErrorTransport             = runtime.DecisionErrorTransport
+	DecisionErrorMalformedResponse     = runtime.DecisionErrorMalformedResponse
+	DecisionErrorUnknown               = runtime.DecisionErrorUnknown
+
 	RAGErrorInvalidDocument = runtime.RAGErrorInvalidDocument
 	RAGErrorChunking        = runtime.RAGErrorChunking
 	RAGErrorEmbedding       = runtime.RAGErrorEmbedding
@@ -614,6 +660,18 @@ var (
 	ErrModelTransport         = runtime.ErrModelTransport
 	ErrModelMalformedResponse = runtime.ErrModelMalformedResponse
 	ErrModelUnknown           = runtime.ErrModelUnknown
+
+	ErrDecisionInvalidRequest        = runtime.ErrDecisionInvalidRequest
+	ErrDecisionUnsupportedCapability = runtime.ErrDecisionUnsupportedCapability
+	ErrDecisionAuthentication        = runtime.ErrDecisionAuthentication
+	ErrDecisionPermissionDenied      = runtime.ErrDecisionPermissionDenied
+	ErrDecisionRateLimited           = runtime.ErrDecisionRateLimited
+	ErrDecisionUnavailable           = runtime.ErrDecisionUnavailable
+	ErrDecisionTimeout               = runtime.ErrDecisionTimeout
+	ErrDecisionCancelled             = runtime.ErrDecisionCancelled
+	ErrDecisionTransport             = runtime.ErrDecisionTransport
+	ErrDecisionMalformedResponse     = runtime.ErrDecisionMalformedResponse
+	ErrDecisionUnknown               = runtime.ErrDecisionUnknown
 
 	ErrAgentUnknownTool             = runtime.ErrAgentUnknownTool
 	ErrAgentInvalidToolArguments    = runtime.ErrAgentInvalidToolArguments

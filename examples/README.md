@@ -30,6 +30,36 @@ Run the deterministic, network-free model protocol and fixture example:
 go run ./examples/model-fixtures
 ```
 
+Run the decision example, which routes a request, gates an action on a
+confidence threshold, and combines score answers with application-owned
+weights:
+
+```sh
+go run ./examples/decision-routing
+```
+
+Run the decision guard example, which keeps a dangerous tool behind a
+decision and leaves the handler uncalled for a denial, an uncertain answer, a
+provider failure, and a tool outside the allowlist:
+
+```sh
+go run ./examples/decision-guard
+```
+
+Run the decision image example, which sends a bounded image through the real
+SubQ adapter to a local endpoint and escalates an uncertain answer:
+
+```sh
+go run ./examples/decision-images
+```
+
+Run the compatibility example, which shows a generative client that needed no
+change beside a decision model:
+
+```sh
+go run ./examples/decision-compat
+```
+
 Every example is self-contained: scripted models and other stand-ins live
 in-file, so a build can be copied out of this repository and compiled against
 the public module alone. Production packages do not depend on any example
