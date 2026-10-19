@@ -235,12 +235,14 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 			fmt.Sprintf("lebro: the request body is %d bytes, %s accepts at most %d", len(encoded), profile.provider, profile.maxBodyBytes), nil)
 	}
 
-	redactor := client.newRedactor(request, profile.requestSecrets)
 	result, err := client.post(ctx, encoded, profile.requestIDHeaders)
 	if err != nil {
 		return lebro.DecisionResponse{}, err
 	}
 	if result.status >= http.StatusBadRequest {
+		// The redactor is built only here: a successful request must not
+		// pay for a second copy of the request content.
+		redactor := client.newRedactor(request, profile.requestSecrets)
 		return lebro.DecisionResponse{}, client.statusFailure(result.status, result.body, result.retryAfter, redactor)
 	}
 

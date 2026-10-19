@@ -142,10 +142,14 @@ func run(output io.Writer) error {
 	// supplies the limit, and the decision supplies the signal that a
 	// transcript is worth summarizing. The application owns both, and lebro
 	// performs the compaction itself once the run exceeds its budget.
+	// The budget is one lebro accepts: the reserves fit inside the window
+	// and the target fraction is below the trigger fraction.
 	budget := lebro.ContextBudget{
-		ContextWindowTokens: 200,
-		OutputReserveTokens: 40,
-		TriggerFraction:     0.5,
+		ContextWindowTokens:     4000,
+		OutputReserveTokens:     200,
+		FutureToolReserveTokens: 200,
+		TriggerFraction:         0.5,
+		TargetFraction:          0.4,
 	}
 	decisionModel := guardDecisionModel{probability: 0.92, confidence: 0.88}
 	short, err := compactionTrigger(decisionModel, "a short transcript", budget)
@@ -153,7 +157,7 @@ func run(output io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(output, "%-26s compact=%v\n", "compaction under budget", short)
-	long, err := compactionTrigger(decisionModel, strings.Repeat("the customer keeps replying about the same refund. ", 20), budget)
+	long, err := compactionTrigger(decisionModel, strings.Repeat("the customer keeps replying about the same refund. ", 200), budget)
 	if err != nil {
 		return err
 	}

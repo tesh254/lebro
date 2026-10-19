@@ -3,6 +3,7 @@ package decisions
 import (
 	"context"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -143,6 +144,6 @@ func typeSafeCapabilities() lebro.DecisionCapabilities {
 		// TypeSafe documents a request body limit, not a byte limit for the
 		// state alone. The body limit is enforced separately.
 		MaxStateBytes:     0,
-		RetryableStatuses: typeSafeRetryableStatuses,
+		RetryableStatuses: slices.Clone(typeSafeRetryableStatuses),
 	}
 }

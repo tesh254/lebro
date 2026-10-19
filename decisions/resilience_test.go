@@ -285,6 +285,36 @@ func TestCancellationPreservesContextError(t *testing.T) {
 	}
 }
 
+func TestCallerDeadlineIsReportedAsTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"subq-snap-preview","answers":{"q":{"type":"noul","noul":0.5}}}`))
+	}))
+	defer server.Close()
+
+	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("NewSubQ() error = %v", err)
+	}
+	// The caller sets the deadline, not the adapter.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err = model.Decide(ctx, lebro.DecisionRequest{
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	})
+	if err == nil {
+		t.Fatal("Decide() error = nil, want a timeout failure")
+	}
+	if !errors.Is(err, lebro.ErrDecisionTimeout) {
+		t.Fatalf("Decide() error = %v, want a timeout failure", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Decide() error = %v, want the caller's deadline preserved", err)
+	}
+}
+
 func TestDeadlineIsReportedAsTimeout(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The handler outlives the client deadline on purpose, so the

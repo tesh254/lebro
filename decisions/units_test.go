@@ -108,8 +108,11 @@ func TestExtractProviderErrorKeepsRequestContentOut(t *testing.T) {
 func TestTruncateErrorText(t *testing.T) {
 	long := strings.Repeat("x", maxErrorMessageLength*2)
 	truncated := truncateErrorText(long)
+	if len(truncated) > maxErrorMessageLength+len("…") {
+		t.Fatalf("the truncated length = %d, want at most %d plus the ellipsis", len(truncated), maxErrorMessageLength)
+	}
 	if len(truncated) <= maxErrorMessageLength {
-		t.Fatalf("the truncated length = %d, want more than %d", len(truncated), maxErrorMessageLength)
+		t.Fatalf("the truncated length = %d, want the bound to be applied", len(truncated))
 	}
 	if !strings.HasSuffix(truncated, "…") {
 		t.Fatalf("the truncated text = %q, want an ellipsis", truncated)

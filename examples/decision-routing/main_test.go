@@ -29,7 +29,7 @@ func TestDecisionRoutingExample(t *testing.T) {
 	if !strings.Contains(output, "action: escalate to a human, the combined score is high") {
 		t.Errorf("expected the composite score to escalate, got:\n%s", output)
 	}
-	if !strings.Contains(output, "handler: specialist agent") {
-		t.Errorf("expected the request to route to a specialist agent, got:\n%s", output)
+	if !strings.Contains(output, "handler: human review") {
+		t.Errorf("expected the escalated request to route to a human, got:\n%s", output)
 	}
 }

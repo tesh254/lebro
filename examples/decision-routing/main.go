@@ -123,12 +123,6 @@ func run(output io.Writer) error {
 	}
 	fmt.Fprintf(output, "composite: urgency=%.2f impact=%.2f combined=%.2f\n",
 		*urgency.ExpectedLevel, *impact.ExpectedLevel, combined)
-	if combined >= 1.5 {
-		fmt.Fprint(output, "action: escalate to a human, the combined score is high\n")
-	} else {
-		fmt.Fprint(output, "action: handle on the normal queue\n")
-	}
-
 	// A decision can also select the handler. The option identifiers are the
 	// application's own, so switching from a deterministic reply to a
 	// specialist agent to a human is a configuration change, not a rewrite.
@@ -152,7 +146,17 @@ func run(output io.Writer) error {
 	if !ok {
 		return fmt.Errorf("expected a choice answer, got %T", handling.Answers["handler"])
 	}
-	switch handler.Choice {
+	// The application owns the effect. A high composite score sends the
+	// request to a person, so the handler is a human review even though the
+	// decision model would pick a specialist.
+	selected := handler.Choice
+	if combined >= 1.5 {
+		selected = "human_review"
+		fmt.Fprint(output, "action: escalate to a human, the combined score is high\n")
+	} else {
+		fmt.Fprint(output, "action: handle on the normal queue\n")
+	}
+	switch selected {
 	case "auto_reply":
 		fmt.Fprint(output, "handler: deterministic reply\n")
 	case "specialist_agent":
@@ -211,7 +215,7 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			options := sortedOptionIDs(typed.Criteria)
 			selected := options[0]
 			// The fixture routes to a specialist whenever the caller offers
-			// one, and to billing otherwise.
+			// one, and to the first option in a stable order otherwise.
 			if _, offered := typed.Criteria["specialist_agent"]; offered {
 				selected = "specialist_agent"
 			}

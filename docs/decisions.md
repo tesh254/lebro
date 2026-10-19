@@ -153,6 +153,11 @@ confidence, and a score answer still carries no native winner. The gateway
 reports the request identity in its own response header, which the adapter
 reads alongside the provider's.
 
+A gateway's System One endpoint takes the provider's own model alias, not the
+gateway's chat model of the same family. On OpenRouter that alias is
+`~typesafe/jev-latest`; `typesafe/jev-router` is a chat model that routes
+between Jev variants, and the System One endpoint rejects it.
+
 Fastino accepts text instructions and text criteria only. A request that
 carries structured instructions or criteria fails with
 `lebro.ErrDecisionInvalidRequest` before anything is sent, because the
@@ -164,7 +169,8 @@ Image input is an optional, capability-gated part of the contract. A
 `lebro.DecisionImage` carries a media type and raw bytes. It holds image
 data, not a reference to it: an adapter never fetches an image, and a URL or
 a data URL is rejected locally because it is not image data. A file path is
-not image data either, and the provider rejects it as invalid bytes.
+not image data either, and it is rejected locally too, because the bytes do
+not match the declared media type.
 
 An adapter rejects a non-empty `Images` slice before it makes an HTTP request
 unless its advertised `DecisionCapabilities.Images` allows the media type and

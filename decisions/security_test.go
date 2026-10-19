@@ -58,9 +58,12 @@ func TestProviderTextIsRedacted(t *testing.T) {
 // because a redirected request would carry the credential to another host.
 func TestRedirectsAreRefused(t *testing.T) {
 	target := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/systemone" {
-			http.Redirect(w, r, "https://elsewhere.example.com/v1/systemone", http.StatusTemporaryRedirect)
+			// The redirect target is the same server, so the counter below
+			// observes a followed redirect instead of an unreachable host.
+			http.Redirect(w, r, server.URL+"/elsewhere", http.StatusTemporaryRedirect)
 			return
 		}
 		target++
@@ -273,10 +276,10 @@ func TestPointerQuestionsAreAccepted(t *testing.T) {
 	}
 }
 
-// TestDefaultTimeoutAppliesToACallerClient pins that a caller-supplied HTTP
-// client with no timeout of its own still gets the adapter's default
+// TestConfiguredTimeoutAppliesToACallerClient pins that a caller-supplied
+// HTTP client with no timeout of its own still gets the adapter's configured
 // deadline.
-func TestDefaultTimeoutAppliesToACallerClient(t *testing.T) {
+func TestConfiguredTimeoutAppliesToACallerClient(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 		w.Header().Set("Content-Type", "application/json")
@@ -302,5 +305,31 @@ func TestDefaultTimeoutAppliesToACallerClient(t *testing.T) {
 	}
 	if !errors.Is(err, lebro.ErrDecisionTimeout) {
 		t.Fatalf("Decide() error = %v, want a timeout failure", err)
+	}
+}
+
+// TestDefaultTimeoutAppliesToACallerClient pins that a caller-supplied HTTP
+// client with no timeout of its own still gets the adapter's default
+// deadline rather than hanging until the caller's context ends.
+func TestDefaultTimeoutAppliesToACallerClient(t *testing.T) {
+	if defaultTimeout != 60*time.Second {
+		t.Fatalf("the default timeout = %v, want 60s", defaultTimeout)
+	}
+	client, err := newSystemOneClient(
+		subQProvider,
+		"https://api.subq.ai",
+		systemOnePath,
+		"Authorization",
+		"Bearer ",
+		"test-key",
+		subQModel,
+		subQRetryableStatuses,
+		httpClientConfig{client: &http.Client{}},
+	)
+	if err != nil {
+		t.Fatalf("newSystemOneClient() error = %v", err)
+	}
+	if client.timeout != defaultTimeout {
+		t.Fatalf("the adapter timeout = %v, want the default %v", client.timeout, defaultTimeout)
 	}
 }

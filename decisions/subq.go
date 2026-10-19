@@ -3,6 +3,7 @@ package decisions
 import (
 	"context"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -181,6 +182,6 @@ func subQCapabilities() lebro.DecisionCapabilities {
 		// SubQ documents a context window, not a byte limit for the state
 		// alone. The request body limit is enforced separately.
 		MaxStateBytes:     0,
-		RetryableStatuses: subQRetryableStatuses,
+		RetryableStatuses: slices.Clone(subQRetryableStatuses),
 	}
 }

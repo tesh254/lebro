@@ -3,6 +3,7 @@ package decisions
 import (
 	"context"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -147,6 +148,6 @@ func fastinoCapabilities() lebro.DecisionCapabilities {
 		Confidence:        true,
 		Batching:          false,
 		MaxStateBytes:     0,
-		RetryableStatuses: fastinoRetryableStatuses,
+		RetryableStatuses: slices.Clone(fastinoRetryableStatuses),
 	}
 }
