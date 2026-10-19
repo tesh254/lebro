@@ -66,8 +66,12 @@ attempts.
 
 ```go
 answer := response.Answers["urgency"].(lebro.ScoreAnswer)
-*answer.ExpectedLevel  // the probability-weighted level
-*answer.SelectedLevel  // the winning level, or nil when the provider reports none
+if answer.ExpectedLevel != nil {
+    fmt.Println(*answer.ExpectedLevel) // the probability-weighted level
+}
+if answer.SelectedLevel != nil {
+    fmt.Println(*answer.SelectedLevel) // the winning level, absent for TypeSafe and SubQ
+}
 ```
 
 ## Provider semantics are preserved

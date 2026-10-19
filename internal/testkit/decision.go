@@ -57,7 +57,11 @@ type DecisionHarness struct {
 // DecisionFactory builds a harness for one case. A factory serves the
 // provider wire body for the case and reports the neutral request that
 // arrived.
-type DecisionFactory func(*testing.T, DecisionCase) DecisionHarness
+//
+// The factory receives the caller's cancel function. A cancellation case
+// calls it once the request reaches the provider, so the suite covers the
+// in-flight path rather than a request that never starts.
+type DecisionFactory func(*testing.T, DecisionCase, context.CancelFunc) DecisionHarness
 
 // DecisionContractCases returns the canonical decision cases. Every case is
 // accepted by all three System One providers, so the suite holds across
@@ -187,13 +191,9 @@ func RunDecisionContract(t *testing.T, factory DecisionFactory) {
 			if contractCase.Mode == DecisionResponse {
 				assertNoError(t, contractCase.Request.Validate())
 			}
-			harness := factory(t, contractCase)
-			ctx := context.Background()
-			if contractCase.Mode == DecisionCancellation {
-				cancelled, cancel := context.WithCancel(ctx)
-				cancel()
-				ctx = cancelled
-			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			harness := factory(t, contractCase, cancel)
 
 			response, err := harness.Model.Decide(ctx, cloneDecisionRequest(contractCase.Request))
 			switch contractCase.Mode {

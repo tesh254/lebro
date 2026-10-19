@@ -500,10 +500,19 @@ func TestDecisionResponseValidate(t *testing.T) {
 			name: "choice option without an ID",
 			response: DecisionResponse{
 				Answers: map[DecisionQuestionID]DecisionAnswer{
-					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"": 1}},
+					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"a": 0.5, "": 0.5}},
 				},
 			},
 			want: "empty option ID",
+		},
+		{
+			name: "choice selects an option the distribution does not carry",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ChoiceAnswer{Choice: "b", Probabilities: map[DecisionOptionID]float64{"a": 1}},
+				},
+			},
+			want: "which the reported distribution does not carry",
 		},
 		{
 			name: "valid choice",

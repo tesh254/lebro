@@ -50,8 +50,8 @@ func run(output io.Writer) error {
 			MaxQuestions:           8,
 			MaxChoiceOptions:       16,
 			MaxScoreLevels:         5,
+			RetryableStatuses:      []int{http.StatusTooManyRequests, http.StatusServiceUnavailable},
 		},
-		RetryableStatuses: []int{http.StatusTooManyRequests, http.StatusServiceUnavailable},
 	})
 	if err != nil {
 		return err

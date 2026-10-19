@@ -3,9 +3,10 @@
 //
 // The package hosts the three providers whose System One contracts match
 // closely enough to share one wire protocol: TypeSafe Jev, Fastino GLiDE, and
-// SubQ Snap-preview. Each provider keeps its own package-level adapter type
-// and configuration, because each one is configured, credentialed, and
-// versioned independently:
+// SubQ Snap-preview. They live in one package rather than three because they
+// share the protocol and the adapter code; each one still keeps its own
+// configuration type and constructor, because each is configured,
+// credentialed, and versioned independently:
 //
 //	typeSafe, err := decisions.NewTypeSafe(decisions.TypeSafeConfig{
 //		APIKey: os.Getenv("TYPESAFE_API_KEY"),
@@ -50,5 +51,4 @@
 //
 // The package is an adapter package: it depends on provider wire formats on
 // purpose, and the root lebro package does not depend on it.
-
 package decisions

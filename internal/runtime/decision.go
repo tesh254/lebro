@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // JSONValue is a JSON-compatible value carried by a decision request. State,
@@ -364,6 +365,10 @@ func (g DecisionGate) Noul(answer NoulAnswer) DecisionOutcome {
 	if err := g.Validate(); err != nil {
 		return DecisionOutcomeReview
 	}
+	// A malformed answer is a review, never a selection.
+	if err := validateNoulAnswer(answer); err != nil {
+		return DecisionOutcomeReview
+	}
 	if g.MinimumConfidence != nil {
 		if answer.Confidence == nil || *answer.Confidence < *g.MinimumConfidence {
 			return DecisionOutcomeReview
@@ -548,7 +553,10 @@ func decisionErrorPolicyFor(kind DecisionErrorKind) decisionErrorPolicy {
 // provider-neutral part of request validation: a provider adapter adds its
 // own capability and size checks before it sends anything.
 func (r DecisionRequest) Validate() error {
-	if err := validateDecisionState(r.State); err != nil {
+	// One node budget covers the whole request, so a large multi-question
+	// request cannot exceed the bound one field at a time.
+	budget := 0
+	if err := validateDecisionState(r.State, &budget); err != nil {
 		return err
 	}
 	if len(r.Questions) == 0 {
@@ -561,7 +569,7 @@ func (r DecisionRequest) Validate() error {
 		if question == nil {
 			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		if err := validateDecisionQuestion(id, question); err != nil {
+		if err := validateDecisionQuestion(id, question, &budget); err != nil {
 			return err
 		}
 	}
@@ -600,51 +608,51 @@ func (r DecisionResponse) Validate() error {
 	return nil
 }
 
-func validateDecisionQuestion(id DecisionQuestionID, question DecisionQuestion) error {
+func validateDecisionQuestion(id DecisionQuestionID, question DecisionQuestion, nodes *int) error {
 	switch typed := question.(type) {
 	case NoulQuestion:
-		return validateNoulQuestion(id, typed)
+		return validateNoulQuestion(id, typed, nodes)
 	case *NoulQuestion:
 		if typed == nil {
 			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return validateNoulQuestion(id, *typed)
+		return validateNoulQuestion(id, *typed, nodes)
 	case ChoiceQuestion:
-		return validateChoiceQuestion(id, typed)
+		return validateChoiceQuestion(id, typed, nodes)
 	case *ChoiceQuestion:
 		if typed == nil {
 			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return validateChoiceQuestion(id, *typed)
+		return validateChoiceQuestion(id, *typed, nodes)
 	case ScoreQuestion:
-		return validateScoreQuestion(id, typed)
+		return validateScoreQuestion(id, typed, nodes)
 	case *ScoreQuestion:
 		if typed == nil {
 			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return validateScoreQuestion(id, *typed)
+		return validateScoreQuestion(id, *typed, nodes)
 	default:
 		return fmt.Errorf("lebro: decision question %q has an unsupported type %T", id, question)
 	}
 }
 
-func validateNoulQuestion(id DecisionQuestionID, typed NoulQuestion) error {
-	if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
+func validateNoulQuestion(id DecisionQuestionID, typed NoulQuestion, nodes *int) error {
+	if err := validateDecisionInstructions(id, typed.Instructions, nodes); err != nil {
 		return err
 	}
 	if typed.Criteria != nil {
-		if err := validateDecisionText(fmt.Sprintf("decision question %q criteria true", id), typed.Criteria.True); err != nil {
+		if err := validateDecisionText(fmt.Sprintf("decision question %q criteria true", id), typed.Criteria.True, nodes); err != nil {
 			return err
 		}
-		if err := validateDecisionText(fmt.Sprintf("decision question %q criteria false", id), typed.Criteria.False); err != nil {
+		if err := validateDecisionText(fmt.Sprintf("decision question %q criteria false", id), typed.Criteria.False, nodes); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateChoiceQuestion(id DecisionQuestionID, typed ChoiceQuestion) error {
-	if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
+func validateChoiceQuestion(id DecisionQuestionID, typed ChoiceQuestion, nodes *int) error {
+	if err := validateDecisionInstructions(id, typed.Instructions, nodes); err != nil {
 		return err
 	}
 	if len(typed.Criteria) < 2 {
@@ -654,22 +662,22 @@ func validateChoiceQuestion(id DecisionQuestionID, typed ChoiceQuestion) error {
 		if option == "" {
 			return fmt.Errorf("lebro: decision question %q has an empty option ID", id)
 		}
-		if err := validateDecisionText(fmt.Sprintf("decision question %q option %q", id, option), description); err != nil {
+		if err := validateDecisionText(fmt.Sprintf("decision question %q option %q", id, option), description, nodes); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateScoreQuestion(id DecisionQuestionID, typed ScoreQuestion) error {
-	if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
+func validateScoreQuestion(id DecisionQuestionID, typed ScoreQuestion, nodes *int) error {
+	if err := validateDecisionInstructions(id, typed.Instructions, nodes); err != nil {
 		return err
 	}
 	if len(typed.Criteria) < 2 {
 		return fmt.Errorf("lebro: decision question %q requires at least two levels", id)
 	}
 	for level, description := range typed.Criteria {
-		if err := validateDecisionText(fmt.Sprintf("decision question %q level %d", id, level), description); err != nil {
+		if err := validateDecisionText(fmt.Sprintf("decision question %q level %d", id, level), description, nodes); err != nil {
 			return err
 		}
 	}
@@ -714,6 +722,11 @@ func validateNoulAnswer(typed NoulAnswer) error {
 func validateChoiceAnswer(typed ChoiceAnswer) error {
 	if typed.Choice == "" {
 		return errors.New("lebro: choice answer requires a selected option")
+	}
+	if len(typed.Probabilities) > 0 {
+		if _, ok := typed.Probabilities[typed.Choice]; !ok {
+			return fmt.Errorf("lebro: choice answer selects option %q, which the reported distribution does not carry", typed.Choice)
+		}
 	}
 	for option, probability := range typed.Probabilities {
 		if option == "" {
@@ -768,7 +781,7 @@ func validateOptionalConfidence(confidence *float64) error {
 	return validateProbability("confidence", *confidence)
 }
 
-func validateDecisionState(state JSONValue) error {
+func validateDecisionState(state JSONValue, nodes *int) error {
 	if state == nil {
 		return errors.New("lebro: decision request requires a state")
 	}
@@ -802,10 +815,10 @@ func validateDecisionState(state JSONValue) error {
 			return errors.New("lebro: decision request state must be text, an object, or an array")
 		}
 	}
-	return validateJSONValue("decision state", state, 0)
+	return validateJSONValue("decision state", state, 0, nodes)
 }
 
-func validateDecisionInstructions(id DecisionQuestionID, instructions JSONValue) error {
+func validateDecisionInstructions(id DecisionQuestionID, instructions JSONValue, nodes *int) error {
 	if instructions == nil {
 		return fmt.Errorf("lebro: decision question %q requires instructions", id)
 	}
@@ -813,7 +826,7 @@ func validateDecisionInstructions(id DecisionQuestionID, instructions JSONValue)
 		if strings.TrimSpace(text) == "" {
 			return fmt.Errorf("lebro: decision question %q requires non-empty instructions", id)
 		}
-		return validateJSONValue(fmt.Sprintf("decision question %q instructions", id), instructions, 0)
+		return validateJSONValue(fmt.Sprintf("decision question %q instructions", id), instructions, 0, nodes)
 	}
 	value := reflect.ValueOf(instructions)
 	switch value.Kind() {
@@ -828,17 +841,17 @@ func validateDecisionInstructions(id DecisionQuestionID, instructions JSONValue)
 	default:
 		return fmt.Errorf("lebro: decision question %q instructions must be text, an object, or an array", id)
 	}
-	return validateJSONValue(fmt.Sprintf("decision question %q instructions", id), instructions, 0)
+	return validateJSONValue(fmt.Sprintf("decision question %q instructions", id), instructions, 0, nodes)
 }
 
-func validateDecisionText(name string, value JSONValue) error {
+func validateDecisionText(name string, value JSONValue, nodes *int) error {
 	if value == nil {
 		return nil
 	}
 	if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
 		return fmt.Errorf("%s must not be empty", name)
 	}
-	return validateJSONValue(name, value, 0)
+	return validateJSONValue(name, value, 0, nodes)
 }
 
 func validateDecisionImage(image DecisionImage) error {
@@ -954,15 +967,14 @@ const (
 // the value reflectively instead of marshaling it, so a cyclic structure is
 // reported as an error instead of exhausting the stack, and so a non-finite
 // number is rejected rather than silently encoded.
-func validateJSONValue(name string, value JSONValue, depth int) error {
+func validateJSONValue(name string, value JSONValue, depth int, nodes *int) error {
 	if depth > maxDecisionJSONDepth {
 		return fmt.Errorf("%s exceeds the maximum nesting depth of %d", name, maxDecisionJSONDepth)
 	}
 	if value == nil {
 		return nil
 	}
-	nodes := 0
-	return validateJSONReflect(name, reflect.ValueOf(value), depth, &nodes)
+	return validateJSONReflect(name, reflect.ValueOf(value), depth, nodes)
 }
 
 func validateJSONReflect(name string, value reflect.Value, depth int, nodes *int) error {
@@ -979,7 +991,12 @@ func validateJSONReflect(name string, value reflect.Value, depth int, nodes *int
 			return nil
 		}
 		return validateJSONReflect(name, value.Elem(), depth, nodes)
-	case reflect.Bool, reflect.String:
+	case reflect.Bool:
+		return nil
+	case reflect.String:
+		if !utf8.ValidString(value.String()) {
+			return fmt.Errorf("%s contains a string that is not valid UTF-8", name)
+		}
 		return nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:

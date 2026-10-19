@@ -1,6 +1,7 @@
 package decisions
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,7 +51,7 @@ type decisionFacts struct {
 // decisionContractFactory builds a factory that serves one provider's wire
 // body for a contract case.
 func decisionContractFactory(fixture decisionFixture) testkit.DecisionFactory {
-	return func(t *testing.T, contractCase testkit.DecisionCase) testkit.DecisionHarness {
+	return func(t *testing.T, contractCase testkit.DecisionCase, cancel context.CancelFunc) testkit.DecisionHarness {
 		t.Helper()
 		var mu sync.Mutex
 		var observed lebro.DecisionRequest
@@ -75,6 +76,9 @@ func decisionContractFactory(fixture decisionFixture) testkit.DecisionFactory {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_, _ = w.Write([]byte(`{"detail":{"error_type":"unavailable","message":"the provider is busy"}}`))
 			case testkit.DecisionCancellation:
+				// Cancel once the request has reached the provider, so the
+				// suite covers the in-flight path.
+				cancel()
 				<-r.Context().Done()
 			default:
 				w.Header().Set("Content-Type", "application/json")

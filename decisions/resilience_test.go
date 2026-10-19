@@ -325,7 +325,7 @@ func TestDeadlineIsReportedAsTimeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, Timeout: 50 * time.Millisecond})
+	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, Timeout: 50 * time.Millisecond, MaxRetries: intPointer(0)})
 	if err != nil {
 		t.Fatalf("NewSubQ() error = %v", err)
 	}

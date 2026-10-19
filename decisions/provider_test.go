@@ -33,11 +33,11 @@ func genericProviderConfig(baseURL string) SystemOneConfig {
 			MaxQuestions:           8,
 			MaxChoiceOptions:       16,
 			MaxScoreLevels:         5,
+			RetryableStatuses:      []int{http.StatusTooManyRequests},
 		},
-		ImageStyle:        SystemOneImagesInline,
-		RetryableStatuses: []int{http.StatusTooManyRequests},
-		MaxBodyBytes:      1 << 20,
-		RequestIDHeaders:  []string{"x-generic-request-id"},
+		ImageStyle:       SystemOneImagesInline,
+		MaxBodyBytes:     1 << 20,
+		RequestIDHeaders: []string{"x-generic-request-id"},
 	}
 }
 
@@ -392,37 +392,54 @@ func TestGenericProviderNeedsACredentialAndEndpoint(t *testing.T) {
 // TestGenericProviderHonorsTheRetryPolicy pins that a configured retryable
 // status is retried and an unlisted one is not.
 func TestGenericProviderHonorsTheRetryPolicy(t *testing.T) {
-	attempts := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"detail":{"error_type":"unavailable","message":"try later"}}`))
-	}))
-	defer server.Close()
+	cases := []struct {
+		name         string
+		status       int
+		wantAttempts int
+	}{
+		{name: "a listed status is retried", status: http.StatusTooManyRequests, wantAttempts: 3},
+		{name: "an unlisted status is not retried", status: http.StatusServiceUnavailable, wantAttempts: 1},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			attempts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(testCase.status)
+				_, _ = w.Write([]byte(`{"detail":{"error_type":"unavailable","message":"try later"}}`))
+			}))
+			defer server.Close()
 
-	config := genericProviderConfig(server.URL)
-	config.MaxRetries = intPointer(2)
-	model, err := NewSystemOne(config)
-	if err != nil {
-		t.Fatalf("NewSystemOne() error = %v", err)
-	}
-	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
-		State:     "state",
-		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
-	})
-	if !errors.Is(err, lebro.ErrDecisionUnavailable) {
-		t.Fatalf("Decide() error = %v, want an unavailable failure", err)
-	}
-	if attempts != 1 {
-		t.Fatalf("the provider received %d attempts, want 1: the status is not retryable", attempts)
+			config := genericProviderConfig(server.URL)
+			config.MaxRetries = intPointer(2)
+			model, err := NewSystemOne(config)
+			if err != nil {
+				t.Fatalf("NewSystemOne() error = %v", err)
+			}
+			_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+				State:     "state",
+				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+			})
+			if err == nil {
+				t.Fatal("Decide() error = nil, want a provider failure")
+			}
+			if attempts != testCase.wantAttempts {
+				t.Fatalf("the provider received %d attempts, want %d", attempts, testCase.wantAttempts)
+			}
+		})
 	}
 }
 
 // TestGenericProviderCapabilitiesAreCopied pins that a caller cannot change
 // the capabilities the adapter reports for everyone else.
 func TestGenericProviderCapabilitiesAreCopied(t *testing.T) {
-	model, err := NewSystemOne(genericProviderConfig("https://example.com"))
+	config := genericProviderConfig("https://example.com")
+	config.Capabilities.Images = lebro.DecisionImageCapabilities{
+		Enabled:    true,
+		MediaTypes: []string{"image/png", "image/jpeg"},
+	}
+	model, err := NewSystemOne(config)
 	if err != nil {
 		t.Fatalf("NewSystemOne() error = %v", err)
 	}
@@ -431,9 +448,14 @@ func TestGenericProviderCapabilitiesAreCopied(t *testing.T) {
 	if model.Capabilities().RetryableStatuses[0] == 999 {
 		t.Fatal("the retryable statuses are shared between calls")
 	}
-	capabilities.Images.MediaTypes = append(capabilities.Images.MediaTypes, "image/gif")
-	if len(model.Capabilities().Images.MediaTypes) != len(capabilities.Images.MediaTypes)-1 {
+	capabilities.Images.MediaTypes[0] = "image/gif"
+	if model.Capabilities().Images.MediaTypes[0] != "image/png" {
 		t.Fatal("the image media types are shared between calls")
+	}
+	// The configuration the caller kept must not change the adapter either.
+	config.Capabilities.Images.MediaTypes[0] = "image/avif"
+	if model.Capabilities().Images.MediaTypes[0] != "image/png" {
+		t.Fatal("the adapter shares the configured media types")
 	}
 }
 
@@ -463,5 +485,64 @@ func TestGenericProviderEnforcesTheStateLimit(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("the provider received %d requests, want none", requests)
+	}
+}
+
+// TestConfidenceIsLeftNilWhenTheProviderOmitsIt pins that an adapter does
+// not invent a confidence for a provider that reports none.
+func TestConfidenceIsLeftNilWhenTheProviderOmitsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"model": "m",
+			"answers": {
+				"eligible": {"type": "noul", "noul": 0.7},
+				"team": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.7, "other": 0.3}},
+				"urgency": {"type": "score", "score": 1.2, "probabilities": {"0": 0.5, "1": 0.5}}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Score = SystemOneScoreFields{Weighted: "score"}
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
+		State: "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"eligible": lebro.NoulQuestion{Instructions: "Is it?"},
+			"team": lebro.ChoiceQuestion{
+				Instructions: "Which one?",
+				Criteria:     map[lebro.DecisionOptionID]lebro.JSONValue{"billing": "money", "other": "something else"},
+			},
+			"urgency": lebro.ScoreQuestion{Instructions: "How much?", Criteria: []lebro.JSONValue{"low", "high"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	noul, ok := response.Answers["eligible"].(lebro.NoulAnswer)
+	if !ok {
+		t.Fatalf("Decide() noul answer = %#v, want a noul answer", response.Answers["eligible"])
+	}
+	if noul.Confidence != nil {
+		t.Fatal("the noul answer invented a confidence")
+	}
+	choice, ok := response.Answers["team"].(lebro.ChoiceAnswer)
+	if !ok {
+		t.Fatalf("Decide() choice answer = %#v, want a choice answer", response.Answers["team"])
+	}
+	if choice.Confidence != nil {
+		t.Fatal("the choice answer invented a confidence")
+	}
+	score, ok := response.Answers["urgency"].(lebro.ScoreAnswer)
+	if !ok {
+		t.Fatalf("Decide() score answer = %#v, want a score answer", response.Answers["urgency"])
+	}
+	if score.Confidence != nil {
+		t.Fatal("the score answer invented a confidence")
 	}
 }

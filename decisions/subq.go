@@ -90,17 +90,17 @@ func NewSubQ(config SubQConfig) (*SystemOneModel, error) {
 			},
 			// SubQ documents a context window, not a byte limit for the
 			// state alone. The request body limit is enforced separately.
-			MaxStateBytes:    0,
-			MaxQuestions:     16,
-			MaxChoiceOptions: 255,
-			MaxScoreLevels:   10,
+			MaxStateBytes:     0,
+			MaxQuestions:      16,
+			MaxChoiceOptions:  255,
+			RetryableStatuses: subQRetryableStatuses,
+			MaxScoreLevels:    10,
 		},
-		ImageStyle:        SystemOneImagesInline,
-		RetryableStatuses: subQRetryableStatuses,
-		MaxBodyBytes:      subQMaxBodyBytes,
-		HTTPClient:        config.HTTPClient,
-		Timeout:           config.Timeout,
-		MaxRetries:        config.MaxRetries,
-		RetryBackoff:      config.RetryBackoff,
+		ImageStyle:   SystemOneImagesInline,
+		MaxBodyBytes: subQMaxBodyBytes,
+		HTTPClient:   config.HTTPClient,
+		Timeout:      config.Timeout,
+		MaxRetries:   config.MaxRetries,
+		RetryBackoff: config.RetryBackoff,
 	})
 }

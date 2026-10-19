@@ -81,15 +81,13 @@ type SystemOneConfig struct {
 	Score SystemOneScoreFields
 	// Capabilities describes what the provider supports. Its Images field
 	// carries the image limits, StructuredInstructions selects whether
-	// instructions and criteria may be structured, and MaxStateBytes is
-	// checked before a request is sent.
+	// instructions and criteria may be structured, MaxStateBytes is checked
+	// before a request is sent, and RetryableStatuses are the HTTP statuses
+	// the provider documents as retryable.
 	Capabilities lebro.DecisionCapabilities
 	// ImageStyle is the wire shape the provider uses for image inputs. A
 	// shape this package does not implement leaves image inputs disabled.
 	ImageStyle SystemOneImageStyle
-	// RetryableStatuses are the HTTP statuses the provider documents as
-	// retryable.
-	RetryableStatuses []int
 	// MaxBodyBytes is the largest request body the provider accepts. Zero
 	// means the provider documents no byte limit.
 	MaxBodyBytes int64
@@ -154,7 +152,7 @@ func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 		config.AuthPrefix,
 		config.APIKey,
 		config.Model,
-		config.RetryableStatuses,
+		profile.capabilities.RetryableStatuses,
 		httpClientConfig{
 			client:       config.HTTPClient,
 			timeout:      config.Timeout,
@@ -204,7 +202,8 @@ func (c SystemOneConfig) profile() (systemOneProfile, error) {
 		return systemOneProfile{}, errors.New("lebro: the score weighted and winner fields must differ")
 	}
 	capabilities := c.Capabilities
-	capabilities.RetryableStatuses = append([]int(nil), c.RetryableStatuses...)
+	capabilities.RetryableStatuses = append([]int(nil), c.Capabilities.RetryableStatuses...)
+	capabilities.Images.MediaTypes = append([]string(nil), c.Capabilities.Images.MediaTypes...)
 	if c.ImageStyle != SystemOneImagesInline {
 		// A shape this package does not implement leaves image inputs off,
 		// so a request that carries one fails locally.

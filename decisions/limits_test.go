@@ -328,30 +328,37 @@ func decodeBody(r *http.Request, target any) error {
 // document the same minimal body.
 func TestRequestBodyCarriesOnlyDocumentedKeys(t *testing.T) {
 	cases := []struct {
-		name string
-		body map[string]any
-		want []string
+		name  string
+		build func(baseURL string) (lebro.DecisionModel, error)
+		want  []string
 	}{
 		{
 			name: "typesafe",
-			body: map[string]any{},
+			build: func(baseURL string) (lebro.DecisionModel, error) {
+				return NewTypeSafe(TypeSafeConfig{APIKey: "test-key", BaseURL: baseURL})
+			},
 			want: []string{"model", "questions", "state"},
 		},
 		{
 			name: "fastino",
-			body: map[string]any{},
+			build: func(baseURL string) (lebro.DecisionModel, error) {
+				return NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: baseURL})
+			},
 			want: []string{"model", "questions", "state"},
 		},
 		{
 			name: "subq",
-			body: map[string]any{},
+			build: func(baseURL string) (lebro.DecisionModel, error) {
+				return NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: baseURL})
+			},
 			want: []string{"model", "questions", "state"},
 		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			var body map[string]any
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if err := json.NewDecoder(r.Body).Decode(&testCase.body); err != nil {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Errorf("decode request body: %v", err)
 					return
 				}
@@ -360,16 +367,7 @@ func TestRequestBodyCarriesOnlyDocumentedKeys(t *testing.T) {
 			}))
 			defer server.Close()
 
-			var model lebro.DecisionModel
-			var err error
-			switch testCase.name {
-			case "typesafe":
-				model, err = NewTypeSafe(TypeSafeConfig{APIKey: "test-key", BaseURL: server.URL})
-			case "fastino":
-				model, err = NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: server.URL})
-			default:
-				model, err = NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL})
-			}
+			model, err := testCase.build(server.URL)
 			if err != nil {
 				t.Fatalf("build the %s adapter: %v", testCase.name, err)
 			}
@@ -379,8 +377,8 @@ func TestRequestBodyCarriesOnlyDocumentedKeys(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("Decide() error = %v", err)
 			}
-			keys := make([]string, 0, len(testCase.body))
-			for key := range testCase.body {
+			keys := make([]string, 0, len(body))
+			for key := range body {
 				keys = append(keys, key)
 			}
 			sort.Strings(keys)

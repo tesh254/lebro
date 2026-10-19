@@ -230,6 +230,8 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			probabilities[selected] = 0.7
 			confidence := 0.62
 			answers[id] = lebro.ChoiceAnswer{Choice: selected, Probabilities: probabilities, Confidence: &confidence}
+		case *lebro.NoulQuestion, *lebro.ChoiceQuestion, *lebro.ScoreQuestion:
+			return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers value question forms only")
 		case lebro.ScoreQuestion:
 			levels := len(typed.Criteria)
 			probabilities := make(map[int]float64, levels)

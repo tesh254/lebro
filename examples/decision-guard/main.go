@@ -172,7 +172,9 @@ func run(output io.Writer) error {
 func compactionTrigger(model lebro.DecisionModel, state string, budget lebro.ContextBudget) (bool, error) {
 	usable := budget.ContextWindowTokens - budget.OutputReserveTokens - budget.FutureToolReserveTokens
 	if usable <= 0 || budget.TriggerFraction <= 0 {
-		return false, nil
+		// An unusable budget is a misconfiguration, and it must be visible
+		// rather than silently disabling compaction.
+		return false, errors.New("the context budget has no usable capacity")
 	}
 	// A rough character estimate stands in for a tokenizer. A real
 	// application counts the tokens it will actually send.
@@ -295,6 +297,13 @@ type countingTool struct {
 }
 
 func (t *countingTool) Definition() lebro.ToolDefinition {
+	if t.id == "files.delete" {
+		return lebro.ToolDefinition{
+			ID:          t.id,
+			Description: "Delete a file",
+			InputSchema: json.RawMessage(`{"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}`),
+		}
+	}
 	return lebro.ToolDefinition{
 		ID:          t.id,
 		Description: "A tool that moves customer funds",
@@ -304,6 +313,9 @@ func (t *countingTool) Definition() lebro.ToolDefinition {
 
 func (t *countingTool) Execute(_ context.Context, input json.RawMessage) (json.RawMessage, error) {
 	t.counter.calls[string(t.id)]++
+	if t.id == "files.delete" {
+		return json.RawMessage(`{"status":"deleted","reviewed_arguments":` + string(input) + `}`), nil
+	}
 	return json.RawMessage(`{"status":"sent","reviewed_arguments":` + string(input) + `}`), nil
 }
 

@@ -206,6 +206,12 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, "lebro: model is required", nil)
 	}
 
+	if !profile.capabilities.StructuredState {
+		if _, ok := request.State.(string); !ok {
+			return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest,
+				fmt.Sprintf("lebro: %s accepts text state only", profile.provider), nil)
+		}
+	}
 	questions, err := profile.buildQuestions(request.Questions)
 	if err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, err.Error(), err)

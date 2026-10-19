@@ -566,8 +566,9 @@ caller-owned thresholds, and never authorizes an action by itself.
 SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are
 encoded as one line of base64 at the HTTP boundary only, at most four images of
 at most 4 MiB each and 8 MiB in total. An unsupported or over-limit image
-fails locally without a request. Credentials and image bytes never reach a
-log, an error, a metric, or a fixture.
+fails locally without a request. Credentials and caller-provided image bytes
+never reach a log, an error, or a metric; the repository's own fixtures use
+synthetic payloads.
 
 See [decision models](docs/decisions.md) for the contract, the provider
 capability matrix, and the provider retention notes, and

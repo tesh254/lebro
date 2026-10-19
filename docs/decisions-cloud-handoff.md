@@ -31,7 +31,9 @@ tenant's own provider account.
 A Cloud deployment builds one adapter per tenant and provider, and keeps the
 adapter for the lifetime of the process. The credential is read from the
 tenant's secret store and handed to the adapter; the adapter never persists
-it, never logs it, and never returns it.
+it, never logs it, and never returns it. An adapter captures the credential
+when it is built, so a rotated credential needs a rebuilt adapter rather than
+a new request.
 
 ```go
 model, err := decisions.NewSubQ(decisions.SubQConfig{
@@ -106,7 +108,9 @@ A decision request sends the tenant's state, questions, and images to a
 third-party provider. Cloud must:
 
 - disclose the provider, the model, and the provider's retention policy
-  before the tenant enables it;
+  before the tenant enables it. TypeSafe's retention is not verified in this
+  release, so the disclosure has to say so rather than present an unknown
+  policy as documented;
 - apply the tenant's data policy to the request before it is sent, and refuse
   to send content the tenant's policy excludes;
 - record the provider retention consequence in the tenant's own audit
@@ -135,15 +139,18 @@ Run this against a tenant's own credential, in a non-production tenant, before
 the tenant's traffic is enabled. Record the provider, the model, the observed
 latency, the usage, and the observed uncertainty behavior for each run.
 
-- [ ] The credential is read from the secret store, is never written to a
-      log, a metric, a trace, or an error, and rotation takes effect without
-      a code change.
+- [ ] The credential is read from the secret store and is never written to a
+      log, a metric, a trace, or an error. The adapter captures the
+      credential when it is built, so Cloud rebuilds the adapter after a
+      rotation; the rebuilt adapter takes effect without a code change.
 - [ ] A noul question returns a probability, and a threshold on that
       probability produces the expected outcome.
 - [ ] A choice question returns the selected option and a distribution that
       covers every requested option.
-- [ ] A score question returns a weighted level, and the selected level stays
-      separate from it.
+- [ ] A score question returns a weighted level. For Fastino, which reports
+      both, the selected level stays separate from the weighted value; for
+      TypeSafe and SubQ, which report only the weighted value, the selected
+      level is absent and the answer says so.
 - [ ] A request with two questions returns one answer per question, keyed by
       the question identifier.
 - [ ] A provider that reports no confidence produces a `nil` confidence, and
