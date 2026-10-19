@@ -230,6 +230,16 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 	if err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, fmt.Sprintf("lebro: encode request: %v", err), err)
 	}
+	if profile.capabilities.MaxStateBytes > 0 {
+		state, err := json.Marshal(request.State)
+		if err != nil {
+			return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, fmt.Sprintf("lebro: encode state: %v", err), err)
+		}
+		if int64(len(state)) > profile.capabilities.MaxStateBytes {
+			return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest,
+				fmt.Sprintf("lebro: the state is %d bytes, %s accepts at most %d", len(state), profile.provider, profile.capabilities.MaxStateBytes), nil)
+		}
+	}
 	if profile.maxBodyBytes > 0 && int64(len(encoded)) > profile.maxBodyBytes {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest,
 			fmt.Sprintf("lebro: the request body is %d bytes, %s accepts at most %d", len(encoded), profile.provider, profile.maxBodyBytes), nil)

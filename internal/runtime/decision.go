@@ -265,7 +265,7 @@ type DecisionCapabilities struct {
 	// requests in one call.
 	Batching bool
 	// MaxStateBytes is the largest accepted state size in bytes. Zero means
-	// unspecified.
+	// unspecified. An adapter checks it before it sends a request.
 	MaxStateBytes int64
 	// RetryableStatuses lists the HTTP status codes the provider documents as
 	// retryable.

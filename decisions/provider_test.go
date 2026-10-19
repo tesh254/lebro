@@ -436,3 +436,32 @@ func TestGenericProviderCapabilitiesAreCopied(t *testing.T) {
 		t.Fatal("the image media types are shared between calls")
 	}
 }
+
+// TestGenericProviderEnforcesTheStateLimit pins that an advertised state
+// limit is checked before the request is sent.
+func TestGenericProviderEnforcesTheStateLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"noul","noul":0.5}}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.MaxStateBytes = 16
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		State:     "a state that is comfortably larger than sixteen bytes",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	})
+	if !errors.Is(err, lebro.ErrDecisionInvalidRequest) {
+		t.Fatalf("Decide() error = %v, want an invalid request error", err)
+	}
+	if requests != 0 {
+		t.Fatalf("the provider received %d requests, want none", requests)
+	}
+}

@@ -80,8 +80,9 @@ type SystemOneConfig struct {
 	// Score names the wire fields that hold a score answer.
 	Score SystemOneScoreFields
 	// Capabilities describes what the provider supports. Its Images field
-	// carries the image limits, and StructuredInstructions selects whether
-	// instructions and criteria may be structured.
+	// carries the image limits, StructuredInstructions selects whether
+	// instructions and criteria may be structured, and MaxStateBytes is
+	// checked before a request is sent.
 	Capabilities lebro.DecisionCapabilities
 	// ImageStyle is the wire shape the provider uses for image inputs. A
 	// shape this package does not implement leaves image inputs disabled.
