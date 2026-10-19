@@ -1089,3 +1089,54 @@ func TestPredicateAliases(t *testing.T) {
 		t.Fatalf("the probability = %v, want 0.8", predicate.ProbabilityYes)
 	}
 }
+
+// TestDecisionGateNeedsASelectThreshold pins that a gate cannot select
+// everything. A select probability of zero selects every answer, so a gate
+// that only sets a confidence threshold would select anything the provider
+// was confident about.
+func TestDecisionGateNeedsASelectThreshold(t *testing.T) {
+	minimum := 0.5
+	gate := DecisionGate{MinimumConfidence: &minimum, ConfidenceMetric: DecisionConfidenceTopTwoMargin}
+	if err := gate.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want a failure")
+	}
+	answer := NoulAnswer{ProbabilityYes: 0.99, Confidence: float64Pointer(0.99), ConfidenceMetric: DecisionConfidenceTopTwoMargin}
+	if got := gate.Noul(answer); got != DecisionOutcomeReview {
+		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeReview)
+	}
+}
+
+// TestDecisionGateRejectsAnUndocumentedMetric pins that a threshold cannot
+// be written against a measure nobody documented.
+func TestDecisionGateRejectsAnUndocumentedMetric(t *testing.T) {
+	minimum := 0.5
+	gate := DecisionGate{
+		SelectProbability: 0.8,
+		MinimumConfidence: &minimum,
+		ConfidenceMetric:  DecisionConfidenceUnknown,
+	}
+	if err := gate.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want a failure")
+	}
+	answer := NoulAnswer{ProbabilityYes: 0.99, Confidence: float64Pointer(0.99), ConfidenceMetric: DecisionConfidenceUnknown}
+	if got := gate.Noul(answer); got != DecisionOutcomeReview {
+		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeReview)
+	}
+}
+
+// TestDecisionDerivedHelpersIgnoreNonFiniteProbabilities pins that the
+// derived helpers do not depend on the order a map is walked in.
+func TestDecisionDerivedHelpersIgnoreNonFiniteProbabilities(t *testing.T) {
+	distribution := map[DecisionOptionID]float64{"a": 0.6, "b": math.NaN(), "c": 0.4}
+	top, ok := DecisionTopProbability(distribution)
+	if !ok || top != 0.6 {
+		t.Fatalf("DecisionTopProbability() = %v, %v, want 0.6, true", top, ok)
+	}
+	margin, ok := DecisionTopTwoMargin(distribution)
+	if !ok || math.Abs(margin-0.2) > 1e-9 {
+		t.Fatalf("DecisionTopTwoMargin() = %v, %v, want 0.2, true", margin, ok)
+	}
+	if _, ok := DecisionTopTwoMargin(map[DecisionOptionID]float64{"a": math.NaN(), "b": math.NaN()}); ok {
+		t.Fatal("DecisionTopTwoMargin() = true, want false without a finite probability")
+	}
+}

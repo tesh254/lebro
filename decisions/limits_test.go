@@ -35,12 +35,12 @@ func TestCheckSupportedKindsRejectsUnsupportedQuestions(t *testing.T) {
 			},
 		},
 	}
-	err := checkSupportedKinds(profile, request)
+	err := checkDecisionKinds(profile.capabilities, profile.provider, request)
 	if err == nil {
-		t.Fatal("checkSupportedKinds() error = nil, want a failure")
+		t.Fatal("checkDecisionKinds() error = nil, want a failure")
 	}
 	if !strings.Contains(err.Error(), "does not support") {
-		t.Fatalf("checkSupportedKinds() error = %v, want it to mention the missing support", err)
+		t.Fatalf("checkDecisionKinds() error = %v, want it to mention the missing support", err)
 	}
 }
 
@@ -66,8 +66,8 @@ func TestCheckQuestionLimits(t *testing.T) {
 			"b": lebro.NoulQuestion{Instructions: "Is it?"},
 		},
 	}
-	if err := checkQuestionLimits(profile, twoQuestions); err == nil {
-		t.Fatal("checkQuestionLimits() error = nil, want a question count failure")
+	if err := checkDecisionLimits(profile.capabilities, profile.provider, twoQuestions); err == nil {
+		t.Fatal("checkDecisionLimits() error = nil, want a question count failure")
 	}
 	tooManyOptions := lebro.DecisionRequest{
 		State: "state",
@@ -78,8 +78,8 @@ func TestCheckQuestionLimits(t *testing.T) {
 			},
 		},
 	}
-	if err := checkQuestionLimits(profile, tooManyOptions); err == nil {
-		t.Fatal("checkQuestionLimits() error = nil, want an option count failure")
+	if err := checkDecisionLimits(profile.capabilities, profile.provider, tooManyOptions); err == nil {
+		t.Fatal("checkDecisionLimits() error = nil, want an option count failure")
 	}
 	tooManyLevels := lebro.DecisionRequest{
 		State: "state",
@@ -90,8 +90,8 @@ func TestCheckQuestionLimits(t *testing.T) {
 			},
 		},
 	}
-	if err := checkQuestionLimits(profile, tooManyLevels); err == nil {
-		t.Fatal("checkQuestionLimits() error = nil, want a level count failure")
+	if err := checkDecisionLimits(profile.capabilities, profile.provider, tooManyLevels); err == nil {
+		t.Fatal("checkDecisionLimits() error = nil, want a level count failure")
 	}
 	withinLimits := lebro.DecisionRequest{
 		State: "state",
@@ -99,8 +99,8 @@ func TestCheckQuestionLimits(t *testing.T) {
 			"q": lebro.NoulQuestion{Instructions: "Is it?"},
 		},
 	}
-	if err := checkQuestionLimits(profile, withinLimits); err != nil {
-		t.Fatalf("checkQuestionLimits() error = %v, want nil", err)
+	if err := checkDecisionLimits(profile.capabilities, profile.provider, withinLimits); err != nil {
+		t.Fatalf("checkDecisionLimits() error = %v, want nil", err)
 	}
 }
 

@@ -535,11 +535,12 @@ if err != nil {
 fmt.Println(response.Answers["is_refund"])
 ```
 
-The `decisions` package adapts three System One providers, each configured
-with its own endpoint, credential, model, HTTP client, timeout, and retry
-policy: `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino`
-(Fastino GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview). Switching
-providers changes configuration, not application logic.
+The `decisions` package adapts three System One providers and the OpenAI
+Decisions API, each configured with its own endpoint, credential, model, HTTP
+client, timeout, and retry policy: `decisions.NewTypeSafe` (TypeSafe Jev),
+`decisions.NewFastino` (Fastino GLiDE), `decisions.NewSubQ` (SubQ
+Snap-preview), and `decisions.NewOpenAI` (OpenAI Luna). Switching providers
+changes configuration, not application logic.
 
 The same package exposes the generic form, `decisions.NewSystemOne`, which
 builds an adapter from a provider's wire contract alone, so a provider with

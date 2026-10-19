@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -679,7 +681,7 @@ func TestAdapterRejectsADistributionThatDoesNotAddUp(t *testing.T) {
 func TestAdapterAcceptsARoundedDistribution(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.34,"b":0.33,"c":0.33}}}}`))
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.34,"b":0.33,"c":0.32}}}}`))
 	}))
 	defer server.Close()
 
@@ -735,9 +737,7 @@ func TestAdapterRejectsAnAnswerForAnUnknownQuestion(t *testing.T) {
 }
 
 // TestAdapterStampsTheConfidenceMetric pins that a reported confidence
-// carries the metric that says what it means, and that a provider whose
-// profile does not describe it gets an unknown metric rather than a
-// fabricated one.
+// carries the metric the profile names, rather than a fabricated one.
 func TestAdapterStampsTheConfidenceMetric(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -771,5 +771,158 @@ func TestAdapterStampsTheConfidenceMetric(t *testing.T) {
 	}
 	if answer.ConfidenceMetric != lebro.DecisionConfidenceUnknown {
 		t.Fatalf("Decide() confidence metric = %q, want %q", answer.ConfidenceMetric, lebro.DecisionConfidenceUnknown)
+	}
+}
+
+// TestGenericProviderRejectsADuplicateProfile pins that two profiles for one
+// model are a configuration error rather than a silent overwrite.
+func TestGenericProviderRejectsADuplicateProfile(t *testing.T) {
+	config := genericProviderConfig("https://example.com")
+	config.Profiles = []SystemOneModelProfile{
+		{Model: "other-model", Capabilities: lebro.DecisionCapabilities{Noul: true}},
+		{Model: "other-model", Capabilities: lebro.DecisionCapabilities{Choice: true}},
+	}
+	if _, err := NewSystemOne(config); err == nil {
+		t.Fatal("NewSystemOne() error = nil, want the repeated profile to be rejected")
+	}
+}
+
+// TestGenericProviderRejectsANonFiniteTolerance pins that a tolerance that
+// is not a number cannot disable the check.
+func TestGenericProviderRejectsANonFiniteTolerance(t *testing.T) {
+	for _, tolerance := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -1} {
+		config := genericProviderConfig("https://example.com")
+		config.DistributionTolerance = tolerance
+		if _, err := NewSystemOne(config); err == nil {
+			t.Fatalf("NewSystemOne() error = nil, want the tolerance %v to be rejected", tolerance)
+		}
+	}
+}
+
+// TestGenericProviderResolvesTheDefaultProfile pins that the same model
+// gets the same capabilities whether or not the caller spells its name.
+func TestGenericProviderResolvesTheDefaultProfile(t *testing.T) {
+	config := genericProviderConfig("https://example.com")
+	config.Profiles = []SystemOneModelProfile{
+		{
+			Model: config.Model,
+			Capabilities: lebro.DecisionCapabilities{
+				Noul: true,
+				NoulUncertainty: lebro.DecisionUncertainty{
+					Distribution: lebro.DecisionAvailabilityUnavailable,
+					Confidence:   lebro.DecisionAvailabilityUnavailable,
+				},
+			},
+		},
+	}
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	spelled, ok := model.CapabilitiesFor(config.Model)
+	if !ok {
+		t.Fatal("CapabilitiesFor() = false, want the model to have a profile")
+	}
+	unnamed, ok := model.CapabilitiesFor("")
+	if !ok {
+		t.Fatal("CapabilitiesFor() = false, want the default model to have a profile")
+	}
+	if !reflect.DeepEqual(spelled, unnamed) {
+		t.Fatalf("the capabilities differ by whether the model is named: %#v and %#v", spelled, unnamed)
+	}
+	if !reflect.DeepEqual(spelled, model.Capabilities()) {
+		t.Fatalf("the default capabilities = %#v, want the profile's %#v", model.Capabilities(), spelled)
+	}
+}
+
+// TestGenericProviderRejectsARefusalCapability pins that a System One
+// profile cannot advertise a refusal the protocol cannot carry.
+func TestGenericProviderRejectsARefusalCapability(t *testing.T) {
+	config := genericProviderConfig("https://example.com")
+	config.Capabilities.NoulUncertainty.Refusal = true
+	if _, err := NewSystemOne(config); err == nil {
+		t.Fatal("NewSystemOne() error = nil, want the refusal capability to be rejected")
+	}
+}
+
+// TestGenericProviderRejectsADistributionTheProviderDoesNotReport pins that
+// a distribution the profile says the provider never sends is malformed.
+func TestGenericProviderRejectsADistributionTheProviderDoesNotReport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":1,"b":0}}}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.ChoiceUncertainty.Distribution = lebro.DecisionAvailabilityUnavailable
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		State: "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"q": lebro.ChoiceQuestion{
+				Instructions: "Which one?",
+				Criteria:     map[lebro.DecisionOptionID]lebro.JSONValue{"a": "first", "b": "second"},
+			},
+		},
+	})
+	if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
+		t.Fatalf("Decide() error = %v, want a malformed response failure", err)
+	}
+}
+
+// TestGenericProviderRetriesTheModelPolicy pins that the retry policy comes
+// from the model the request names.
+func TestGenericProviderRetriesTheModelPolicy(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"busy","type":"server_error"}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.MaxRetries = intPointer(1)
+	config.RetryBackoff = time.Millisecond
+	// The default model does not retry a 503, and the other model does.
+	config.Profiles = []SystemOneModelProfile{
+		{
+			Model: "retrying-model",
+			Capabilities: lebro.DecisionCapabilities{
+				Noul: true,
+				NoulUncertainty: lebro.DecisionUncertainty{
+					Distribution: lebro.DecisionAvailabilityUnavailable,
+					Confidence:   lebro.DecisionAvailabilityUnavailable,
+				},
+				RetryableStatuses: []int{http.StatusServiceUnavailable},
+			},
+		},
+	}
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	request := lebro.DecisionRequest{
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	}
+	if _, err := model.Decide(context.Background(), request); err == nil {
+		t.Fatal("Decide() error = nil, want a provider failure")
+	}
+	if requests != 1 {
+		t.Fatalf("the provider received %d requests, want 1", requests)
+	}
+	retrying := request
+	retrying.Model = "retrying-model"
+	if _, err := model.Decide(context.Background(), retrying); err == nil {
+		t.Fatal("Decide() error = nil, want a provider failure")
+	}
+	if requests != 3 {
+		t.Fatalf("the provider received %d requests, want 3", requests)
 	}
 }

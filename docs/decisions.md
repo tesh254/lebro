@@ -159,37 +159,37 @@ as the provider sent it.
 application can pick one before it sends anything. A zero limit means the
 provider documents no limit, not that the limit is zero.
 
-| Capability | TypeSafe (Jev) | Fastino (GLiDE) | SubQ (Snap preview) |
-| --- | --- | --- | --- |
-| Endpoint | `POST https://api.typesafe.ai/v1/systemone` | `POST https://api.fastino.ai/v1/systemone` | `POST https://api.subq.ai/v1/systemone` |
-| Model | `jev-latest` (the response echoes the concrete model) | `fastino/GLiDE` (the response echoes `glide`) | `subq-snap-preview` |
-| Authentication | `Authorization: Bearer` | `X-API-Key` | `Authorization: Bearer` |
-| Noul, Choice, Score | yes | yes | yes |
-| Multiple questions | yes | yes | yes, up to 16 |
-| Structured state | yes | yes | yes |
-| Structured instructions | yes | no, text only | yes |
-| Distribution, noul | no | no | no |
-| Distribution, choice | required | required | required |
-| Distribution, score | required | required | required |
-| Confidence, noul | no | required | no |
-| Confidence, choice | required | required | required |
-| Confidence, score | required | required | required |
-| Confidence metric, noul | — | `distance_from_half` | — |
-| Confidence metric, choice | `top_probability_uniform` | `top_two_margin` | unknown |
-| Confidence metric, score | `modal_distance_uniform` | `top_two_margin` | unknown |
-| Refusal | no | no | no |
-| Image media types | not exposed by this adapter | not exposed by this adapter | `image/png`, `image/jpeg`, `image/webp` |
-| Maximum images | not exposed by this adapter | not exposed by this adapter | 4 |
-| Maximum bytes per image | not exposed by this adapter | not exposed by this adapter | 4 MiB decoded |
-| Maximum total image bytes | not exposed by this adapter | not exposed by this adapter | 8 MiB decoded |
-| Maximum choice options | 255 | 255 | 255 |
-| Maximum score levels | 10 | 255 | 10 |
-| Request body limit | 32 MiB | not documented as a byte limit | 13 MiB |
-| Context window | not documented | about 40,000 tokens per rendered question | 384K tokens (393,216) |
-| Batching | no | no | no |
-| Retryable statuses | 429, 529 | 425, 429, 503 | 429, 503 |
-| Score answer | weighted value, no winning level | winning level and weighted value | weighted value, no winning level |
-| Request identifier | `x-typesafe-request-id` | not documented | not documented |
+| Capability | TypeSafe (Jev) | Fastino (GLiDE) | SubQ (Snap preview) | OpenAI (Luna) |
+| --- | --- | --- | --- | --- |
+| Endpoint | `POST https://api.typesafe.ai/v1/systemone` | `POST https://api.fastino.ai/v1/systemone` | `POST https://api.subq.ai/v1/systemone` | `POST https://api.openai.com/v1/decisions` |
+| Model | `jev-latest` (the response echoes the concrete model) | `fastino/GLiDE` (the response echoes `glide`) | `subq-snap-preview` | `gpt-6-luna`, the only model the endpoint serves |
+| Authentication | `Authorization: Bearer` | `X-API-Key` | `Authorization: Bearer` | `Authorization: Bearer` |
+| Noul, Choice, Score | yes | yes | yes | yes, as `predicate`, `choice`, and `score` |
+| Multiple questions | yes | yes | yes, up to 16 | yes, up to 200 |
+| Structured state | yes | yes | yes | yes, rendered as labelled JSON text |
+| Structured instructions | yes | no, text only | yes | no, text only |
+| Distribution, noul | no | no | no | no |
+| Distribution, choice | required | required | required | required |
+| Distribution, score | required | required | required | required |
+| Confidence, noul | no | required | no | no |
+| Confidence, choice | required | required | required | required |
+| Confidence, score | required | required | required | required |
+| Confidence metric, noul | — | `distance_from_half` | — | — |
+| Confidence metric, choice | `top_probability_uniform` | `top_two_margin` | unknown | unknown |
+| Confidence metric, score | `modal_distance_uniform` | `top_two_margin` | unknown | unknown |
+| Refusal | no | no | no | yes, any question can refuse |
+| Image media types | not exposed by this adapter | not exposed by this adapter | `image/png`, `image/jpeg`, `image/webp` | `image/png`, `image/jpeg`, `image/webp` |
+| Maximum images | not exposed by this adapter | not exposed by this adapter | 4 | 128 |
+| Maximum bytes per image | not exposed by this adapter | not exposed by this adapter | 4 MiB decoded | not documented |
+| Maximum total image bytes | not exposed by this adapter | not exposed by this adapter | 8 MiB decoded | not documented |
+| Maximum choice options | 255 | 255 | 255 | 255 |
+| Maximum score levels | 10 | 255 | 10 | not documented |
+| Request body limit | 32 MiB | not documented as a byte limit | 13 MiB | not documented |
+| Context window | not documented | about 40,000 tokens per rendered question | 384K tokens (393,216) | not documented |
+| Batching | no | no | no | no |
+| Retryable statuses | 429, 529 | 425, 429, 503 | 429, 503 | 429, 500, 502, 503, 504 |
+| Score answer | weighted value, no winning level | winning level and weighted value | weighted value, no winning level | weighted value, no winning level |
+| Request identifier | `x-typesafe-request-id` | not documented | not documented | `x-request-id` |
 
 TypeSafe documents an image capability of its own. This release does not expose
 it, so the adapter advertises no image support rather than guessing at a wire
@@ -450,18 +450,43 @@ deployment is expected to handle this.
 
 ## OpenAI
 
-OpenAI's native Decisions API is **not** implemented in this release, and the
-`openai` package remains a chat-completions adapter. The OpenAI Decisions
-surface differs from the System One protocol these adapters share: its
-questions and answers are arrays rather than maps, its input takes user
-messages rather than a shared state, and each question can refuse on its own.
+OpenAI's native Decisions API is implemented as `decisions.NewOpenAI`. The
+`openai` package remains a chat-completions adapter, and the two do not
+share a codec: the Decisions API has its own request and response shapes.
 
-The public contract already carries what such an adapter needs:
-`PredicateQuestion` and `PredicateAnswer` are the neutral names for its
-binary judgment, and `RefusalAnswer` is the answer its refusals map onto. What
-remains is the wire translation, its own request and response codec, and its
-own contract suite. That work is tracked separately and does not block the
-three working adapters.
+```go
+model, err := decisions.NewOpenAI(decisions.OpenAIConfig{
+    APIKey: os.Getenv("OPENAI_API_KEY"),
+})
+```
+
+The protocol differs from the System One one in four ways, and the adapter
+translates each of them:
+
+- **The questions and the answers are arrays.** The adapter sorts the
+  question identifiers before it sends them, so the wire order is stable, and
+  it maps the answers back by the name each one carries. A duplicate, an
+  unknown, or a missing name is a malformed response.
+- **The input is a message list.** A text state is sent as it is, and a
+  structured state is written as JSON under a fixed label, so the model is
+  told what it is reading. That is an adapter transformation and not a claim
+  that the provider processes a structured state natively.
+- **The binary judgment has no criteria.** The schema has one instruction
+  and no place for the true and false descriptions, so the adapter writes
+  them into the instructions under a fixed label rather than dropping the
+  caller's meaning.
+- **A question can refuse.** The refusal is a `RefusalAnswer`, it is
+  distinct from a false answer and from a failure to reach the provider, and
+  it leaves its sibling answers alone.
+
+The images are inline base64 data URLs in an `input_image` part, because the
+endpoint takes no remote image reference. The API is in public beta and
+serves one model, so a request that names another one is rejected.
+
+The Decisions API exposes a confidence on a choice and a score answer and does
+not document what the number means, so the metric on those answers is
+`DecisionConfidenceUnknown`. A predicate answer carries a probability and
+nothing else: the probability already is the uncertainty.
 
 ## Examples
 
@@ -479,6 +504,9 @@ three working adapters.
   its wire contract alone, the way an integration would for a provider that
   has no named adapter.
 
+The OpenAI Decisions adapter has no live run in this release: no OpenAI
+credential was available, so it has fixture coverage only, like SubQ.
+
 ## Live tests
 
 The fixture suite is the regression gate. A live run against a real provider
@@ -489,6 +517,7 @@ LEBRO_TYPESAFE_API_KEY=... go test ./decisions/ -run TestLiveTypeSafe -v
 LEBRO_FASTINO_API_KEY=... go test ./decisions/ -run TestLiveFastino -v
 LEBRO_SUBQ_API_KEY=... go test ./decisions/ -run TestLiveSubQ -v
 LEBRO_OPENROUTER_API_KEY=... go test ./decisions/ -run TestLiveTypeSafeViaOpenRouter -v
+LEBRO_OPENAI_API_KEY=... go test ./decisions/ -run TestLiveOpenAI -v
 ```
 
 Each run reports the provider, the model the provider echoed, the latency,

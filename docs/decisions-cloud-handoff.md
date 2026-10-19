@@ -19,7 +19,7 @@ tenant's own provider account.
 | Question kinds and validation | `lebro.NoulQuestion`, `lebro.ChoiceQuestion`, `lebro.ScoreQuestion` | unchanged |
 | Provider capability description | `lebro.DecisionCapabilities` | the picker reads it |
 | Normalized failures | `*lebro.DecisionError` and the `ErrDecision*` sentinels | the UI maps them |
-| Provider wire formats | `decisions.NewTypeSafe`, `decisions.NewFastino`, `decisions.NewSubQ` | unchanged |
+| Provider wire formats | `decisions.NewTypeSafe`, `decisions.NewFastino`, `decisions.NewSubQ`, `decisions.NewOpenAI` | unchanged |
 | Credential storage and rotation | none | Cloud |
 | Tenant and member authorization | none | Cloud |
 | Audit trail | none | Cloud |
@@ -119,7 +119,10 @@ third-party provider. Cloud must:
 - disclose the provider, the model, and the provider's retention policy
   before the tenant enables it. TypeSafe's retention is not verified in this
   release, so the disclosure has to say so rather than present an unknown
-  policy as documented;
+  policy as documented. OpenAI supports Zero Data Retention and HIPAA use for
+  eligible customers, and residency in the United States and Europe, but the
+  eligibility depends on the account's agreements, so the disclosure has to
+  read the tenant's data controls rather than assume them;
 - apply the tenant's data policy to the request before it is sent, and refuse
   to send content the tenant's policy excludes;
 - record the provider retention consequence in the tenant's own audit

@@ -294,10 +294,16 @@ func (a ScoreAnswer) ExpectedIndex() (float64, bool) {
 // The value is derived from the reported distribution, not reported by the
 // provider. A caller that needs the provider's own number uses the answer it
 // came with.
+//
+// A probability that is not a finite number is skipped, so the result does
+// not depend on the order the map is walked in.
 func DecisionTopProbability[T comparable](distribution map[T]float64) (float64, bool) {
 	top := 0.0
 	found := false
 	for _, probability := range distribution {
+		if math.IsNaN(probability) || math.IsInf(probability, 0) {
+			continue
+		}
 		if !found || probability > top {
 			top = probability
 			found = true
@@ -312,11 +318,17 @@ func DecisionTopProbability[T comparable](distribution map[T]float64) (float64, 
 // The value is derived from the reported distribution, not reported by the
 // provider. It is the measure one provider uses for its own confidence, and
 // it is not the measure another provider uses.
+//
+// A probability that is not a finite number is skipped, so the result does
+// not depend on the order the map is walked in.
 func DecisionTopTwoMargin[T comparable](distribution map[T]float64) (float64, bool) {
 	top := 0.0
 	second := 0.0
 	count := 0
 	for _, probability := range distribution {
+		if math.IsNaN(probability) || math.IsInf(probability, 0) {
+			continue
+		}
 		count++
 		switch {
 		case probability > top:
@@ -339,6 +351,9 @@ type DecisionUsage struct {
 	InputTokens *int64
 	// OutputTokens is the number of output tokens the provider reported.
 	OutputTokens *int64
+	// TotalTokens is the total number of tokens the provider reported, when
+	// it reports one separately from the two counts above.
+	TotalTokens *int64
 }
 
 // DecisionResponse is one provider-neutral decision response.
@@ -623,10 +638,18 @@ func (g DecisionGate) Validate() error {
 		// entirely.
 		return errors.New("lebro: decision gate confidence threshold requires a confidence metric")
 	}
-	if g.SelectProbability == 0 && g.EscalateProbability == 0 && g.MinimumConfidence == nil {
-		// A gate with no thresholds would select every answer. An
-		// unconfigured gate is a misconfiguration, and it fails closed.
-		return errors.New("lebro: decision gate has no thresholds set")
+	if g.MinimumConfidence != nil && g.ConfidenceMetric == DecisionConfidenceUnknown {
+		// A threshold written against a measure nobody documented is not
+		// a threshold: it would compare two numbers that mean nothing in
+		// particular.
+		return errors.New("lebro: decision gate confidence threshold requires a documented confidence metric")
+	}
+	if g.SelectProbability == 0 {
+		// A select probability of zero selects every answer, so a gate
+		// that only sets a confidence threshold would select anything the
+		// provider was confident about. An unconfigured gate is a
+		// misconfiguration, and it fails closed.
+		return errors.New("lebro: decision gate select probability must be above zero")
 	}
 	return nil
 }
@@ -647,10 +670,11 @@ func (g DecisionGate) Noul(answer NoulAnswer) DecisionOutcome {
 		if answer.Confidence == nil {
 			return DecisionOutcomeReview
 		}
-		if answer.ConfidenceMetric != g.ConfidenceMetric {
+		if answer.ConfidenceMetric == DecisionConfidenceUnknown || answer.ConfidenceMetric != g.ConfidenceMetric {
 			// The reported number and the threshold do not mean the same
 			// thing, so comparing them would answer a question the caller
-			// did not ask.
+			// did not ask. A number whose measure nobody documented is
+			// not comparable with any threshold.
 			return DecisionOutcomeReview
 		}
 		if *answer.Confidence < *g.MinimumConfidence {

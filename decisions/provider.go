@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -150,7 +151,7 @@ type SystemOneConfig struct {
 // credential placement, model, score fields, capabilities, and retry policy
 // are all configuration. The adapter is safe for concurrent use.
 type SystemOneModel struct {
-	client *systemOneClient
+	client *decisionClient
 	// profile is the contract of the adapter's default model.
 	profile systemOneProfile
 	// profiles holds every model the adapter may serve, keyed by model
@@ -205,7 +206,7 @@ func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 	if authHeader == "" {
 		authHeader = "Authorization"
 	}
-	client, err := newSystemOneClient(
+	client, err := newDecisionClient(
 		string(profile.provider),
 		baseURL,
 		path,
@@ -213,7 +214,6 @@ func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 		config.AuthPrefix,
 		config.APIKey,
 		config.Model,
-		profile.capabilities.RetryableStatuses,
 		httpClientConfig{
 			client:       config.HTTPClient,
 			timeout:      config.Timeout,
@@ -264,6 +264,13 @@ func (m *SystemOneModel) CapabilitiesFor(model string) (lebro.DecisionCapabiliti
 // model's capabilities.
 func (m *SystemOneModel) profileFor(model string) (systemOneProfile, bool) {
 	if model == "" {
+		// An empty model name means the adapter's own model, and a profile
+		// may replace that model's contract. The same model must not get
+		// different capabilities depending on whether the caller spells
+		// its name.
+		if profile, ok := m.profiles[m.profile.model]; ok {
+			return profile, true
+		}
 		return m.profile, true
 	}
 	if profile, ok := m.profiles[model]; ok {
@@ -293,13 +300,20 @@ func (c SystemOneConfig) profile() (systemOneProfile, error) {
 	if err := capabilities.Validate(); err != nil {
 		return systemOneProfile{}, err
 	}
+	if err := checkSystemOneCapabilities(capabilities); err != nil {
+		return systemOneProfile{}, err
+	}
+	tolerance, err := c.tolerance()
+	if err != nil {
+		return systemOneProfile{}, err
+	}
 	profile := systemOneProfile{
 		provider:              provider,
 		model:                 c.Model,
 		capabilities:          c.capabilities(),
 		scoreWeightedField:    c.Score.Weighted,
 		scoreWinnerField:      c.Score.Winner,
-		distributionTolerance: c.tolerance(),
+		distributionTolerance: tolerance,
 		buildQuestions:        questionBuilder(capabilities),
 		extraFields: func(lebro.DecisionRequest) map[string]any {
 			if !c.DisableStorage {
@@ -333,12 +347,22 @@ func (c SystemOneConfig) profiles(defaultProfile systemOneProfile) (map[string]s
 	if defaultProfile.model != "" {
 		profiles[defaultProfile.model] = defaultProfile
 	}
+	seen := make(map[string]bool, len(c.Profiles))
 	for _, entry := range c.Profiles {
 		if entry.Model == "" {
 			return nil, errors.New("lebro: a System One model profile requires a model")
 		}
+		if seen[entry.Model] {
+			// Two profiles for one model would silently overwrite each
+			// other, and the first one's contract would be lost.
+			return nil, fmt.Errorf("lebro: the System One model %q has more than one profile", entry.Model)
+		}
+		seen[entry.Model] = true
 		capabilities := entry.Capabilities
 		if err := capabilities.Validate(); err != nil {
+			return nil, err
+		}
+		if err := checkSystemOneCapabilities(capabilities); err != nil {
 			return nil, err
 		}
 		profile := defaultProfile
@@ -397,11 +421,31 @@ func questionBuilder(capabilities lebro.DecisionCapabilities) func(map[lebro.Dec
 
 // tolerance returns the largest deviation a reported probability
 // distribution may have from a total of one.
-func (c SystemOneConfig) tolerance() float64 {
-	if c.DistributionTolerance <= 0 {
-		return defaultDistributionTolerance
+//
+// Zero means the bound follows the number of outcomes, which is what a
+// provider that rounds its probabilities needs.
+func (c SystemOneConfig) tolerance() (float64, error) {
+	if math.IsNaN(c.DistributionTolerance) || math.IsInf(c.DistributionTolerance, 0) {
+		return 0, errors.New("lebro: the distribution tolerance must be a finite number")
 	}
-	return c.DistributionTolerance
+	if c.DistributionTolerance < 0 {
+		return 0, errors.New("lebro: the distribution tolerance must not be negative")
+	}
+	return c.DistributionTolerance, nil
+}
+
+// checkSystemOneCapabilities rejects a capability the System One protocol
+// cannot honor.
+//
+// The System One answer shape has no refusal, so a profile that advertises
+// one would promise an answer the adapter cannot produce.
+func checkSystemOneCapabilities(capabilities lebro.DecisionCapabilities) error {
+	if capabilities.NoulUncertainty.Refusal ||
+		capabilities.ChoiceUncertainty.Refusal ||
+		capabilities.ScoreUncertainty.Refusal {
+		return errors.New("lebro: the System One protocol has no refusal answer, so a profile must not advertise one")
+	}
+	return nil
 }
 
 // inlineImageFields renders the images in a top-level "images" array of

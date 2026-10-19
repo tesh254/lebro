@@ -89,6 +89,13 @@ func (m fixtureDecisionModel) CapabilitiesFor(model string) (lebro.DecisionCapab
 }
 
 func (m fixtureDecisionModel) Decide(_ context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
+	if _, ok := m.CapabilitiesFor(request.Model); !ok {
+		return lebro.DecisionResponse{}, &lebro.DecisionError{
+			Kind:     lebro.DecisionErrorUnsupportedCapability,
+			Provider: string(m.ProviderID()),
+			Message:  "the example provider has no profile for that model",
+		}
+	}
 	answers := make(map[lebro.DecisionQuestionID]lebro.DecisionAnswer, len(request.Questions))
 	for id := range request.Questions {
 		answers[id] = lebro.NoulAnswer{ProbabilityYes: 0.88}

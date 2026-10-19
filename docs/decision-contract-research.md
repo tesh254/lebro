@@ -7,10 +7,10 @@ Research snapshot: 20 October 2026, Africa/Nairobi. This is a design proposal, n
 > landed the runtime contract and the three System One adapters: the refusal
 > answer, the predicate alias, the per-kind uncertainty with a confidence
 > metric, the model-bound capabilities, the response identity, and the derived
-> helpers. The OpenRouter Decisions adapter and the direct OpenAI Decisions
-> adapter are **later slices**, gated on their own wire contract and their own
-> contract suite, exactly as the implementation order below describes. The
-> OpenAI Decisions API is not implemented in this release.
+> helpers. The direct OpenAI Decisions adapter landed with it, on the
+> contract this snapshot describes. The OpenRouter Decisions adapter is a
+> **later slice**, gated on its own wire contract and its own contract suite,
+> exactly as the implementation order below describes.
 
 ## Recommendation
 
@@ -167,7 +167,7 @@ flowchart LR
 1. Extend the runtime answer contract and shared contract suite for refusal, answer association, uncertainty absence, score provenance, and model-profile selection. Keep existing types and maps; add aliases rather than requiring a naming migration.
 2. Harden the existing System One profile constructor: explicit scoring fields and validated declared capabilities. Keep it a protocol-specific advanced constructor.
 3. **Deferred to its own slice.** Add a named OpenRouter Decisions adapter using `/api/alpha/decisions`, with explicit provider routing and response metadata handling. Start with a small verified text-only profile set, then image-capable profiles. Discovery should expose unsupported/unknown models without claiming them as verified.
-4. **Deferred to its own slice.** Add direct OpenAI Decisions translation and partial-refusal fixtures. Serialize structured state explicitly. Retain its distinct request and response codec even if it shares the HTTP transport. The public contract already carries the `RefusalAnswer` and the `PredicateQuestion` alias this needs, so what remains is the wire translation and its own contract suite.
+4. **Landed in MAD-142.** The direct OpenAI Decisions adapter has its own request and response codec, its own state rendering, its own criteria rendering, and its own partial-refusal handling, and it shares the HTTP transport with the System One adapters. It runs the shared contract suite.
 5. **Deferred to its own slice.** Expand neutral image translation per route. Add more modalities only when an actual caller needs them and their contracts are verified.
 6. **Deferred to its own slice.** Consider a structured-generation adapter separately. Reuse `ModelRequest.OutputSchema`; require explicit opt-in and local schema validation. A generated yes/no answer must not be converted into probability 0 or 1. The current required `NoulAnswer.ProbabilityYes` cannot represent a boolean-only judgment faithfully, so this expansion needs a deliberate result-contract decision rather than a fabricated probability.
 

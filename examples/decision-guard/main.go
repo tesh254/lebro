@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -36,21 +37,21 @@ func run(output io.Writer) error {
 	}{
 		{
 			name:       "allowed",
-			model:      guardDecisionModel{probability: 0.95, confidence: 0.9},
+			model:      guardDecisionModel{probability: 0.95},
 			action:     "payments.transfer",
 			wantStatus: "approved",
 			wantCalls:  1,
 		},
 		{
 			name:       "uncertain",
-			model:      guardDecisionModel{probability: 0.55, confidence: 0.9},
+			model:      guardDecisionModel{probability: 0.55},
 			action:     "payments.transfer",
 			wantStatus: "needs-review",
 			wantCalls:  0,
 		},
 		{
 			name:       "denied",
-			model:      guardDecisionModel{probability: 0.05, confidence: 0.9},
+			model:      guardDecisionModel{probability: 0.05},
 			action:     "payments.transfer",
 			wantStatus: "denied",
 			wantCalls:  0,
@@ -71,7 +72,7 @@ func run(output io.Writer) error {
 		},
 		{
 			name:       "tool outside the allowlist",
-			model:      guardDecisionModel{probability: 0.95, confidence: 0.9},
+			model:      guardDecisionModel{probability: 0.95},
 			action:     "files.delete",
 			wantStatus: "denied",
 			wantCalls:  0,
@@ -151,7 +152,7 @@ func run(output io.Writer) error {
 		TriggerFraction:         0.5,
 		TargetFraction:          0.4,
 	}
-	decisionModel := guardDecisionModel{probability: 0.92, confidence: 0.88}
+	decisionModel := guardDecisionModel{probability: 0.92}
 	short, err := compactionTrigger(decisionModel, "a short transcript", budget)
 	if err != nil {
 		return err
@@ -210,7 +211,7 @@ func compactionTrigger(model lebro.DecisionModel, state string, budget lebro.Con
 		MinimumConfidence:   &minimumConfidence,
 		// A confidence threshold is only comparable with a threshold
 		// written against the same measure.
-		ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+		ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
 	}
 	return gate.Noul(answer) == lebro.DecisionOutcomeSelect, nil
 }
@@ -271,7 +272,7 @@ func guard(ctx context.Context, model lebro.DecisionModel, invocation lebro.Tool
 		SelectProbability:   0.85,
 		EscalateProbability: 0.30,
 		MinimumConfidence:   &minimumConfidence,
-		ConfidenceMetric:    lebro.DecisionConfidenceUnknown,
+		ConfidenceMetric:    lebro.DecisionConfidenceDistanceFromHalf,
 	}
 	switch gate.Noul(answer) {
 	case lebro.DecisionOutcomeSelect:
@@ -366,7 +367,15 @@ func (m *transferRequestingModel) Generate(_ context.Context, _ lebro.ModelReque
 // guardDecisionModel answers a noul question with a fixed probability.
 type guardDecisionModel struct {
 	probability float64
-	confidence  float64
+}
+
+// confidence is the metric the stand-in reports: the distance of the
+// probability from one half.
+//
+// The stand-in computes it rather than carrying a number of its own, so the
+// metric it names is one its numbers really mean.
+func (m guardDecisionModel) confidence() float64 {
+	return math.Abs(2*m.probability - 1)
 }
 
 func (guardDecisionModel) ProviderID() lebro.ProviderID { return "example" }
@@ -379,7 +388,7 @@ func (guardDecisionModel) Capabilities() lebro.DecisionCapabilities {
 			Confidence:   lebro.DecisionAvailabilityRequired,
 			// The stand-in reports a number without documenting what it
 			// means, so the metric says exactly that.
-			ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+			ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
 		},
 	}
 }
@@ -393,13 +402,20 @@ func (m guardDecisionModel) CapabilitiesFor(model string) (lebro.DecisionCapabil
 }
 
 func (m guardDecisionModel) Decide(_ context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
-	confidence := m.confidence
+	if _, ok := m.CapabilitiesFor(request.Model); !ok {
+		return lebro.DecisionResponse{}, &lebro.DecisionError{
+			Kind:     lebro.DecisionErrorUnsupportedCapability,
+			Provider: string(m.ProviderID()),
+			Message:  "the example provider has no profile for that model",
+		}
+	}
+	confidence := m.confidence()
 	answers := make(map[lebro.DecisionQuestionID]lebro.DecisionAnswer, len(request.Questions))
 	for id := range request.Questions {
 		answers[id] = lebro.NoulAnswer{
 			ProbabilityYes:   m.probability,
 			Confidence:       &confidence,
-			ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+			ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
 		}
 	}
 	return lebro.DecisionResponse{

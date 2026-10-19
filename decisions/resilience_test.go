@@ -162,9 +162,9 @@ func TestMalformedResponses(t *testing.T) {
 			want: "outside the range 0 to 1",
 		},
 		{
-			name: "confidence out of range",
-			body: `{"model":"subq-snap-preview","answers":{"q":{"type":"noul","noul":0.5,"confidence":-0.2}}}`,
-			want: "outside the range 0 to 1",
+			name: "a confidence the provider does not report",
+			body: `{"model":"subq-snap-preview","answers":{"q":{"type":"noul","noul":0.5,"confidence":0.2}}}`,
+			want: "returned a confidence the provider does not report",
 		},
 	}
 	for _, testCase := range cases {
@@ -218,6 +218,11 @@ func TestMalformedChoiceAndScoreResponses(t *testing.T) {
 			name: "missing level probability",
 			body: `{"model":"subq-snap-preview","answers":{"q":{"type":"score","score":0.5,"probabilities":{"0":1}}}}`,
 			want: "returned no probability for level 1",
+		},
+		{
+			name: "confidence out of range",
+			body: `{"model":"subq-snap-preview","answers":{"q":{"type":"choice","choice":"a","confidence":1.4,"probabilities":{"a":1,"b":0}}}}`,
+			want: "outside the range 0 to 1",
 		},
 	}
 	for _, testCase := range cases {

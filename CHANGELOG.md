@@ -48,7 +48,11 @@ All notable changes to this project are documented in this file.
 
   The new `decisions` package adapts three System One providers:
   `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino` (Fastino
-  GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview). Each one is configured
+  GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview), and the OpenAI
+  Decisions API: `decisions.NewOpenAI`. The OpenAI endpoint is a different
+  protocol, with array-shaped questions and answers, a message-list input,
+  and a refusal on any question, so it has its own request and response codec
+  and shares only the transport. Each provider is configured
   with its own endpoint, credential, model, HTTP client, timeout, and retry
   policy, and every credential is redacted from errors, logs, and fixtures.
   The same package exposes the generic form, `decisions.NewSystemOne`, for
@@ -74,9 +78,9 @@ All notable changes to this project are documented in this file.
   `LEBRO_TYPESAFE_API_KEY`, `LEBRO_FASTINO_API_KEY`, or
   `LEBRO_SUBQ_API_KEY` and are skipped without it. See `docs/decisions.md` for
   the contract and the provider capability matrix, and
-  `docs/decisions-cloud-handoff.md` for the hosted deployment handoff. The
-  native OpenAI Decisions API is not part of this release and remains blocked
-  behind its own contract work.
+  `docs/decisions-cloud-handoff.md` for the hosted deployment handoff.
+  `DecisionUsage` carries a total token count for a provider that reports one
+  separately.
 
 - Anthropic-compatible endpoints. `anthropic.Config` adds `AuthToken`
   (Authorization Bearer, as OpenRouter and many gateways expect, as an

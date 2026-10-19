@@ -315,7 +315,7 @@ func TestDefaultTimeoutAppliesToACallerClient(t *testing.T) {
 	if defaultTimeout != 60*time.Second {
 		t.Fatalf("the default timeout = %v, want 60s", defaultTimeout)
 	}
-	client, err := newSystemOneClient(
+	client, err := newDecisionClient(
 		subQProvider,
 		"https://api.subq.ai",
 		systemOnePath,
@@ -323,11 +323,10 @@ func TestDefaultTimeoutAppliesToACallerClient(t *testing.T) {
 		"Bearer ",
 		"test-key",
 		subQModel,
-		subQRetryableStatuses,
 		httpClientConfig{client: &http.Client{}},
 	)
 	if err != nil {
-		t.Fatalf("newSystemOneClient() error = %v", err)
+		t.Fatalf("newDecisionClient() error = %v", err)
 	}
 	if client.timeout != defaultTimeout {
 		t.Fatalf("the adapter timeout = %v, want the default %v", client.timeout, defaultTimeout)

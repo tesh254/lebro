@@ -19,6 +19,7 @@ import (
 //	LEBRO_TYPESAFE_API_KEY
 //	LEBRO_FASTINO_API_KEY
 //	LEBRO_SUBQ_API_KEY
+//	LEBRO_OPENAI_API_KEY
 //
 // A run reports the provider, the model it echoed, the latency, the usage, the
 // modality it exercised, and the uncertainty it observed. Those observations
@@ -75,6 +76,19 @@ func TestLiveTypeSafeViaOpenRouter(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("NewTypeSafe() error = %v", err)
+	}
+	runLiveDecision(t, model, "text")
+}
+
+// TestLiveOpenAI runs the same questions against the OpenAI Decisions API.
+func TestLiveOpenAI(t *testing.T) {
+	apiKey := os.Getenv("LEBRO_OPENAI_API_KEY")
+	if apiKey == "" {
+		t.Skip("skipping the live OpenAI decision test: set LEBRO_OPENAI_API_KEY to run it")
+	}
+	model, err := NewOpenAI(OpenAIConfig{APIKey: apiKey})
+	if err != nil {
+		t.Fatalf("NewOpenAI() error = %v", err)
 	}
 	runLiveDecision(t, model, "text")
 }

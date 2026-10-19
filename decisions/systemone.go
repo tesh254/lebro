@@ -1,19 +1,15 @@
 package decisions
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tesh254/lebro"
 )
@@ -22,27 +18,6 @@ const (
 	// systemOnePath is the System One evaluation path every provider in this
 	// package exposes.
 	systemOnePath = "/v1/systemone"
-	// maxErrorMessageLength bounds how much of a provider error description
-	// is kept. Provider bodies are never echoed verbatim, so a validation
-	// error cannot carry request content back into an error message.
-	maxErrorMessageLength = 300
-	// maxResponseBytes bounds how much of a provider response is read.
-	maxResponseBytes = 8 << 20
-	// defaultTimeout bounds one provider attempt when no timeout is
-	// configured.
-	defaultTimeout = 60 * time.Second
-	// defaultRetryBackoff is the first backoff step between attempts.
-	defaultRetryBackoff = 500 * time.Millisecond
-	// defaultMaxRetries is the number of extra attempts a transient failure
-	// gets.
-	defaultMaxRetries = 2
-	// defaultUserAgent identifies lebro's decision adapters.
-	defaultUserAgent = "lebro-decisions"
-	// defaultDistributionTolerance is the largest deviation a reported
-	// probability distribution may have from a total of one when the
-	// configuration does not name one. It covers a provider that rounds
-	// its probabilities to two decimals.
-	defaultDistributionTolerance = 0.01
 )
 
 // systemOneProfile captures the documented differences between the providers
@@ -84,125 +59,8 @@ type systemOneProfile struct {
 	requestSecrets func(lebro.DecisionRequest) []string
 }
 
-// systemOneClient performs the shared System One exchange.
-type systemOneClient struct {
-	credential      string
-	provider        string
-	model           string
-	endpoint        string
-	authHeader      string
-	authValue       string
-	client          *http.Client
-	timeout         time.Duration
-	maxRetries      int
-	retryBackoff    time.Duration
-	retryableStatus map[int]bool
-	userAgent       string
-}
-
-// systemOneResult is the outcome of one System One exchange.
-type systemOneResult struct {
-	status     int
-	body       []byte
-	attempts   int
-	duration   time.Duration
-	requestID  string
-	retryAfter time.Duration
-}
-
-// newSystemOneClient builds the shared client for one provider.
-func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey, model string, retryableStatuses []int, config httpClientConfig) (*systemOneClient, error) {
-	if apiKey == "" {
-		return nil, errors.New("lebro: API key is required")
-	}
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("lebro: the base URL is not a valid URL: %w", errRedirectSafe(err))
-	}
-	if !parsed.IsAbs() {
-		return nil, errors.New("lebro: the base URL must be absolute")
-	}
-	// The default timeout applies whether or not the caller supplied a
-	// client: a client with no timeout of its own would otherwise let a
-	// request hang until the caller's context ends.
-	timeout := config.timeout
-	if timeout == 0 {
-		timeout = defaultTimeout
-	}
-	client := config.client
-	if client == nil {
-		// The timeout is applied per attempt through the request context so
-		// that a slow response cannot outlive it.
-		client = &http.Client{}
-	} else {
-		// Copy the caller's client so its transport and settings are kept
-		// without mutating a value the caller may share.
-		copied := *client
-		client = &copied
-	}
-	// A redirect is refused: a redirected request would carry the
-	// credential header to another host.
-	client.CheckRedirect = refuseRedirect
-	maxRetries := defaultMaxRetries
-	if config.maxRetries != nil {
-		maxRetries = *config.maxRetries
-		if maxRetries < 0 {
-			maxRetries = 0
-		}
-	}
-	backoff := config.retryBackoff
-	if backoff <= 0 {
-		backoff = defaultRetryBackoff
-	}
-	retryable := make(map[int]bool, len(retryableStatuses))
-	for _, status := range retryableStatuses {
-		retryable[status] = true
-	}
-	return &systemOneClient{
-		credential:      apiKey,
-		provider:        provider,
-		model:           model,
-		endpoint:        strings.TrimRight(baseURL, "/") + path,
-		authHeader:      authHeader,
-		authValue:       authPrefix + apiKey,
-		client:          client,
-		timeout:         timeout,
-		maxRetries:      maxRetries,
-		retryBackoff:    backoff,
-		retryableStatus: retryable,
-		userAgent:       defaultUserAgent,
-	}, nil
-}
-
-// errRedirectSafe keeps a URL parse error from repeating the URL it failed
-// on, because the URL can carry a credential in its userinfo or its query.
-func errRedirectSafe(err error) error {
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		return errors.New(urlErr.Err.Error())
-	}
-	return err
-}
-
-// errRedirectRefused marks a redirect the adapter refused.
-var errRedirectRefused = errors.New("lebro: the provider refused a redirect")
-
-// refuseRedirect stops the adapter from following a redirect. A redirected
-// request would forward the credential to the redirect target.
-func refuseRedirect(*http.Request, []*http.Request) error {
-	return errRedirectRefused
-}
-
-// httpClientConfig holds the transport knobs every provider shares.
-type httpClientConfig struct {
-	client       *http.Client
-	timeout      time.Duration
-	maxRetries   *int
-	retryBackoff time.Duration
-}
-
 // decide runs one decision request against a provider.
-func decide(ctx context.Context, client *systemOneClient, profile systemOneProfile, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
+func decide(ctx context.Context, client *decisionClient, profile systemOneProfile, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
 	// The image capability gate runs first: a provider that does not accept
 	// images at all reports that, rather than a complaint about the bytes.
 	if err := lebro.ValidateDecisionImages(profile.capabilities.Images, request.Images); err != nil {
@@ -215,10 +73,10 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 	if err := request.Validate(); err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, err.Error(), err)
 	}
-	if err := checkSupportedKinds(profile, request); err != nil {
+	if err := checkDecisionKinds(profile.capabilities, profile.provider, request); err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorUnsupportedCapability, err.Error(), err)
 	}
-	if err := checkQuestionLimits(profile, request); err != nil {
+	if err := checkDecisionLimits(profile.capabilities, profile.provider, request); err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, err.Error(), err)
 	}
 
@@ -275,7 +133,7 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 			fmt.Sprintf("lebro: the request body is %d bytes, %s accepts at most %d", len(encoded), profile.provider, profile.maxBodyBytes), nil)
 	}
 
-	result, err := client.post(ctx, encoded, profile.requestIDHeaders)
+	result, err := client.post(ctx, encoded, profile.requestIDHeaders, retryableStatuses(profile.capabilities.RetryableStatuses))
 	if err != nil {
 		return lebro.DecisionResponse{}, err
 	}
@@ -334,35 +192,34 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 	return response, nil
 }
 
-// checkSupportedKinds rejects a question kind the provider does not support.
-func checkSupportedKinds(profile systemOneProfile, request lebro.DecisionRequest) error {
+// checkDecisionKinds rejects a question kind the provider does not support.
+func checkDecisionKinds(caps lebro.DecisionCapabilities, provider string, request lebro.DecisionRequest) error {
 	for id, question := range request.Questions {
 		switch question.(type) {
 		case lebro.NoulQuestion, *lebro.NoulQuestion:
-			if !profile.capabilities.Noul {
-				return fmt.Errorf("lebro: decision question %q is a noul question, which %s does not support", id, profile.provider)
+			if !caps.Noul {
+				return fmt.Errorf("lebro: decision question %q is a noul question, which %s does not support", id, provider)
 			}
 		case lebro.ChoiceQuestion, *lebro.ChoiceQuestion:
-			if !profile.capabilities.Choice {
-				return fmt.Errorf("lebro: decision question %q is a choice question, which %s does not support", id, profile.provider)
+			if !caps.Choice {
+				return fmt.Errorf("lebro: decision question %q is a choice question, which %s does not support", id, provider)
 			}
 		case lebro.ScoreQuestion, *lebro.ScoreQuestion:
-			if !profile.capabilities.Score {
-				return fmt.Errorf("lebro: decision question %q is a score question, which %s does not support", id, profile.provider)
+			if !caps.Score {
+				return fmt.Errorf("lebro: decision question %q is a score question, which %s does not support", id, provider)
 			}
 		}
 	}
 	return nil
 }
 
-// checkQuestionLimits rejects a request that exceeds a documented limit.
-func checkQuestionLimits(profile systemOneProfile, request lebro.DecisionRequest) error {
-	caps := profile.capabilities
+// checkDecisionLimits rejects a request that exceeds a documented limit.
+func checkDecisionLimits(caps lebro.DecisionCapabilities, provider string, request lebro.DecisionRequest) error {
 	if caps.MaxQuestions > 0 && len(request.Questions) > caps.MaxQuestions {
-		return fmt.Errorf("lebro: %s accepts at most %d questions per request, got %d", profile.provider, caps.MaxQuestions, len(request.Questions))
+		return fmt.Errorf("lebro: %s accepts at most %d questions per request, got %d", provider, caps.MaxQuestions, len(request.Questions))
 	}
 	if !caps.MultipleQuestions && len(request.Questions) > 1 {
-		return fmt.Errorf("lebro: %s accepts one question per request, got %d", profile.provider, len(request.Questions))
+		return fmt.Errorf("lebro: %s accepts one question per request, got %d", provider, len(request.Questions))
 	}
 	for id, question := range request.Questions {
 		var options, levels int
@@ -381,310 +238,13 @@ func checkQuestionLimits(profile systemOneProfile, request lebro.DecisionRequest
 			}
 		}
 		if caps.MaxChoiceOptions > 0 && options > caps.MaxChoiceOptions {
-			return fmt.Errorf("lebro: decision question %q has %d options, %s accepts at most %d", id, options, profile.provider, caps.MaxChoiceOptions)
+			return fmt.Errorf("lebro: decision question %q has %d options, %s accepts at most %d", id, options, provider, caps.MaxChoiceOptions)
 		}
 		if caps.MaxScoreLevels > 0 && levels > caps.MaxScoreLevels {
-			return fmt.Errorf("lebro: decision question %q has %d levels, %s accepts at most %d", id, levels, profile.provider, caps.MaxScoreLevels)
+			return fmt.Errorf("lebro: decision question %q has %d levels, %s accepts at most %d", id, levels, provider, caps.MaxScoreLevels)
 		}
 	}
 	return nil
-}
-
-// defaultModel returns the model the adapter uses when a request does not
-// name one. Each provider sets it when it is constructed.
-func (c *systemOneClient) defaultModel() string { return c.model }
-
-// post sends the request, retrying the failures a provider documents as
-// transient. It never retries across providers.
-func (c *systemOneClient) post(ctx context.Context, body []byte, requestIDHeaders []string) (systemOneResult, error) {
-	started := time.Now()
-	attempts := 0
-	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return systemOneResult{attempts: attempts, duration: time.Since(started)}, c.cancellation(err)
-		}
-		attempts++
-		status, payload, retryAfter, requestID, err := c.attempt(ctx, body, requestIDHeaders)
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return systemOneResult{attempts: attempts, duration: time.Since(started)}, c.cancellation(ctxErr)
-			}
-			if attempt < c.maxRetries && decisionErrorRetryable(err) {
-				if waitErr := c.wait(ctx, c.backoff(attempt)); waitErr != nil {
-					return systemOneResult{attempts: attempts, duration: time.Since(started)}, waitErr
-				}
-				continue
-			}
-			return systemOneResult{attempts: attempts, duration: time.Since(started)}, err
-		}
-		if status >= http.StatusBadRequest && c.retryableStatus[status] && attempt < c.maxRetries {
-			delay := c.backoff(attempt)
-			if retryAfter > delay {
-				delay = retryAfter
-			}
-			if delay > c.timeout {
-				// The provider asked for a wait longer than the adapter is
-				// willing to sit through. Return the failure with the
-				// delay so the caller can schedule the retry instead.
-				return systemOneResult{
-					status:     status,
-					body:       payload,
-					attempts:   attempts,
-					duration:   time.Since(started),
-					retryAfter: retryAfter,
-				}, nil
-			}
-			if waitErr := c.wait(ctx, delay); waitErr != nil {
-				return systemOneResult{attempts: attempts, duration: time.Since(started)}, waitErr
-			}
-			continue
-		}
-		return systemOneResult{
-			status:     status,
-			body:       payload,
-			attempts:   attempts,
-			duration:   time.Since(started),
-			requestID:  requestID,
-			retryAfter: retryAfter,
-		}, nil
-	}
-	return systemOneResult{attempts: attempts, duration: time.Since(started)}, c.failure(lebro.DecisionErrorUnavailable, "lebro: the provider did not answer", nil)
-}
-
-// attempt performs one HTTP exchange.
-func (c *systemOneClient) attempt(ctx context.Context, body []byte, requestIDHeaders []string) (int, []byte, time.Duration, string, error) {
-	requestCtx := ctx
-	if c.timeout > 0 {
-		var cancel context.CancelFunc
-		requestCtx, cancel = context.WithTimeout(ctx, c.timeout)
-		defer cancel()
-	}
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, 0, "", c.failure(lebro.DecisionErrorInvalidRequest, "lebro: build request", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", c.userAgent)
-	if c.authHeader != "" {
-		request.Header.Set(c.authHeader, c.authValue)
-	}
-	response, err := c.client.Do(request)
-	if err != nil {
-		return 0, nil, 0, "", c.transportFailure(ctx, err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	payload, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
-	if readErr != nil {
-		return 0, nil, 0, "", c.transportFailure(ctx, readErr)
-	}
-	requestID := ""
-	for _, header := range requestIDHeaders {
-		if value := response.Header.Get(header); value != "" {
-			requestID = value
-			break
-		}
-	}
-	return response.StatusCode, payload, parseRetryAfter(response.Header.Get("Retry-After")), requestID, nil
-}
-
-// wait pauses between attempts and honors cancellation.
-func (c *systemOneClient) wait(ctx context.Context, delay time.Duration) error {
-	if delay <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return c.cancellation(ctx.Err())
-	case <-timer.C:
-		return nil
-	}
-}
-
-// backoff returns the delay before the given attempt.
-func (c *systemOneClient) backoff(attempt int) time.Duration {
-	delay := c.retryBackoff
-	for i := 0; i < attempt; i++ {
-		delay *= 2
-	}
-	return delay
-}
-
-// transportFailure classifies a failure that produced no HTTP response.
-func (c *systemOneClient) transportFailure(ctx context.Context, err error) error {
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return c.cancellation(ctxErr)
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return c.failure(lebro.DecisionErrorTimeout, "lebro: the provider request timed out", err)
-	}
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Timeout() {
-		return c.failure(lebro.DecisionErrorTimeout, "lebro: the provider request timed out", err)
-	}
-	if errors.Is(err, errRedirectRefused) {
-		return c.failure(lebro.DecisionErrorTransport, "lebro: the provider refused a redirect", err)
-	}
-	// The transport error text is provider-controlled and can carry the
-	// endpoint or the request, so the message stays fixed and only the
-	// cause is retained.
-	return c.failure(lebro.DecisionErrorTransport, "lebro: the provider request failed", err)
-}
-
-// cancellation reports a cancelled or expired caller context.
-func (c *systemOneClient) cancellation(err error) error {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return c.failure(lebro.DecisionErrorTimeout, "lebro: the decision request deadline was exceeded", err)
-	}
-	return c.failure(lebro.DecisionErrorCancelled, "lebro: the decision request was cancelled", err)
-}
-
-// statusFailure maps an HTTP error response to a normalized failure.
-//
-// The provider's own description is kept, because it names the offending
-// field, and it is redacted first: a provider can echo request content back
-// in an error, and request content must never reach an error message.
-func (c *systemOneClient) statusFailure(status int, body []byte, retryAfter time.Duration, redactor *requestRedactor) error {
-	message, code := extractProviderError(body)
-	message = redactor.redact(message)
-	code = redactor.redact(code)
-	if message == "" {
-		message = fmt.Sprintf("lebro: the provider returned HTTP %d", status)
-	}
-	return &lebro.DecisionError{
-		Kind:       decisionStatusKind(status),
-		Provider:   c.provider,
-		Code:       code,
-		StatusCode: status,
-		RetryAfter: retryAfter,
-		Message:    message,
-	}
-}
-
-// requestRedactor removes request content from provider-supplied text.
-//
-// A provider can echo the request back in an error, and the request is the
-// caller's content: the state, the criteria, an encoded image, or worse, the
-// credential. The redactor replaces any such content with a marker before the
-// text reaches an error message.
-type requestRedactor struct {
-	secrets []string
-}
-
-// minRedactedSecretLength is the shortest content the redactor treats as
-// sensitive. A shorter value is too likely to appear in ordinary provider
-// prose to be worth removing.
-const minRedactedSecretLength = 8
-
-// newRedactor collects the content that must not reach an error message.
-func (c *systemOneClient) newRedactor(request lebro.DecisionRequest, extra func(lebro.DecisionRequest) []string) *requestRedactor {
-	redactor := &requestRedactor{}
-	// The credential is always sensitive, whatever its length.
-	if c.credential != "" {
-		redactor.secrets = append(redactor.secrets, c.credential)
-	}
-	redactor.addContent(request.State)
-	for _, question := range request.Questions {
-		switch typed := question.(type) {
-		case lebro.NoulQuestion:
-			redactor.addContent(typed.Instructions)
-			if typed.Criteria != nil {
-				redactor.addContent(typed.Criteria.True)
-				redactor.addContent(typed.Criteria.False)
-			}
-		case lebro.ChoiceQuestion:
-			redactor.addContent(typed.Instructions)
-			for _, description := range typed.Criteria {
-				redactor.addContent(description)
-			}
-		case lebro.ScoreQuestion:
-			redactor.addContent(typed.Instructions)
-			for _, description := range typed.Criteria {
-				redactor.addContent(description)
-			}
-		}
-	}
-	if extra != nil {
-		for _, secret := range extra(request) {
-			if secret != "" {
-				redactor.secrets = append(redactor.secrets, secret)
-			}
-		}
-	}
-	return redactor
-}
-
-// addContent records one request value as sensitive.
-func (r *requestRedactor) addContent(value lebro.JSONValue) {
-	if value == nil {
-		return
-	}
-	if text, ok := value.(string); ok {
-		if len(strings.TrimSpace(text)) >= minRedactedSecretLength {
-			r.secrets = append(r.secrets, text)
-		}
-		return
-	}
-	if encoded, err := json.Marshal(value); err == nil {
-		if len(encoded) >= minRedactedSecretLength {
-			r.secrets = append(r.secrets, string(encoded))
-		}
-	}
-}
-
-// redact removes every recorded secret from the text.
-func (r *requestRedactor) redact(text string) string {
-	if r == nil || text == "" {
-		return text
-	}
-	for _, secret := range r.secrets {
-		if secret == "" {
-			continue
-		}
-		if strings.Contains(text, secret) {
-			text = strings.ReplaceAll(text, secret, "[redacted]")
-		}
-	}
-	return text
-}
-
-// failure builds a normalized failure.
-func (c *systemOneClient) failure(kind lebro.DecisionErrorKind, message string, err error) error {
-	return &lebro.DecisionError{
-		Kind:     kind,
-		Provider: c.provider,
-		Message:  message,
-		Err:      err,
-	}
-}
-
-// decisionErrorRetryable reports whether a failure is worth another attempt.
-func decisionErrorRetryable(err error) bool {
-	var decisionErr *lebro.DecisionError
-	if errors.As(err, &decisionErr) {
-		return decisionErr.Retryable()
-	}
-	return false
-}
-
-// decisionStatusKind maps an HTTP status to a normalized failure kind.
-func decisionStatusKind(status int) lebro.DecisionErrorKind {
-	switch status {
-	case http.StatusUnauthorized:
-		return lebro.DecisionErrorAuthentication
-	case http.StatusPaymentRequired, http.StatusForbidden:
-		return lebro.DecisionErrorPermissionDenied
-	case http.StatusTooEarly:
-		return lebro.DecisionErrorUnavailable
-	case http.StatusTooManyRequests:
-		return lebro.DecisionErrorRateLimited
-	}
-	if status >= http.StatusInternalServerError {
-		return lebro.DecisionErrorUnavailable
-	}
-	return lebro.DecisionErrorInvalidRequest
 }
 
 // systemOneResponse is the shared System One response envelope.
@@ -806,6 +366,15 @@ func questionUncertainty(capabilities lebro.DecisionCapabilities, question lebro
 // A provider that reports a confidence the profile does not describe gets an
 // unknown metric: the number is there and what it means is not known.
 func applyConfidence(id lebro.DecisionQuestionID, uncertainty lebro.DecisionUncertainty, reported *float64) (*float64, lebro.DecisionConfidenceMetric, error) {
+	if uncertainty.Confidence == lebro.DecisionAvailabilityUnavailable {
+		if reported != nil {
+			// The profile says the provider reports no confidence for this
+			// kind, so a confidence in the answer is a value the adapter
+			// cannot vouch for.
+			return nil, "", fmt.Errorf("lebro: decision question %q returned a confidence the provider does not report", id)
+		}
+		return nil, "", nil
+	}
 	if reported == nil {
 		if uncertainty.Confidence == lebro.DecisionAvailabilityRequired {
 			return nil, "", fmt.Errorf("lebro: decision question %q returned no confidence", id)
@@ -815,30 +384,49 @@ func applyConfidence(id lebro.DecisionQuestionID, uncertainty lebro.DecisionUnce
 	if err := checkProbability(*reported); err != nil {
 		return nil, "", fmt.Errorf("lebro: decision question %q: %w", id, err)
 	}
-	metric := uncertainty.ConfidenceMetric
-	if metric == "" {
-		metric = lebro.DecisionConfidenceUnknown
-	}
 	confidence := *reported
-	return &confidence, metric, nil
+	return &confidence, uncertainty.ConfidenceMetric, nil
+}
+
+// distributionEpsilon absorbs the rounding of a floating point sum.
+const distributionEpsilon = 1e-9
+
+// distributionTolerance returns the largest deviation a reported
+// distribution of count outcomes may have from a total of one.
+//
+// A provider that rounds each probability to two decimals moves the total by
+// up to half a hundredth per outcome, so the bound follows the number of
+// outcomes rather than being one number for every question.
+func distributionTolerance(configured float64, count int) float64 {
+	tolerance := configured
+	if rounding := 0.005 * float64(count); rounding > tolerance {
+		tolerance = rounding
+	}
+	return tolerance + distributionEpsilon
 }
 
 // checkDistribution checks a reported probability distribution.
 //
 // A reported distribution must add up to one within the provider's
 // tolerance. A distribution the provider did not report is absent: it is
-// malformed only when the profile says the provider always reports one.
+// malformed only when the profile says the provider always reports one, and
+// a distribution the profile says the provider never reports is malformed
+// too.
 func checkDistribution(id lebro.DecisionQuestionID, uncertainty lebro.DecisionUncertainty, reported bool, total, tolerance float64) error {
+	if uncertainty.Distribution == lebro.DecisionAvailabilityUnavailable {
+		if reported {
+			return fmt.Errorf("lebro: decision question %q returned a probability distribution the provider does not report", id)
+		}
+		return nil
+	}
 	if !reported {
 		if uncertainty.Distribution == lebro.DecisionAvailabilityRequired {
 			return fmt.Errorf("lebro: decision question %q returned no probability distribution", id)
 		}
 		return nil
 	}
-	if tolerance > 0 {
-		if difference := math.Abs(total - 1); difference > tolerance {
-			return fmt.Errorf("lebro: decision question %q returned a probability distribution that adds up to %v instead of one", id, total)
-		}
+	if difference := math.Abs(total - 1); difference > tolerance {
+		return fmt.Errorf("lebro: decision question %q returned a probability distribution that adds up to %v instead of one", id, total)
 	}
 	return nil
 }
@@ -863,12 +451,12 @@ func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQues
 		}
 		return mapSystemOneNoul(id, raw, uncertainty)
 	case lebro.ChoiceQuestion:
-		return mapSystemOneChoice(id, typed, raw, uncertainty, profile.distributionTolerance)
+		return mapSystemOneChoice(id, typed, raw, uncertainty, profile)
 	case *lebro.ChoiceQuestion:
 		if typed == nil {
 			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return mapSystemOneChoice(id, *typed, raw, uncertainty, profile.distributionTolerance)
+		return mapSystemOneChoice(id, *typed, raw, uncertainty, profile)
 	case lebro.ScoreQuestion:
 		return mapSystemOneScore(id, typed, raw, uncertainty, profile)
 	case *lebro.ScoreQuestion:
@@ -901,7 +489,7 @@ func mapSystemOneNoul(id lebro.DecisionQuestionID, raw systemOneAnswer, uncertai
 }
 
 // mapSystemOneChoice maps a choice answer.
-func mapSystemOneChoice(id lebro.DecisionQuestionID, question lebro.ChoiceQuestion, raw systemOneAnswer, uncertainty lebro.DecisionUncertainty, tolerance float64) (lebro.DecisionAnswer, error) {
+func mapSystemOneChoice(id lebro.DecisionQuestionID, question lebro.ChoiceQuestion, raw systemOneAnswer, uncertainty lebro.DecisionUncertainty, profile systemOneProfile) (lebro.DecisionAnswer, error) {
 	if raw.Type != "choice" {
 		return nil, fmt.Errorf("lebro: decision question %q expected a choice answer, got %q", id, raw.Type)
 	}
@@ -916,6 +504,7 @@ func mapSystemOneChoice(id lebro.DecisionQuestionID, question lebro.ChoiceQuesti
 	if err != nil {
 		return nil, err
 	}
+	tolerance := distributionTolerance(profile.distributionTolerance, len(question.Criteria))
 	if err := checkDistribution(id, uncertainty, distribution.present, distribution.total, tolerance); err != nil {
 		return nil, err
 	}
@@ -972,7 +561,8 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 	if err != nil {
 		return nil, err
 	}
-	if err := checkDistribution(id, uncertainty, distribution.present, distribution.total, profile.distributionTolerance); err != nil {
+	tolerance := distributionTolerance(profile.distributionTolerance, len(question.Criteria))
+	if err := checkDistribution(id, uncertainty, distribution.present, distribution.total, tolerance); err != nil {
 		return nil, err
 	}
 	legend, err := mapSystemOneLegend(id, len(question.Criteria), raw.Legend)
@@ -1297,78 +887,4 @@ func textCriterion(id lebro.DecisionQuestionID, name string, criterion lebro.JSO
 // retained.
 func encodeImageBase64(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
-}
-
-// extractProviderError extracts a bounded description from a provider error
-// body. Only documented message fields are read, so a validation error cannot
-// echo request content such as an image back into an error message.
-func extractProviderError(body []byte) (string, string) {
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", ""
-	}
-	if detail, ok := payload["detail"].(map[string]any); ok {
-		message, _ := detail["message"].(string)
-		code, _ := detail["error_type"].(string)
-		return truncateErrorText(message), truncateErrorText(code)
-	}
-	if items, ok := payload["detail"].([]any); ok {
-		parts := make([]string, 0, len(items))
-		for _, item := range items {
-			entry, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if message, ok := entry["msg"].(string); ok {
-				parts = append(parts, message)
-			}
-		}
-		return truncateErrorText(strings.Join(parts, "; ")), ""
-	}
-	if detail, ok := payload["detail"].(string); ok {
-		return truncateErrorText(detail), ""
-	}
-	if nested, ok := payload["error"].(map[string]any); ok {
-		message, _ := nested["message"].(string)
-		code, _ := nested["code"].(string)
-		if code == "" {
-			code, _ = nested["type"].(string)
-		}
-		return truncateErrorText(message), truncateErrorText(code)
-	}
-	if detail, ok := payload["error"].(string); ok {
-		return truncateErrorText(detail), ""
-	}
-	message, _ := payload["message"].(string)
-	code, _ := payload["code"].(string)
-	return truncateErrorText(message), truncateErrorText(code)
-}
-
-// parseRetryAfter reads a Retry-After header value.
-func parseRetryAfter(value string) time.Duration {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(value); err == nil {
-		if seconds <= 0 {
-			return 0
-		}
-		return time.Duration(seconds) * time.Second
-	}
-	if when, err := http.ParseTime(value); err == nil {
-		if delay := time.Until(when); delay > 0 {
-			return delay
-		}
-	}
-	return 0
-}
-
-// truncateErrorText bounds a provider description.
-func truncateErrorText(text string) string {
-	text = strings.TrimSpace(text)
-	if len(text) <= maxErrorMessageLength {
-		return text
-	}
-	return text[:maxErrorMessageLength] + "…"
 }

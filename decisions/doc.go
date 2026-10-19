@@ -1,4 +1,4 @@
-// Package decisions adapts System One decision providers to
+// Package decisions adapts decision providers to
 // [github.com/tesh254/lebro.DecisionModel].
 //
 // The package hosts the three providers whose System One contracts match
@@ -17,6 +17,17 @@
 //	})
 //	subq, err := decisions.NewSubQ(decisions.SubQConfig{
 //		APIKey: os.Getenv("SUBQ_API_KEY"),
+//	})
+//
+// The OpenAI Decisions API is a different protocol: its questions and
+// answers are arrays rather than maps, its input is a message list, and it
+// can refuse a question on its own. It has its own adapter and its own
+// request and response codec, and shares the transport — the credential, the
+// timeout, the bounded retries, the redirect refusal, and the failure
+// taxonomy:
+//
+//	openai, err := decisions.NewOpenAI(decisions.OpenAIConfig{
+//		APIKey: os.Getenv("OPENAI_API_KEY"),
 //	})
 //
 // The package also exposes the generic form of the adapter,

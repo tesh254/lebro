@@ -52,7 +52,7 @@ func run(output io.Writer) error {
 			NoulUncertainty: lebro.DecisionUncertainty{
 				Distribution:     lebro.DecisionAvailabilityUnavailable,
 				Confidence:       lebro.DecisionAvailabilityRequired,
-				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+				ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
 			},
 			ChoiceUncertainty: lebro.DecisionUncertainty{
 				Distribution:     lebro.DecisionAvailabilityRequired,
@@ -142,7 +142,7 @@ func newFakeProvider() *httptest.Server {
 					"type": "score",
 					"score": 1,
 					"expected_level": 1.4,
-					"confidence": 0.71,
+					"confidence": 0.4,
 					"probabilities": {"0": 0.2, "1": 0.2, "2": 0.6},
 					"legend": {"0": "Can wait", "1": "Handle today", "2": "Immediate"}
 				}

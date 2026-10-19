@@ -149,15 +149,15 @@ func TestCheckSupportedKindsRejectsEveryKind(t *testing.T) {
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			profile := systemOneProfile{provider: "example", capabilities: testCase.caps}
-			err := checkSupportedKinds(profile, lebro.DecisionRequest{
+			err := checkDecisionKinds(profile.capabilities, profile.provider, lebro.DecisionRequest{
 				State:     "state",
 				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": testCase.question},
 			})
 			if err == nil {
-				t.Fatal("checkSupportedKinds() error = nil, want a failure")
+				t.Fatal("checkDecisionKinds() error = nil, want a failure")
 			}
 			if !strings.Contains(err.Error(), "does not support") {
-				t.Fatalf("checkSupportedKinds() error = %v, want it to mention the missing support", err)
+				t.Fatalf("checkDecisionKinds() error = %v, want it to mention the missing support", err)
 			}
 		})
 	}

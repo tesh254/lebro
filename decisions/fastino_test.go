@@ -26,7 +26,7 @@ func fastinoFixture() decisionFixture {
 		noulConfidenceMetric:   lebro.DecisionConfidenceDistanceFromHalf,
 		choiceConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
 		scoreConfidenceMetric:  lebro.DecisionConfidenceTopTwoMargin,
-		model:                  "glide",
+		model:                  "glide_v2",
 		requestedModel:         "fastino/GLiDE",
 	}
 }
@@ -43,7 +43,7 @@ func TestFastinoKeepsWinnerAndExpectationApart(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"model": "glide",
+			"model": "glide_v2",
 			"answers": {"urgency": {
 				"type": "score",
 				"score": 2,
@@ -104,7 +104,7 @@ func TestFastinoReportsNoulConfidence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"model": "glide",
+			"model": "glide_v2",
 			"answers": {"refund_allowed": {"type": "noul", "noul": 0.99767683794902, "confidence": 0.9953536758980399}}
 		}`))
 	}))
@@ -139,7 +139,7 @@ func TestFastinoRejectsStructuredInstructions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"glide","answers":{}}`))
+		_, _ = w.Write([]byte(`{"model":"glide_v2","answers":{}}`))
 	}))
 	defer server.Close()
 
@@ -168,7 +168,7 @@ func TestFastinoSendsAPIKeyHeader(t *testing.T) {
 		apiKey = r.Header.Get("X-API-Key")
 		authorization = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
+		_, _ = w.Write([]byte(`{"model":"glide_v2","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
 	}))
 	defer server.Close()
 
@@ -201,7 +201,7 @@ func TestFastinoDisableStorage(t *testing.T) {
 		}
 		body = string(raw)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
+		_, _ = w.Write([]byte(`{"model":"glide_v2","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
 	}))
 	defer server.Close()
 

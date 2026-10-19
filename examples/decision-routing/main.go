@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 
@@ -76,7 +77,7 @@ func run(output io.Writer) error {
 		SelectProbability:   0.85,
 		EscalateProbability: 0.30,
 		MinimumConfidence:   &minimumConfidence,
-		ConfidenceMetric:    lebro.DecisionConfidenceUnknown,
+		ConfidenceMetric:    lebro.DecisionConfidenceDistanceFromHalf,
 	}
 	if err := gate.Validate(); err != nil {
 		return err
@@ -226,6 +227,13 @@ func (m ticketDecisionModel) CapabilitiesFor(model string) (lebro.DecisionCapabi
 }
 
 func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
+	if _, ok := m.CapabilitiesFor(request.Model); !ok {
+		return lebro.DecisionResponse{}, &lebro.DecisionError{
+			Kind:     lebro.DecisionErrorUnsupportedCapability,
+			Provider: string(m.ProviderID()),
+			Message:  "the example provider has no profile for that model",
+		}
+	}
 	if err := request.Validate(); err != nil {
 		return lebro.DecisionResponse{}, &lebro.DecisionError{Kind: lebro.DecisionErrorInvalidRequest, Message: err.Error(), Err: err}
 	}
@@ -243,11 +251,15 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 	for id, question := range request.Questions {
 		switch typed := question.(type) {
 		case lebro.NoulQuestion:
-			confidence := 0.91
+			// The confidence is the distance of the probability from one
+			// half, so the metric the answer names is one its number
+			// really means.
+			probability := 0.93
+			confidence := math.Abs(2*probability - 1)
 			answers[id] = lebro.NoulAnswer{
-				ProbabilityYes:   0.93,
+				ProbabilityYes:   probability,
 				Confidence:       &confidence,
-				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+				ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
 			}
 		case lebro.ChoiceQuestion:
 			if capabilities.MaxChoiceOptions > 0 && len(typed.Criteria) > capabilities.MaxChoiceOptions {
@@ -273,12 +285,14 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 				probabilities[option] = rest
 			}
 			probabilities[selected] = 0.7
-			confidence := 0.62
+			// The confidence is the gap between the two highest
+			// probabilities.
+			confidence := probabilities[selected] - secondHighestChoice(probabilities)
 			answers[id] = lebro.ChoiceAnswer{
 				Choice:           selected,
 				Probabilities:    probabilities,
 				Confidence:       &confidence,
-				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
 			}
 		case *lebro.NoulQuestion, *lebro.ChoiceQuestion, *lebro.ScoreQuestion:
 			return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers value question forms only")
@@ -304,14 +318,16 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 				expected += float64(level) * probability
 			}
 			selected := levels - 1
-			confidence := 0.74
+			// The confidence is the gap between the two highest
+			// probabilities.
+			confidence := probabilities[selected] - secondHighestLevel(probabilities)
 			answers[id] = lebro.ScoreAnswer{
 				SelectedLevel:    &selected,
 				ExpectedLevel:    &expected,
 				Probabilities:    probabilities,
 				Legend:           legend,
 				Confidence:       &confidence,
-				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
 				Provenance:       lebro.ScoreNative,
 			}
 		}
@@ -322,6 +338,43 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 		Answers:  answers,
 		Attempts: 1,
 	}, nil
+}
+
+// secondHighestChoice returns the second largest probability in a choice
+// distribution.
+//
+// The gap between the two highest probabilities is the measure the stand-in
+// reports as its confidence.
+func secondHighestChoice(probabilities map[lebro.DecisionOptionID]float64) float64 {
+	top := 0.0
+	second := 0.0
+	for _, probability := range probabilities {
+		switch {
+		case probability > top:
+			second = top
+			top = probability
+		case probability > second:
+			second = probability
+		}
+	}
+	return second
+}
+
+// secondHighestLevel returns the second largest probability in a level
+// distribution.
+func secondHighestLevel(probabilities map[int]float64) float64 {
+	top := 0.0
+	second := 0.0
+	for _, probability := range probabilities {
+		switch {
+		case probability > top:
+			second = top
+			top = probability
+		case probability > second:
+			second = probability
+		}
+	}
+	return second
 }
 
 // sortedOptionIDs returns the option identifiers in a stable order.
