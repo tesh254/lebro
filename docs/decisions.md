@@ -103,7 +103,8 @@ provider documents no limit, not that the limit is zero.
 | Capability | TypeSafe (Jev) | Fastino (GLiDE) | SubQ (Snap preview) |
 | --- | --- | --- | --- |
 | Endpoint | `POST https://api.typesafe.ai/v1/systemone` | `POST https://api.fastino.ai/v1/systemone` | `POST https://api.subq.ai/v1/systemone` |
-| Model | `jev-latest` (the response echoes the concrete model) | `fastino/GLiDE` (the response echoes `glide`) | `subq-snap-preview` || Authentication | `Authorization: Bearer` | `X-API-Key` | `Authorization: Bearer` |
+| Model | `jev-latest` (the response echoes the concrete model) | `fastino/GLiDE` (the response echoes `glide`) | `subq-snap-preview` |
+| Authentication | `Authorization: Bearer` | `X-API-Key` | `Authorization: Bearer` |
 | Noul, Choice, Score | yes | yes | yes |
 | Multiple questions | yes | yes | yes, up to 16 |
 | Structured state | yes | yes | yes |
