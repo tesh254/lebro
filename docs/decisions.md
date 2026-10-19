@@ -344,6 +344,9 @@ working adapters.
   the SubQ adapter and escalates an uncertain answer.
 - [`decision-compat`](../examples/decision-compat) shows a generative client
   that needed no change.
+- [`decision-provider`](../examples/decision-provider) builds a provider from
+  its wire contract alone, the way an integration would for a provider that
+  has no named adapter.
 
 ## Live tests
 
