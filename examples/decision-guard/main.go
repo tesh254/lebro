@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -62,6 +63,13 @@ func run(output io.Writer) error {
 			wantCalls:  0,
 		},
 		{
+			name:       "provider timeout",
+			model:      timeoutDecisionModel{},
+			action:     "payments.transfer",
+			wantStatus: "denied",
+			wantCalls:  0,
+		},
+		{
 			name:       "tool outside the allowlist",
 			model:      guardDecisionModel{probability: 0.95, confidence: 0.9},
 			action:     "files.delete",
@@ -103,13 +111,25 @@ func run(output io.Writer) error {
 			Messages: []lebro.Message{{Role: lebro.RoleUser, Content: "Send KES 1,250 to Amina."}},
 		})
 		switch {
-		case err != nil:
-			status = "denied"
-		case result.ToolApproval != nil:
+		case err == nil && result.ToolApproval != nil:
 			status = "needs-review"
+		case err == nil:
+			status = "approved"
+		case errors.Is(err, lebro.ErrToolApprovalDenied):
+			status = "denied"
+		default:
+			// An unrelated run failure is not a denial, and it must not be
+			// reported as one.
+			return fmt.Errorf("%s: the run failed for an unrelated reason: %w", scenario.name, err)
 		}
 		calls := counter.total()
 		fmt.Fprintf(output, "%-26s status=%-12s handler_calls=%d\n", scenario.name, status, calls)
+		if result.ToolApproval != nil {
+			// The pending approval is bound to the exact tool call that was
+			// reviewed, so a reviewer approves these arguments and not a
+			// replacement payload.
+			fmt.Fprintf(output, "%-26s pending=%s %s\n", "", result.ToolApproval.ToolID, string(result.ToolApproval.Arguments))
+		}
 		if status != scenario.wantStatus {
 			return fmt.Errorf("%s: status = %q, want %q", scenario.name, status, scenario.wantStatus)
 		}
@@ -118,27 +138,46 @@ func run(output io.Writer) error {
 		}
 	}
 
-	// A semantic compaction trigger. The decision supplies the signal that a
-	// transcript is worth summarizing, and the deterministic context budget
-	// supplies the limit. The application owns both, and lebro performs the
-	// compaction itself once the run exceeds its budget.
-	trigger, err := compactionTrigger(guardDecisionModel{probability: 0.92, confidence: 0.88}, "a long support transcript", lebro.ContextBudget{
-		ContextWindowTokens: 8000,
-		OutputReserveTokens: 1000,
-		TriggerFraction:     0.7,
-	})
+	// A semantic compaction trigger. The deterministic context budget
+	// supplies the limit, and the decision supplies the signal that a
+	// transcript is worth summarizing. The application owns both, and lebro
+	// performs the compaction itself once the run exceeds its budget.
+	budget := lebro.ContextBudget{
+		ContextWindowTokens: 200,
+		OutputReserveTokens: 40,
+		TriggerFraction:     0.5,
+	}
+	decisionModel := guardDecisionModel{probability: 0.92, confidence: 0.88}
+	short, err := compactionTrigger(decisionModel, "a short transcript", budget)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "%-26s compact=%v\n", "compaction trigger", trigger)
+	fmt.Fprintf(output, "%-26s compact=%v\n", "compaction under budget", short)
+	long, err := compactionTrigger(decisionModel, strings.Repeat("the customer keeps replying about the same refund. ", 20), budget)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(output, "%-26s compact=%v\n", "compaction over budget", long)
 	return nil
 }
 
 // compactionTrigger combines a decision signal with a deterministic budget.
 // A decision alone never compacts a transcript: the budget decides whether
-// there is room, and the decision decides whether the content is worth
-// summarizing.
+// the transcript is over its trigger, and the decision decides whether the
+// content is worth summarizing.
 func compactionTrigger(model lebro.DecisionModel, state string, budget lebro.ContextBudget) (bool, error) {
+	usable := budget.ContextWindowTokens - budget.OutputReserveTokens - budget.FutureToolReserveTokens
+	if usable <= 0 || budget.TriggerFraction <= 0 {
+		return false, nil
+	}
+	// A rough character estimate stands in for a tokenizer. A real
+	// application counts the tokens it will actually send.
+	usedTokens := int64(len(state) / 4)
+	if usedTokens <= int64(float64(usable)*budget.TriggerFraction) {
+		// The transcript is still inside its budget, so there is nothing to
+		// compact, whatever the decision says.
+		return false, nil
+	}
 	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
 		State: state,
 		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
@@ -160,11 +199,7 @@ func compactionTrigger(model lebro.DecisionModel, state string, budget lebro.Con
 	}
 	minimumConfidence := 0.6
 	gate := lebro.DecisionGate{SelectProbability: 0.7, EscalateProbability: 0.3, MinimumConfidence: &minimumConfidence}
-	if gate.Noul(answer) != lebro.DecisionOutcomeSelect {
-		return false, nil
-	}
-	usable := budget.ContextWindowTokens - budget.OutputReserveTokens
-	return usable > 0 && budget.TriggerFraction > 0, nil
+	return gate.Noul(answer) == lebro.DecisionOutcomeSelect, nil
 }
 
 // allowlist is the set of tools the application permits a decision to
@@ -320,6 +355,24 @@ func (m guardDecisionModel) Decide(_ context.Context, request lebro.DecisionRequ
 		Answers:  answers,
 		Attempts: 1,
 	}, nil
+}
+
+// timeoutDecisionModel always times out, the way a provider that does not
+// answer in time does.
+type timeoutDecisionModel struct{}
+
+func (timeoutDecisionModel) ProviderID() lebro.ProviderID { return "example" }
+
+func (timeoutDecisionModel) Capabilities() lebro.DecisionCapabilities {
+	return lebro.DecisionCapabilities{Noul: true}
+}
+
+func (timeoutDecisionModel) Decide(_ context.Context, _ lebro.DecisionRequest) (lebro.DecisionResponse, error) {
+	return lebro.DecisionResponse{}, &lebro.DecisionError{
+		Kind:     lebro.DecisionErrorTimeout,
+		Provider: "example",
+		Message:  "the decision provider did not answer in time",
+	}
 }
 
 // failingDecisionModel always fails, the way an unreachable provider does.

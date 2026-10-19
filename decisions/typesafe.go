@@ -14,9 +14,18 @@ const (
 	typeSafeModel    = "jev-latest"
 	// typeSafeRequestIDHeader carries the provider request identifier.
 	typeSafeRequestIDHeader = "x-typesafe-request-id"
+	// typeSafeGatewayRequestIDHeader carries the request identifier when the
+	// adapter is pointed at a gateway that fronts TypeSafe, such as
+	// OpenRouter.
+	typeSafeGatewayRequestIDHeader = "x-generation-id"
 	// typeSafeMaxBodyBytes is the largest request body TypeSafe accepts.
 	typeSafeMaxBodyBytes = 32 << 20
 )
+
+// typeSafeRetryableStatuses are the HTTP status codes TypeSafe documents as
+// retryable. The client and the advertised capability share this list so the
+// two cannot drift apart.
+var typeSafeRetryableStatuses = []int{http.StatusTooManyRequests, 529}
 
 // TypeSafeConfig configures the TypeSafe Jev decision adapter. APIKey is
 // required; every other field has a documented default.
@@ -69,7 +78,7 @@ func NewTypeSafe(config TypeSafeConfig) (*TypeSafeModel, error) {
 		"Bearer ",
 		config.APIKey,
 		model,
-		[]int{http.StatusTooManyRequests, 529},
+		typeSafeRetryableStatuses,
 		httpClientConfig{
 			client:       config.HTTPClient,
 			timeout:      config.Timeout,
@@ -83,12 +92,12 @@ func NewTypeSafe(config TypeSafeConfig) (*TypeSafeModel, error) {
 	return &TypeSafeModel{
 		client: client,
 		profile: systemOneProfile{
-			provider:        typeSafeProvider,
-			capabilities:    typeSafeCapabilities(),
-			scoreMapping:    scoreWeightedOnly,
-			buildQuestions:  buildSystemOneQuestions,
-			requestIDHeader: typeSafeRequestIDHeader,
-			maxBodyBytes:    typeSafeMaxBodyBytes,
+			provider:         typeSafeProvider,
+			capabilities:     typeSafeCapabilities(),
+			scoreMapping:     scoreWeightedOnly,
+			buildQuestions:   buildSystemOneQuestions,
+			requestIDHeaders: []string{typeSafeRequestIDHeader, typeSafeGatewayRequestIDHeader},
+			maxBodyBytes:     typeSafeMaxBodyBytes,
 		},
 	}, nil
 }
@@ -125,13 +134,15 @@ func typeSafeCapabilities() lebro.DecisionCapabilities {
 		Images: lebro.DecisionImageCapabilities{
 			Enabled: false,
 		},
-		MaxQuestions:      0,
-		MaxChoiceOptions:  255,
-		MaxScoreLevels:    10,
-		Distributions:     true,
-		Confidence:        true,
-		Batching:          false,
-		MaxStateBytes:     32 << 20,
-		RetryableStatuses: []int{http.StatusTooManyRequests, 529},
+		MaxQuestions:     0,
+		MaxChoiceOptions: 255,
+		MaxScoreLevels:   10,
+		Distributions:    true,
+		Confidence:       true,
+		Batching:         false,
+		// TypeSafe documents a request body limit, not a byte limit for the
+		// state alone. The body limit is enforced separately.
+		MaxStateBytes:     0,
+		RetryableStatuses: typeSafeRetryableStatuses,
 	}
 }

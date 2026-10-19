@@ -65,8 +65,10 @@ hard-coded list, and it must respect what the tenant enabled:
   `Images.MaxBytesPerImage`, and `Images.MaxTotalBytes` gate the image
   inputs a tenant may send.
 - `Distributions` and `Confidence` gate what a UI may promise about an
-  answer. A noul answer from TypeSafe and SubQ has no confidence, and the UI
-  must not imply one.
+  answer. The flag is provider-wide, so the UI must still read the answer
+  itself: a noul answer from TypeSafe and SubQ carries no confidence even
+  though the provider reports confidence for its choice and score answers.
+  A missing confidence is shown as unknown, never as a low or high value.
 - `RetryableStatuses` describes the provider's own retry contract. The
   adapter applies it; the Cloud must not add retries of its own on top.
 
@@ -85,7 +87,11 @@ A decision answer is not an authorization. Cloud owns the boundary:
 3. A denial, an uncertain answer, a timeout, a cancellation, and a provider
    failure must all leave the action unauthorized. Treat "no answer" as
    "not authorized".
-4. The audit trail records that a decision was consulted, which provider and
+4. A decision sits before the runtime's own guarantees, so it does not
+   weaken them. Transcript integrity, tool-pair integrity, compare-and-swap
+   fencing of a run, and the deterministic context budget still apply to a
+   run whose handler was guarded by a judgment.
+5. The audit trail records that a decision was consulted, which provider and
    model answered, the question identifiers, the outcome, and the attempt
    count. It does not need the state, the criteria, or the images to be
    reproducible, and it should not copy them by default.
@@ -106,8 +112,10 @@ third-party provider. Cloud must:
 - record the provider retention consequence in the tenant's own audit
   history, so an operator can answer what a third party holds;
 - offer a way to keep a request out of provider storage where the provider
-  supports it. Fastino accepts `store: false`, and SubQ keeps nothing under
-  a zero data retention organization.
+  supports it. Fastino honors `FastinoConfig.DisableStorage`, which sends the
+  wire field `store: false`, so the Cloud setting is a constructor option
+  rather than a wire field. SubQ keeps nothing under a zero data retention
+  organization.
 
 Cloud must never log or persist the state, the criteria, or the image bytes
 in order to make a decision provider call. If the tenant needs that record,

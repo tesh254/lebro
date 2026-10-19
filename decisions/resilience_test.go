@@ -299,14 +299,17 @@ func TestDeadlineIsReportedAsTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubQ() error = %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	_, err = model.Decide(ctx, lebro.DecisionRequest{
+	// The caller has no deadline, so the adapter's own timeout is the only
+	// deadline in play.
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
 		State:     "state",
 		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
 	})
 	if err == nil {
 		t.Fatal("Decide() error = nil, want a timeout failure")
+	}
+	if !errors.Is(err, lebro.ErrDecisionTimeout) {
+		t.Fatalf("Decide() error = %v, want a timeout failure", err)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Decide() error = %v, want the deadline preserved", err)

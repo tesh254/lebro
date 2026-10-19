@@ -23,9 +23,9 @@ All notable changes to this project are documented in this file.
   `ErrDecision*` sentinels. `ScoreAnswer` keeps a selected level and a
   probability-weighted expected level apart, and a provider-reported
   confidence or distribution is only surfaced when the provider actually
-  reported one, so a value is never fabricated. `DecisionGate` turns an answer
-  into a deterministic `select`, `review`, or `escalate` recommendation and
-  never authorizes an action on the application's behalf.
+  reported one, so a value is never fabricated. `DecisionGate.Noul` turns a
+  binary answer into a deterministic `select`, `review`, or `escalate`
+  recommendation and never authorizes an action on the application's behalf.
 
   The new `decisions` package adapts three System One providers:
   `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino` (Fastino

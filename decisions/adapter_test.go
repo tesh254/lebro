@@ -114,9 +114,11 @@ func computeDecisionFacts(request lebro.DecisionRequest) map[lebro.DecisionQuest
 			for index, option := range options {
 				probabilities[option] = distribution[strconv.Itoa(index)]
 			}
+			// The selected option carries the peak, so it is the last option
+			// in a stable order and not the first.
 			facts[id] = decisionFacts{
 				kind:          "choice",
-				choice:        options[0],
+				choice:        options[len(options)-1],
 				probabilities: probabilities,
 				confidence:    floatPointer(0.6),
 			}
@@ -151,9 +153,11 @@ func computeDecisionFacts(request lebro.DecisionRequest) map[lebro.DecisionQuest
 	return facts
 }
 
-// decisionDistribution spreads a probability mass over count entries. The
-// first entry carries the most mass, so the selected option and the winning
-// level are unambiguous.
+// decisionDistribution spreads a probability mass over count entries.
+//
+// The peak sits on the last index, not the first, so a fixture that always
+// reports index zero as the winner cannot pass, and neither can one that
+// always picks the first option.
 func decisionDistribution(count int) map[string]float64 {
 	probabilities := make(map[string]float64, count)
 	if count == 1 {
@@ -162,7 +166,7 @@ func decisionDistribution(count int) map[string]float64 {
 	}
 	rest := 0.4 / float64(count-1)
 	for i := 0; i < count; i++ {
-		if i == 0 {
+		if i == count-1 {
 			probabilities[strconv.Itoa(i)] = 0.6
 			continue
 		}

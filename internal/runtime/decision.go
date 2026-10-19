@@ -325,8 +325,14 @@ type DecisionGate struct {
 
 // Validate checks that the thresholds are usable.
 func (g DecisionGate) Validate() error {
+	if math.IsNaN(g.SelectProbability) || math.IsInf(g.SelectProbability, 0) {
+		return fmt.Errorf("lebro: decision gate select probability must be a finite number, got %v", g.SelectProbability)
+	}
 	if g.SelectProbability < 0 || g.SelectProbability > 1 {
 		return fmt.Errorf("lebro: decision gate select probability must be between 0 and 1, got %v", g.SelectProbability)
+	}
+	if math.IsNaN(g.EscalateProbability) || math.IsInf(g.EscalateProbability, 0) {
+		return fmt.Errorf("lebro: decision gate escalate probability must be a finite number, got %v", g.EscalateProbability)
 	}
 	if g.EscalateProbability < 0 || g.EscalateProbability > 1 {
 		return fmt.Errorf("lebro: decision gate escalate probability must be between 0 and 1, got %v", g.EscalateProbability)
@@ -334,14 +340,30 @@ func (g DecisionGate) Validate() error {
 	if g.EscalateProbability > g.SelectProbability {
 		return errors.New("lebro: decision gate escalate probability must not exceed the select probability")
 	}
-	if g.MinimumConfidence != nil && (*g.MinimumConfidence < 0 || *g.MinimumConfidence > 1) {
-		return fmt.Errorf("lebro: decision gate minimum confidence must be between 0 and 1, got %v", *g.MinimumConfidence)
+	if g.MinimumConfidence != nil {
+		if math.IsNaN(*g.MinimumConfidence) || math.IsInf(*g.MinimumConfidence, 0) {
+			return fmt.Errorf("lebro: decision gate minimum confidence must be a finite number, got %v", *g.MinimumConfidence)
+		}
+		if *g.MinimumConfidence < 0 || *g.MinimumConfidence > 1 {
+			return fmt.Errorf("lebro: decision gate minimum confidence must be between 0 and 1, got %v", *g.MinimumConfidence)
+		}
+	}
+	if g.SelectProbability == 0 && g.EscalateProbability == 0 && g.MinimumConfidence == nil {
+		// A gate with no thresholds would select every answer. An
+		// unconfigured gate is a misconfiguration, and it fails closed.
+		return errors.New("lebro: decision gate has no thresholds set")
 	}
 	return nil
 }
 
 // Noul returns the recommendation for a noul answer.
+//
+// A gate that does not validate fails closed: it recommends a review instead
+// of selecting on thresholds it cannot trust.
 func (g DecisionGate) Noul(answer NoulAnswer) DecisionOutcome {
+	if err := g.Validate(); err != nil {
+		return DecisionOutcomeReview
+	}
 	if g.MinimumConfidence != nil {
 		if answer.Confidence == nil || *answer.Confidence < *g.MinimumConfidence {
 			return DecisionOutcomeReview
@@ -581,93 +603,152 @@ func (r DecisionResponse) Validate() error {
 func validateDecisionQuestion(id DecisionQuestionID, question DecisionQuestion) error {
 	switch typed := question.(type) {
 	case NoulQuestion:
-		if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
-			return err
+		return validateNoulQuestion(id, typed)
+	case *NoulQuestion:
+		if typed == nil {
+			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		if typed.Criteria != nil {
-			if err := validateDecisionText(fmt.Sprintf("decision question %q criteria true", id), typed.Criteria.True); err != nil {
-				return err
-			}
-			if err := validateDecisionText(fmt.Sprintf("decision question %q criteria false", id), typed.Criteria.False); err != nil {
-				return err
-			}
-		}
-		return nil
+		return validateNoulQuestion(id, *typed)
 	case ChoiceQuestion:
-		if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
-			return err
+		return validateChoiceQuestion(id, typed)
+	case *ChoiceQuestion:
+		if typed == nil {
+			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		if len(typed.Criteria) < 2 {
-			return fmt.Errorf("lebro: decision question %q requires at least two options", id)
-		}
-		for option, description := range typed.Criteria {
-			if option == "" {
-				return fmt.Errorf("lebro: decision question %q has an empty option ID", id)
-			}
-			if err := validateDecisionText(fmt.Sprintf("decision question %q option %q", id, option), description); err != nil {
-				return err
-			}
-		}
-		return nil
+		return validateChoiceQuestion(id, *typed)
 	case ScoreQuestion:
-		if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
-			return err
+		return validateScoreQuestion(id, typed)
+	case *ScoreQuestion:
+		if typed == nil {
+			return fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		if len(typed.Criteria) < 2 {
-			return fmt.Errorf("lebro: decision question %q requires at least two levels", id)
-		}
-		for level, description := range typed.Criteria {
-			if err := validateDecisionText(fmt.Sprintf("decision question %q level %d", id, level), description); err != nil {
-				return err
-			}
-		}
-		return nil
+		return validateScoreQuestion(id, *typed)
 	default:
 		return fmt.Errorf("lebro: decision question %q has an unsupported type %T", id, question)
 	}
 }
 
+func validateNoulQuestion(id DecisionQuestionID, typed NoulQuestion) error {
+	if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
+		return err
+	}
+	if typed.Criteria != nil {
+		if err := validateDecisionText(fmt.Sprintf("decision question %q criteria true", id), typed.Criteria.True); err != nil {
+			return err
+		}
+		if err := validateDecisionText(fmt.Sprintf("decision question %q criteria false", id), typed.Criteria.False); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateChoiceQuestion(id DecisionQuestionID, typed ChoiceQuestion) error {
+	if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
+		return err
+	}
+	if len(typed.Criteria) < 2 {
+		return fmt.Errorf("lebro: decision question %q requires at least two options", id)
+	}
+	for option, description := range typed.Criteria {
+		if option == "" {
+			return fmt.Errorf("lebro: decision question %q has an empty option ID", id)
+		}
+		if err := validateDecisionText(fmt.Sprintf("decision question %q option %q", id, option), description); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateScoreQuestion(id DecisionQuestionID, typed ScoreQuestion) error {
+	if err := validateDecisionInstructions(id, typed.Instructions); err != nil {
+		return err
+	}
+	if len(typed.Criteria) < 2 {
+		return fmt.Errorf("lebro: decision question %q requires at least two levels", id)
+	}
+	for level, description := range typed.Criteria {
+		if err := validateDecisionText(fmt.Sprintf("decision question %q level %d", id, level), description); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validateDecisionAnswer(answer DecisionAnswer) error {
 	switch typed := answer.(type) {
 	case NoulAnswer:
-		if err := validateProbability("noul probability", typed.ProbabilityYes); err != nil {
-			return err
+		return validateNoulAnswer(typed)
+	case *NoulAnswer:
+		if typed == nil {
+			return errors.New("lebro: decision answer must not be nil")
 		}
-		return validateOptionalConfidence(typed.Confidence)
+		return validateNoulAnswer(*typed)
 	case ChoiceAnswer:
-		if typed.Choice == "" {
-			return errors.New("lebro: choice answer requires a selected option")
+		return validateChoiceAnswer(typed)
+	case *ChoiceAnswer:
+		if typed == nil {
+			return errors.New("lebro: decision answer must not be nil")
 		}
-		for option, probability := range typed.Probabilities {
-			if option == "" {
-				return errors.New("lebro: choice answer contains an empty option ID")
-			}
-			if err := validateProbability("choice probability", probability); err != nil {
-				return err
-			}
-		}
-		return validateOptionalConfidence(typed.Confidence)
+		return validateChoiceAnswer(*typed)
 	case ScoreAnswer:
-		if typed.SelectedLevel != nil && *typed.SelectedLevel < 0 {
-			return errors.New("lebro: score answer selected level must not be negative")
+		return validateScoreAnswer(typed)
+	case *ScoreAnswer:
+		if typed == nil {
+			return errors.New("lebro: decision answer must not be nil")
 		}
-		if typed.ExpectedLevel != nil {
-			if math.IsNaN(*typed.ExpectedLevel) || math.IsInf(*typed.ExpectedLevel, 0) {
-				return errors.New("lebro: score answer expected level must be finite")
-			}
-		}
-		for level, probability := range typed.Probabilities {
-			if level < 0 {
-				return errors.New("lebro: score answer level must not be negative")
-			}
-			if err := validateProbability("score probability", probability); err != nil {
-				return err
-			}
-		}
-		return validateOptionalConfidence(typed.Confidence)
+		return validateScoreAnswer(*typed)
 	default:
 		return fmt.Errorf("lebro: unsupported decision answer type %T", answer)
 	}
+}
+
+func validateNoulAnswer(typed NoulAnswer) error {
+	if err := validateProbability("noul probability", typed.ProbabilityYes); err != nil {
+		return err
+	}
+	return validateOptionalConfidence(typed.Confidence)
+}
+
+func validateChoiceAnswer(typed ChoiceAnswer) error {
+	if typed.Choice == "" {
+		return errors.New("lebro: choice answer requires a selected option")
+	}
+	for option, probability := range typed.Probabilities {
+		if option == "" {
+			return errors.New("lebro: choice answer contains an empty option ID")
+		}
+		if err := validateProbability("choice probability", probability); err != nil {
+			return err
+		}
+	}
+	return validateOptionalConfidence(typed.Confidence)
+}
+
+func validateScoreAnswer(typed ScoreAnswer) error {
+	if typed.SelectedLevel != nil && *typed.SelectedLevel < 0 {
+		return errors.New("lebro: score answer selected level must not be negative")
+	}
+	if typed.ExpectedLevel != nil {
+		if math.IsNaN(*typed.ExpectedLevel) || math.IsInf(*typed.ExpectedLevel, 0) {
+			return errors.New("lebro: score answer expected level must be finite")
+		}
+	}
+	for level, probability := range typed.Probabilities {
+		if level < 0 {
+			return errors.New("lebro: score answer level must not be negative")
+		}
+		if err := validateProbability("score probability", probability); err != nil {
+			return err
+		}
+	}
+	switch typed.Provenance {
+	case ScoreNative, ScoreNormalized:
+	default:
+		return fmt.Errorf("lebro: score answer provenance %q is not a known provenance", typed.Provenance)
+	}
+	return validateOptionalConfidence(typed.Confidence)
 }
 
 func validateProbability(name string, probability float64) error {
@@ -773,7 +854,29 @@ func validateDecisionImage(image DecisionImage) error {
 	if decisionImageIsReference(image.Bytes) {
 		return errors.New("image bytes must be raw image data, not a URL or a data URL")
 	}
+	if !decisionImageMatchesMediaType(image.MediaType, image.Bytes) {
+		return fmt.Errorf("image bytes do not match the declared media type %q", image.MediaType)
+	}
 	return nil
+}
+
+// decisionImageMatchesMediaType reports whether the bytes are the format the
+// declared media type names.
+//
+// Only the formats the contract knows are checked. A media type the contract
+// does not know is left to the provider, which stays the authority on its
+// own formats.
+func decisionImageMatchesMediaType(mediaType string, data []byte) bool {
+	switch strings.ToLower(mediaType) {
+	case "image/png":
+		return bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a})
+	case "image/jpeg":
+		return bytes.HasPrefix(data, []byte{0xff, 0xd8, 0xff})
+	case "image/webp":
+		return len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP"))
+	default:
+		return true
+	}
 }
 
 // decisionImageIsReference reports whether image bytes carry a remote
@@ -786,11 +889,6 @@ func decisionImageIsReference(data []byte) bool {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
 		return false
-	}
-	for _, character := range trimmed {
-		if character < 0x20 || character > 0x7e {
-			return false
-		}
 	}
 	text := strings.ToLower(string(trimmed))
 	return strings.HasPrefix(text, "http://") ||
@@ -817,7 +915,9 @@ func ValidateDecisionImages(caps DecisionImageCapabilities, images []DecisionIma
 	}
 	var total int64
 	for i, image := range images {
-		if !decisionMediaTypeAllowed(caps.MediaTypes, image.MediaType) {
+		// A malformed media type is a request error, not a capability one.
+		// The generic request validation reports it.
+		if strings.Contains(image.MediaType, "/") && !decisionMediaTypeAllowed(caps.MediaTypes, image.MediaType) {
 			return fmt.Errorf("%w: image %d media type %q is not accepted", ErrDecisionUnsupportedCapability, i, image.MediaType)
 		}
 		size := int64(len(image.Bytes))
@@ -893,6 +993,11 @@ func validateJSONReflect(name string, value reflect.Value, depth int, nodes *int
 	case reflect.Slice, reflect.Array:
 		if value.Type() == reflect.TypeOf(json.RawMessage{}) {
 			return validateJSONRawMessage(name, value.Bytes())
+		}
+		if value.Type().Elem().Kind() == reflect.Uint8 {
+			// encoding/json encodes a byte slice as a base64 string, which
+			// would silently change the value on the wire.
+			return fmt.Errorf("%s contains a byte slice, which would be encoded as a base64 string", name)
 		}
 		for i := 0; i < value.Len(); i++ {
 			if err := validateJSONReflect(name, value.Index(i), depth+1, nodes); err != nil {

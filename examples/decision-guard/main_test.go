@@ -19,8 +19,11 @@ func TestDecisionGuardExample(t *testing.T) {
 		"uncertain                  status=needs-review handler_calls=0",
 		"denied                     status=denied       handler_calls=0",
 		"provider failure           status=denied       handler_calls=0",
+		"provider timeout           status=denied       handler_calls=0",
 		"tool outside the allowlist status=denied       handler_calls=0",
-		"compaction trigger         compact=true",
+		"compaction under budget    compact=false",
+		"compaction over budget     compact=true",
+		`pending=payments.transfer {"amount":1250,"recipient":"Amina"}`,
 	}
 	for _, want := range cases {
 		if !strings.Contains(output, want) {

@@ -504,6 +504,9 @@ model, err := decisions.NewTypeSafe(decisions.TypeSafeConfig{
 	APIKey: os.Getenv("TYPESAFE_API_KEY"),
 	Model:  "jev-latest",
 })
+if err != nil {
+	panic(err)
+}
 
 response, err := model.Decide(ctx, lebro.DecisionRequest{
 	State: "My card was charged twice for order A-104.",
@@ -525,6 +528,10 @@ response, err := model.Decide(ctx, lebro.DecisionRequest{
 		},
 	},
 })
+if err != nil {
+	panic(err)
+}
+fmt.Println(response.Answers["is_refund"])
 ```
 
 The `decisions` package adapts three System One providers, each configured

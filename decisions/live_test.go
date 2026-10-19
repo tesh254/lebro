@@ -2,6 +2,7 @@ package decisions
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strconv"
 	"testing"
@@ -59,10 +60,33 @@ func TestLiveSubQ(t *testing.T) {
 	runLiveDecision(t, model, "text")
 }
 
+// TestLiveTypeSafeViaOpenRouter runs the same adapter against a gateway that
+// fronts TypeSafe. Only the endpoint, the credential, and the model alias
+// change, which is the point: the contract and the application code do not.
+func TestLiveTypeSafeViaOpenRouter(t *testing.T) {
+	apiKey := os.Getenv("LEBRO_OPENROUTER_API_KEY")
+	if apiKey == "" {
+		t.Skip("skipping the live OpenRouter decision test: set LEBRO_OPENROUTER_API_KEY to run it")
+	}
+	model, err := NewTypeSafe(TypeSafeConfig{
+		APIKey:  apiKey,
+		BaseURL: "https://openrouter.ai/api",
+		Model:   "~typesafe/jev-latest",
+	})
+	if err != nil {
+		t.Fatalf("NewTypeSafe() error = %v", err)
+	}
+	runLiveDecision(t, model, "text")
+}
+
 // runLiveDecision asks one question of each kind and reports what the
 // provider returned.
 func runLiveDecision(t *testing.T, model lebro.DecisionModel, modality string) {
 	t.Helper()
+	// A live provider answers over HTTP/2, and the pooled connection keeps a
+	// reader goroutine alive after the response. Releasing it keeps the
+	// goroutine check honest instead of hiding a real leak.
+	t.Cleanup(func() { closeIdleConnections() })
 	started := time.Now()
 	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
 		State: "My card was charged twice for order A-104 and I need a refund today.",
@@ -110,6 +134,13 @@ func runLiveDecision(t *testing.T, model lebro.DecisionModel, modality string) {
 	t.Logf("choice=%s confidence=%s", choice.Choice, formatLiveConfidence(choice.Confidence))
 	t.Logf("score expected=%s selected=%s confidence=%s",
 		formatLiveLevel(score.ExpectedLevel), formatLiveSelected(score.SelectedLevel), formatLiveConfidence(score.Confidence))
+}
+
+// closeIdleConnections releases the pooled provider connections.
+func closeIdleConnections() {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
 }
 
 // formatLiveUsage renders the reported usage.

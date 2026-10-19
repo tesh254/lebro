@@ -22,6 +22,11 @@ const (
 	subQMaxBodyBytes = 13 << 20
 )
 
+// subQRetryableStatuses are the HTTP status codes SubQ documents as
+// retryable. The client and the advertised capability share this list so the
+// two cannot drift apart.
+var subQRetryableStatuses = []int{http.StatusTooManyRequests, http.StatusServiceUnavailable}
+
 // SubQConfig configures the SubQ Snap decision adapter. APIKey is required;
 // every other field has a documented default.
 type SubQConfig struct {
@@ -72,7 +77,7 @@ func NewSubQ(config SubQConfig) (*SubQModel, error) {
 		"Bearer ",
 		config.APIKey,
 		model,
-		[]int{http.StatusTooManyRequests, http.StatusServiceUnavailable},
+		subQRetryableStatuses,
 		httpClientConfig{
 			client:       config.HTTPClient,
 			timeout:      config.Timeout,
@@ -92,8 +97,9 @@ func NewSubQ(config SubQConfig) (*SubQModel, error) {
 			buildQuestions: func(questions map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error) {
 				return buildSystemOneQuestions(questions)
 			},
-			extraFields:  subQExtraFields,
-			maxBodyBytes: subQMaxBodyBytes,
+			extraFields:    subQExtraFields,
+			requestSecrets: subQRequestSecrets,
+			maxBodyBytes:   subQMaxBodyBytes,
 		},
 	}, nil
 }
@@ -133,6 +139,19 @@ func subQExtraFields(request lebro.DecisionRequest) map[string]any {
 	return map[string]any{"images": images}
 }
 
+// subQRequestSecrets returns the encoded image payloads. They are request
+// content, so a provider error must not echo them back.
+func subQRequestSecrets(request lebro.DecisionRequest) []string {
+	if len(request.Images) == 0 {
+		return nil
+	}
+	secrets := make([]string, 0, len(request.Images))
+	for _, image := range request.Images {
+		secrets = append(secrets, encodeImageBase64(image.Bytes))
+	}
+	return secrets
+}
+
 // subQCapabilities describes the SubQ decision surface.
 //
 // SubQ reports a probability-weighted score and no winning level, so a score
@@ -153,13 +172,15 @@ func subQCapabilities() lebro.DecisionCapabilities {
 			MaxBytesPerImage: subQMaxBytesPerImage,
 			MaxTotalBytes:    subQMaxTotalBytes,
 		},
-		MaxQuestions:      16,
-		MaxChoiceOptions:  255,
-		MaxScoreLevels:    10,
-		Distributions:     true,
-		Confidence:        true,
-		Batching:          false,
-		MaxStateBytes:     subQMaxBodyBytes,
-		RetryableStatuses: []int{http.StatusTooManyRequests, http.StatusServiceUnavailable},
+		MaxQuestions:     16,
+		MaxChoiceOptions: 255,
+		MaxScoreLevels:   10,
+		Distributions:    true,
+		Confidence:       true,
+		Batching:         false,
+		// SubQ documents a context window, not a byte limit for the state
+		// alone. The request body limit is enforced separately.
+		MaxStateBytes:     0,
+		RetryableStatuses: subQRetryableStatuses,
 	}
 }

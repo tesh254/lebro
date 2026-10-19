@@ -102,14 +102,11 @@ func run(output io.Writer) error {
 	fmt.Fprintf(output, "confidence: %.2f\n", *answer.Confidence)
 
 	// The provider's confidence is low, so the application escalates instead
-	// of acting. The decision never performs the action itself.
+	// of acting. A score answer is not a binary judgment, so its level is
+	// not routed through the binary gate and no probability is invented for
+	// it: the confidence is compared on its own.
 	minimumConfidence := 0.6
-	gate := lebro.DecisionGate{
-		SelectProbability:   0.8,
-		EscalateProbability: 0.3,
-		MinimumConfidence:   &minimumConfidence,
-	}
-	if gate.Noul(lebro.NoulAnswer{ProbabilityYes: 1, Confidence: answer.Confidence}) != lebro.DecisionOutcomeSelect {
+	if answer.Confidence == nil || *answer.Confidence < minimumConfidence {
 		fmt.Fprint(output, "action: escalated to a human reviewer\n")
 	} else {
 		fmt.Fprint(output, "action: handled automatically\n")

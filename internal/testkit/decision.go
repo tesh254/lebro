@@ -198,7 +198,7 @@ func RunDecisionContract(t *testing.T, factory DecisionFactory) {
 			response, err := harness.Model.Decide(ctx, cloneDecisionRequest(contractCase.Request))
 			switch contractCase.Mode {
 			case DecisionResponse:
-				assertNoError(t, err)
+				assertDecisionNoError(t, err)
 				assertNoError(t, response.Validate())
 				assertDecisionResponse(t, response, harness.Expected, contractCase.Request)
 				assertDecisionObservedRequest(t, harness.ObservedRequest, contractCase.Request)
@@ -208,6 +208,14 @@ func RunDecisionContract(t *testing.T, factory DecisionFactory) {
 				assertDecisionCancellation(t, err)
 			}
 		})
+	}
+}
+
+// assertDecisionNoError fails when a decision call returned an error.
+func assertDecisionNoError(t TestingT, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
 	}
 }
 
@@ -367,17 +375,98 @@ func cloneDecisionCase(contractCase DecisionCase) DecisionCase {
 	return contractCase
 }
 
+// cloneDecisionRequest copies a request deeply enough that an adapter which
+// mutates the state or the criteria cannot change the expectation the suite
+// compares against.
 func cloneDecisionRequest(request lebro.DecisionRequest) lebro.DecisionRequest {
 	cloned := lebro.DecisionRequest{
 		Model:  request.Model,
-		State:  request.State,
+		State:  cloneDecisionValue(request.State),
 		Images: append([]lebro.DecisionImage(nil), request.Images...),
+	}
+	if request.Images != nil {
+		cloned.Images = make([]lebro.DecisionImage, len(request.Images))
+		for i, image := range request.Images {
+			cloned.Images[i] = lebro.DecisionImage{
+				MediaType: image.MediaType,
+				Bytes:     append([]byte(nil), image.Bytes...),
+			}
+		}
 	}
 	if request.Questions != nil {
 		cloned.Questions = make(map[lebro.DecisionQuestionID]lebro.DecisionQuestion, len(request.Questions))
 		for id, question := range request.Questions {
-			cloned.Questions[id] = question
+			cloned.Questions[id] = cloneDecisionQuestion(question)
 		}
 	}
 	return cloned
+}
+
+// cloneDecisionQuestion copies one question and its criteria.
+func cloneDecisionQuestion(question lebro.DecisionQuestion) lebro.DecisionQuestion {
+	switch typed := question.(type) {
+	case lebro.NoulQuestion:
+		cloned := lebro.NoulQuestion{Instructions: cloneDecisionValue(typed.Instructions)}
+		if typed.Criteria != nil {
+			cloned.Criteria = &lebro.NoulCriteria{
+				True:  cloneDecisionValue(typed.Criteria.True),
+				False: cloneDecisionValue(typed.Criteria.False),
+			}
+		}
+		return cloned
+	case *lebro.NoulQuestion:
+		if typed == nil {
+			return typed
+		}
+		cloned := *typed
+		return &cloned
+	case lebro.ChoiceQuestion:
+		cloned := lebro.ChoiceQuestion{Instructions: cloneDecisionValue(typed.Instructions)}
+		if typed.Criteria != nil {
+			cloned.Criteria = make(map[lebro.DecisionOptionID]lebro.JSONValue, len(typed.Criteria))
+			for option, description := range typed.Criteria {
+				cloned.Criteria[option] = cloneDecisionValue(description)
+			}
+		}
+		return cloned
+	case *lebro.ChoiceQuestion:
+		if typed == nil {
+			return typed
+		}
+		cloned := *typed
+		return &cloned
+	case lebro.ScoreQuestion:
+		cloned := lebro.ScoreQuestion{Instructions: cloneDecisionValue(typed.Instructions)}
+		if typed.Criteria != nil {
+			cloned.Criteria = make([]lebro.JSONValue, len(typed.Criteria))
+			for level, description := range typed.Criteria {
+				cloned.Criteria[level] = cloneDecisionValue(description)
+			}
+		}
+		return cloned
+	case *lebro.ScoreQuestion:
+		if typed == nil {
+			return typed
+		}
+		cloned := *typed
+		return &cloned
+	default:
+		return question
+	}
+}
+
+// cloneDecisionValue copies a JSON-compatible value through its JSON form.
+func cloneDecisionValue(value lebro.JSONValue) lebro.JSONValue {
+	if value == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var decoded lebro.JSONValue
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return value
+	}
+	return decoded
 }

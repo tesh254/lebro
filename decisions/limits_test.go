@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -299,23 +300,131 @@ func TestAdapterUsesTheRequestModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, Model: "subq-snap-preview"})
+	// The configured default differs from the requested model, so the test
+	// proves the request wins rather than the default.
+	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, Model: "configured-default"})
 	if err != nil {
 		t.Fatalf("NewSubQ() error = %v", err)
 	}
 	if _, err := model.Decide(context.Background(), lebro.DecisionRequest{
-		Model:     "subq-snap-preview",
+		Model:     "requested-model",
 		State:     "state",
 		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
 	}); err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
-	if body.Model != "subq-snap-preview" {
-		t.Fatalf("request model = %q, want %q", body.Model, "subq-snap-preview")
+	if body.Model != "requested-model" {
+		t.Fatalf("request model = %q, want %q", body.Model, "requested-model")
 	}
 }
 
 // decodeBody decodes a request body into target.
 func decodeBody(r *http.Request, target any) error {
 	return json.NewDecoder(r.Body).Decode(target)
+}
+
+// TestRequestBodyCarriesOnlyDocumentedKeys pins that a request never carries
+// an unexpected top-level key. Fastino rejects one, and the other providers
+// document the same minimal body.
+func TestRequestBodyCarriesOnlyDocumentedKeys(t *testing.T) {
+	cases := []struct {
+		name string
+		body map[string]any
+		want []string
+	}{
+		{
+			name: "typesafe",
+			body: map[string]any{},
+			want: []string{"model", "questions", "state"},
+		},
+		{
+			name: "fastino",
+			body: map[string]any{},
+			want: []string{"model", "questions", "state"},
+		},
+		{
+			name: "subq",
+			body: map[string]any{},
+			want: []string{"model", "questions", "state"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&testCase.body); err != nil {
+					t.Errorf("decode request body: %v", err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"model":"model","answers":{"q":{"type":"noul","noul":0.5}}}`))
+			}))
+			defer server.Close()
+
+			var model lebro.DecisionModel
+			var err error
+			switch testCase.name {
+			case "typesafe":
+				model, err = NewTypeSafe(TypeSafeConfig{APIKey: "test-key", BaseURL: server.URL})
+			case "fastino":
+				model, err = NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: server.URL})
+			default:
+				model, err = NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL})
+			}
+			if err != nil {
+				t.Fatalf("build the %s adapter: %v", testCase.name, err)
+			}
+			if _, err := model.Decide(context.Background(), lebro.DecisionRequest{
+				State:     "state",
+				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+			}); err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			keys := make([]string, 0, len(testCase.body))
+			for key := range testCase.body {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			if strings.Join(keys, ",") != strings.Join(testCase.want, ",") {
+				t.Fatalf("request keys = %v, want %v", keys, testCase.want)
+			}
+		})
+	}
+}
+
+// TestFastinoSendsTheStorageOptOutOnlyWhenAsked pins that the documented
+// storage flag is the only extra top-level key, and only when the caller
+// asked for it.
+func TestFastinoSendsTheStorageOptOutOnlyWhenAsked(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5}}}`))
+	}))
+	defer server.Close()
+
+	model, err := NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: server.URL, DisableStorage: true})
+	if err != nil {
+		t.Fatalf("NewFastino() error = %v", err)
+	}
+	if _, err := model.Decide(context.Background(), lebro.DecisionRequest{
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	}); err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	keys := make([]string, 0, len(body))
+	for key := range body {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "model,questions,state,store" {
+		t.Fatalf("request keys = %v, want the storage opt-out", keys)
+	}
+	if store, ok := body["store"].(bool); !ok || store {
+		t.Fatalf("request store = %#v, want false", body["store"])
+	}
 }

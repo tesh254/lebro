@@ -69,13 +69,18 @@ type systemOneProfile struct {
 	// maxBodyBytes is the largest request body the provider accepts. Zero
 	// means the provider documents no byte limit.
 	maxBodyBytes int64
-	// requestIDHeader is the response header that carries the provider
-	// request identifier, when the provider documents one.
-	requestIDHeader string
+	// requestIDHeaders are the response headers that carry the provider
+	// request identifier, when the provider documents one. The first header
+	// that carries a value wins.
+	requestIDHeaders []string
+	// requestSecrets returns the provider-specific request content that must
+	// never reach an error message, such as an encoded image payload.
+	requestSecrets func(lebro.DecisionRequest) []string
 }
 
 // systemOneClient performs the shared System One exchange.
 type systemOneClient struct {
+	credential      string
 	provider        string
 	model           string
 	endpoint        string
@@ -111,16 +116,27 @@ func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey,
 	if !parsed.IsAbs() {
 		return nil, fmt.Errorf("lebro: base URL %q must be absolute", baseURL)
 	}
+	// The default timeout applies whether or not the caller supplied a
+	// client: a client with no timeout of its own would otherwise let a
+	// request hang until the caller's context ends.
 	timeout := config.timeout
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
 	client := config.client
 	if client == nil {
-		if timeout == 0 {
-			timeout = defaultTimeout
-		}
 		// The timeout is applied per attempt through the request context so
 		// that a slow response cannot outlive it.
 		client = &http.Client{}
+	} else {
+		// Copy the caller's client so its transport and settings are kept
+		// without mutating a value the caller may share.
+		copied := *client
+		client = &copied
 	}
+	// A redirect is refused: a redirected request would carry the
+	// credential header to another host.
+	client.CheckRedirect = refuseRedirect
 	maxRetries := defaultMaxRetries
 	if config.maxRetries != nil {
 		maxRetries = *config.maxRetries
@@ -137,6 +153,7 @@ func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey,
 		retryable[status] = true
 	}
 	return &systemOneClient{
+		credential:      apiKey,
 		provider:        provider,
 		model:           model,
 		endpoint:        strings.TrimRight(baseURL, "/") + path,
@@ -151,6 +168,12 @@ func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey,
 	}, nil
 }
 
+// refuseRedirect stops the adapter from following a redirect. A redirected
+// request would forward the credential to the redirect target.
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return errors.New("lebro: the provider refused a redirect")
+}
+
 // httpClientConfig holds the transport knobs every provider shares.
 type httpClientConfig struct {
 	client       *http.Client
@@ -161,15 +184,17 @@ type httpClientConfig struct {
 
 // decide runs one decision request against a provider.
 func decide(ctx context.Context, client *systemOneClient, profile systemOneProfile, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
-	if err := request.Validate(); err != nil {
-		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, err.Error(), err)
-	}
+	// The image capability gate runs first: a provider that does not accept
+	// images at all reports that, rather than a complaint about the bytes.
 	if err := lebro.ValidateDecisionImages(profile.capabilities.Images, request.Images); err != nil {
 		kind := lebro.DecisionErrorInvalidRequest
 		if errors.Is(err, lebro.ErrDecisionUnsupportedCapability) {
 			kind = lebro.DecisionErrorUnsupportedCapability
 		}
 		return lebro.DecisionResponse{}, client.failure(kind, err.Error(), err)
+	}
+	if err := request.Validate(); err != nil {
+		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, err.Error(), err)
 	}
 	if err := checkSupportedKinds(profile, request); err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorUnsupportedCapability, err.Error(), err)
@@ -210,17 +235,21 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 			fmt.Sprintf("lebro: the request body is %d bytes, %s accepts at most %d", len(encoded), profile.provider, profile.maxBodyBytes), nil)
 	}
 
-	result, err := client.post(ctx, encoded, profile.requestIDHeader)
+	redactor := client.newRedactor(request, profile.requestSecrets)
+	result, err := client.post(ctx, encoded, profile.requestIDHeaders)
 	if err != nil {
 		return lebro.DecisionResponse{}, err
 	}
 	if result.status >= http.StatusBadRequest {
-		return lebro.DecisionResponse{}, client.statusFailure(result.status, result.body, result.retryAfter)
+		return lebro.DecisionResponse{}, client.statusFailure(result.status, result.body, result.retryAfter, redactor)
 	}
 
 	decoded, err := decodeSystemOneResponse(result.body)
 	if err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, err.Error(), err)
+	}
+	if decoded.Model == "" {
+		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, "lebro: the decision response carries no model identity", nil)
 	}
 	answers, err := mapSystemOneAnswers(request, decoded.Answers, profile.scoreMapping)
 	if err != nil {
@@ -238,10 +267,16 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 	if decoded.Usage != nil {
 		usage := &lebro.DecisionUsage{}
 		if decoded.Usage.InputTokens != nil {
+			if *decoded.Usage.InputTokens < 0 {
+				return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, "lebro: the provider reported a negative input token count", nil)
+			}
 			tokens := *decoded.Usage.InputTokens
 			usage.InputTokens = &tokens
 		}
 		if decoded.Usage.OutputTokens != nil {
+			if *decoded.Usage.OutputTokens < 0 {
+				return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, "lebro: the provider reported a negative output token count", nil)
+			}
 			tokens := *decoded.Usage.OutputTokens
 			usage.OutputTokens = &tokens
 		}
@@ -254,15 +289,15 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 func checkSupportedKinds(profile systemOneProfile, request lebro.DecisionRequest) error {
 	for id, question := range request.Questions {
 		switch question.(type) {
-		case lebro.NoulQuestion:
+		case lebro.NoulQuestion, *lebro.NoulQuestion:
 			if !profile.capabilities.Noul {
 				return fmt.Errorf("lebro: decision question %q is a noul question, which %s does not support", id, profile.provider)
 			}
-		case lebro.ChoiceQuestion:
+		case lebro.ChoiceQuestion, *lebro.ChoiceQuestion:
 			if !profile.capabilities.Choice {
 				return fmt.Errorf("lebro: decision question %q is a choice question, which %s does not support", id, profile.provider)
 			}
-		case lebro.ScoreQuestion:
+		case lebro.ScoreQuestion, *lebro.ScoreQuestion:
 			if !profile.capabilities.Score {
 				return fmt.Errorf("lebro: decision question %q is a score question, which %s does not support", id, profile.provider)
 			}
@@ -281,15 +316,26 @@ func checkQuestionLimits(profile systemOneProfile, request lebro.DecisionRequest
 		return fmt.Errorf("lebro: %s accepts one question per request, got %d", profile.provider, len(request.Questions))
 	}
 	for id, question := range request.Questions {
+		var options, levels int
 		switch typed := question.(type) {
 		case lebro.ChoiceQuestion:
-			if caps.MaxChoiceOptions > 0 && len(typed.Criteria) > caps.MaxChoiceOptions {
-				return fmt.Errorf("lebro: decision question %q has %d options, %s accepts at most %d", id, len(typed.Criteria), profile.provider, caps.MaxChoiceOptions)
+			options = len(typed.Criteria)
+		case *lebro.ChoiceQuestion:
+			if typed != nil {
+				options = len(typed.Criteria)
 			}
 		case lebro.ScoreQuestion:
-			if caps.MaxScoreLevels > 0 && len(typed.Criteria) > caps.MaxScoreLevels {
-				return fmt.Errorf("lebro: decision question %q has %d levels, %s accepts at most %d", id, len(typed.Criteria), profile.provider, caps.MaxScoreLevels)
+			levels = len(typed.Criteria)
+		case *lebro.ScoreQuestion:
+			if typed != nil {
+				levels = len(typed.Criteria)
 			}
+		}
+		if caps.MaxChoiceOptions > 0 && options > caps.MaxChoiceOptions {
+			return fmt.Errorf("lebro: decision question %q has %d options, %s accepts at most %d", id, options, profile.provider, caps.MaxChoiceOptions)
+		}
+		if caps.MaxScoreLevels > 0 && levels > caps.MaxScoreLevels {
+			return fmt.Errorf("lebro: decision question %q has %d levels, %s accepts at most %d", id, levels, profile.provider, caps.MaxScoreLevels)
 		}
 	}
 	return nil
@@ -301,7 +347,7 @@ func (c *systemOneClient) defaultModel() string { return c.model }
 
 // post sends the request, retrying the failures a provider documents as
 // transient. It never retries across providers.
-func (c *systemOneClient) post(ctx context.Context, body []byte, requestIDHeader string) (systemOneResult, error) {
+func (c *systemOneClient) post(ctx context.Context, body []byte, requestIDHeaders []string) (systemOneResult, error) {
 	started := time.Now()
 	attempts := 0
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
@@ -309,7 +355,7 @@ func (c *systemOneClient) post(ctx context.Context, body []byte, requestIDHeader
 			return systemOneResult{attempts: attempts, duration: time.Since(started)}, c.cancellation(err)
 		}
 		attempts++
-		status, payload, retryAfter, requestID, err := c.attempt(ctx, body, requestIDHeader)
+		status, payload, retryAfter, requestID, err := c.attempt(ctx, body, requestIDHeaders)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return systemOneResult{attempts: attempts, duration: time.Since(started)}, c.cancellation(ctxErr)
@@ -326,6 +372,18 @@ func (c *systemOneClient) post(ctx context.Context, body []byte, requestIDHeader
 			delay := c.backoff(attempt)
 			if retryAfter > delay {
 				delay = retryAfter
+			}
+			if delay > c.timeout {
+				// The provider asked for a wait longer than the adapter is
+				// willing to sit through. Return the failure with the
+				// delay so the caller can schedule the retry instead.
+				return systemOneResult{
+					status:     status,
+					body:       payload,
+					attempts:   attempts,
+					duration:   time.Since(started),
+					retryAfter: retryAfter,
+				}, nil
 			}
 			if waitErr := c.wait(ctx, delay); waitErr != nil {
 				return systemOneResult{attempts: attempts, duration: time.Since(started)}, waitErr
@@ -345,7 +403,7 @@ func (c *systemOneClient) post(ctx context.Context, body []byte, requestIDHeader
 }
 
 // attempt performs one HTTP exchange.
-func (c *systemOneClient) attempt(ctx context.Context, body []byte, requestIDHeader string) (int, []byte, time.Duration, string, error) {
+func (c *systemOneClient) attempt(ctx context.Context, body []byte, requestIDHeaders []string) (int, []byte, time.Duration, string, error) {
 	requestCtx := ctx
 	if c.timeout > 0 {
 		var cancel context.CancelFunc
@@ -372,8 +430,11 @@ func (c *systemOneClient) attempt(ctx context.Context, body []byte, requestIDHea
 		return 0, nil, 0, "", c.transportFailure(ctx, readErr)
 	}
 	requestID := ""
-	if requestIDHeader != "" {
-		requestID = response.Header.Get(requestIDHeader)
+	for _, header := range requestIDHeaders {
+		if value := response.Header.Get(header); value != "" {
+			requestID = value
+			break
+		}
 	}
 	return response.StatusCode, payload, parseRetryAfter(response.Header.Get("Retry-After")), requestID, nil
 }
@@ -431,8 +492,14 @@ func (c *systemOneClient) cancellation(err error) error {
 }
 
 // statusFailure maps an HTTP error response to a normalized failure.
-func (c *systemOneClient) statusFailure(status int, body []byte, retryAfter time.Duration) error {
+//
+// The provider's own description is kept, because it names the offending
+// field, and it is redacted first: a provider can echo request content back
+// in an error, and request content must never reach an error message.
+func (c *systemOneClient) statusFailure(status int, body []byte, retryAfter time.Duration, redactor *requestRedactor) error {
 	message, code := extractProviderError(body)
+	message = redactor.redact(message)
+	code = redactor.redact(code)
 	if message == "" {
 		message = fmt.Sprintf("lebro: the provider returned HTTP %d", status)
 	}
@@ -444,6 +511,93 @@ func (c *systemOneClient) statusFailure(status int, body []byte, retryAfter time
 		RetryAfter: retryAfter,
 		Message:    message,
 	}
+}
+
+// requestRedactor removes request content from provider-supplied text.
+//
+// A provider can echo the request back in an error, and the request is the
+// caller's content: the state, the criteria, an encoded image, or worse, the
+// credential. The redactor replaces any such content with a marker before the
+// text reaches an error message.
+type requestRedactor struct {
+	secrets []string
+}
+
+// minRedactedSecretLength is the shortest content the redactor treats as
+// sensitive. A shorter value is too likely to appear in ordinary provider
+// prose to be worth removing.
+const minRedactedSecretLength = 8
+
+// newRedactor collects the content that must not reach an error message.
+func (c *systemOneClient) newRedactor(request lebro.DecisionRequest, extra func(lebro.DecisionRequest) []string) *requestRedactor {
+	redactor := &requestRedactor{}
+	// The credential is always sensitive, whatever its length.
+	if c.credential != "" {
+		redactor.secrets = append(redactor.secrets, c.credential)
+	}
+	redactor.addContent(request.State)
+	for _, question := range request.Questions {
+		switch typed := question.(type) {
+		case lebro.NoulQuestion:
+			redactor.addContent(typed.Instructions)
+			if typed.Criteria != nil {
+				redactor.addContent(typed.Criteria.True)
+				redactor.addContent(typed.Criteria.False)
+			}
+		case lebro.ChoiceQuestion:
+			redactor.addContent(typed.Instructions)
+			for _, description := range typed.Criteria {
+				redactor.addContent(description)
+			}
+		case lebro.ScoreQuestion:
+			redactor.addContent(typed.Instructions)
+			for _, description := range typed.Criteria {
+				redactor.addContent(description)
+			}
+		}
+	}
+	if extra != nil {
+		for _, secret := range extra(request) {
+			if secret != "" {
+				redactor.secrets = append(redactor.secrets, secret)
+			}
+		}
+	}
+	return redactor
+}
+
+// addContent records one request value as sensitive.
+func (r *requestRedactor) addContent(value lebro.JSONValue) {
+	if value == nil {
+		return
+	}
+	if text, ok := value.(string); ok {
+		if len(strings.TrimSpace(text)) >= minRedactedSecretLength {
+			r.secrets = append(r.secrets, text)
+		}
+		return
+	}
+	if encoded, err := json.Marshal(value); err == nil {
+		if len(encoded) >= minRedactedSecretLength {
+			r.secrets = append(r.secrets, string(encoded))
+		}
+	}
+}
+
+// redact removes every recorded secret from the text.
+func (r *requestRedactor) redact(text string) string {
+	if r == nil || text == "" {
+		return text
+	}
+	for _, secret := range r.secrets {
+		if secret == "" {
+			continue
+		}
+		if strings.Contains(text, secret) {
+			text = strings.ReplaceAll(text, secret, "[redacted]")
+		}
+	}
+	return text
 }
 
 // failure builds a normalized failure.
@@ -544,10 +698,25 @@ func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQues
 	switch typed := question.(type) {
 	case lebro.NoulQuestion:
 		return mapSystemOneNoul(id, raw)
+	case *lebro.NoulQuestion:
+		if typed == nil {
+			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+		}
+		return mapSystemOneNoul(id, raw)
 	case lebro.ChoiceQuestion:
 		return mapSystemOneChoice(id, typed, raw)
+	case *lebro.ChoiceQuestion:
+		if typed == nil {
+			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+		}
+		return mapSystemOneChoice(id, *typed, raw)
 	case lebro.ScoreQuestion:
 		return mapSystemOneScore(id, typed, raw, mapping)
+	case *lebro.ScoreQuestion:
+		if typed == nil {
+			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+		}
+		return mapSystemOneScore(id, *typed, raw, mapping)
 	default:
 		return nil, fmt.Errorf("lebro: decision question %q has an unsupported type %T", id, question)
 	}
@@ -651,28 +820,31 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 	}
 	switch mapping {
 	case scoreWinnerAndExpectation:
-		if raw.Score != nil {
-			level, err := strconv.Atoi(raw.Score.String())
-			if err != nil {
-				return nil, fmt.Errorf("lebro: decision question %q returned a score level that is not an integer", id)
-			}
-			if level < 0 || level >= len(question.Criteria) {
-				return nil, fmt.Errorf("lebro: decision question %q returned score level %d, outside the requested range", id, level)
-			}
-			answer.SelectedLevel = &level
+		if raw.Score == nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned no winning score level", id)
 		}
-		if raw.ExpectedLevel != nil {
-			expected := *raw.ExpectedLevel
-			answer.ExpectedLevel = &expected
+		level, err := strconv.Atoi(raw.Score.String())
+		if err != nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned a score level that is not an integer", id)
 		}
+		if level < 0 || level >= len(question.Criteria) {
+			return nil, fmt.Errorf("lebro: decision question %q returned score level %d, outside the requested range", id, level)
+		}
+		answer.SelectedLevel = &level
+		if raw.ExpectedLevel == nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned no expected level", id)
+		}
+		expected := *raw.ExpectedLevel
+		answer.ExpectedLevel = &expected
 	default:
-		if raw.Score != nil {
-			expected, err := raw.Score.Float64()
-			if err != nil {
-				return nil, fmt.Errorf("lebro: decision question %q returned a score that is not a number", id)
-			}
-			answer.ExpectedLevel = &expected
+		if raw.Score == nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned no score", id)
 		}
+		expected, err := raw.Score.Float64()
+		if err != nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned a score that is not a number", id)
+		}
+		answer.ExpectedLevel = &expected
 	}
 	if raw.Confidence != nil {
 		if err := checkProbability(*raw.Confidence); err != nil {
@@ -751,8 +923,30 @@ func checkProbability(probability float64) error {
 func buildSystemOneQuestions(questions map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error) {
 	rendered := make(map[string]any, len(questions))
 	for id, question := range questions {
-		switch typed := question.(type) {
-		case lebro.NoulQuestion:
+		typedNoul, isNoul := question.(lebro.NoulQuestion)
+		if pointer, ok := question.(*lebro.NoulQuestion); ok {
+			if pointer == nil {
+				return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+			}
+			typedNoul, isNoul = *pointer, true
+		}
+		typedChoice, isChoice := question.(lebro.ChoiceQuestion)
+		if pointer, ok := question.(*lebro.ChoiceQuestion); ok {
+			if pointer == nil {
+				return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+			}
+			typedChoice, isChoice = *pointer, true
+		}
+		typedScore, isScore := question.(lebro.ScoreQuestion)
+		if pointer, ok := question.(*lebro.ScoreQuestion); ok {
+			if pointer == nil {
+				return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+			}
+			typedScore, isScore = *pointer, true
+		}
+		switch {
+		case isNoul:
+			typed := typedNoul
 			wire := map[string]any{
 				"type":         "noul",
 				"instructions": typed.Instructions,
@@ -770,7 +964,8 @@ func buildSystemOneQuestions(questions map[lebro.DecisionQuestionID]lebro.Decisi
 				}
 			}
 			rendered[string(id)] = wire
-		case lebro.ChoiceQuestion:
+		case isChoice:
+			typed := typedChoice
 			criteria := make(map[string]any, len(typed.Criteria))
 			for option, description := range typed.Criteria {
 				criteria[string(option)] = description
@@ -780,7 +975,8 @@ func buildSystemOneQuestions(questions map[lebro.DecisionQuestionID]lebro.Decisi
 				"instructions": typed.Instructions,
 				"criteria":     criteria,
 			}
-		case lebro.ScoreQuestion:
+		case isScore:
+			typed := typedScore
 			criteria := make([]any, 0, len(typed.Criteria))
 			for _, description := range typed.Criteria {
 				criteria = append(criteria, description)
@@ -804,8 +1000,30 @@ func buildSystemOneQuestions(questions map[lebro.DecisionQuestionID]lebro.Decisi
 func buildTextOnlyQuestions(questions map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error) {
 	rendered := make(map[string]any, len(questions))
 	for id, question := range questions {
-		switch typed := question.(type) {
-		case lebro.NoulQuestion:
+		typedNoul, isNoul := question.(lebro.NoulQuestion)
+		if pointer, ok := question.(*lebro.NoulQuestion); ok {
+			if pointer == nil {
+				return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+			}
+			typedNoul, isNoul = *pointer, true
+		}
+		typedChoice, isChoice := question.(lebro.ChoiceQuestion)
+		if pointer, ok := question.(*lebro.ChoiceQuestion); ok {
+			if pointer == nil {
+				return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+			}
+			typedChoice, isChoice = *pointer, true
+		}
+		typedScore, isScore := question.(lebro.ScoreQuestion)
+		if pointer, ok := question.(*lebro.ScoreQuestion); ok {
+			if pointer == nil {
+				return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
+			}
+			typedScore, isScore = *pointer, true
+		}
+		switch {
+		case isNoul:
+			typed := typedNoul
 			instructions, err := textInstruction(id, typed.Instructions)
 			if err != nil {
 				return nil, err
@@ -835,7 +1053,8 @@ func buildTextOnlyQuestions(questions map[lebro.DecisionQuestionID]lebro.Decisio
 				}
 			}
 			rendered[string(id)] = wire
-		case lebro.ChoiceQuestion:
+		case isChoice:
+			typed := typedChoice
 			instructions, err := textInstruction(id, typed.Instructions)
 			if err != nil {
 				return nil, err
@@ -853,7 +1072,8 @@ func buildTextOnlyQuestions(questions map[lebro.DecisionQuestionID]lebro.Decisio
 				"instructions": instructions,
 				"criteria":     criteria,
 			}
-		case lebro.ScoreQuestion:
+		case isScore:
+			typed := typedScore
 			instructions, err := textInstruction(id, typed.Instructions)
 			if err != nil {
 				return nil, err

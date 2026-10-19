@@ -89,6 +89,100 @@ func TestSubQEncodesImagesForTheWire(t *testing.T) {
 	}
 }
 
+// TestSubQEncodesEveryAcceptedFormat pins that every accepted media type
+// reaches the wire with its own media type and a single line of base64.
+func TestSubQEncodesEveryAcceptedFormat(t *testing.T) {
+	formats := []struct {
+		mediaType string
+		payload   []byte
+	}{
+		{mediaType: "image/png", payload: []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}},
+		{mediaType: "image/jpeg", payload: []byte{0xff, 0xd8, 0xff, 0xe0}},
+		{mediaType: "image/webp", payload: []byte("RIFF\x00\x00\x00\x00WEBP")},
+	}
+	for _, format := range formats {
+		t.Run(format.mediaType, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"model":"subq-snap-preview","answers":{"q":{"type":"noul","noul":0.5}}}`))
+			}))
+			defer server.Close()
+
+			model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatalf("NewSubQ() error = %v", err)
+			}
+			if _, err := model.Decide(context.Background(), lebro.DecisionRequest{
+				State:  "state",
+				Images: []lebro.DecisionImage{{MediaType: format.mediaType, Bytes: format.payload}},
+				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+					"q": lebro.NoulQuestion{Instructions: "Is it?"},
+				},
+			}); err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			images, ok := body["images"].([]any)
+			if !ok || len(images) != 1 {
+				t.Fatalf("request images = %#v, want one image", body["images"])
+			}
+			image, ok := images[0].(map[string]any)
+			if !ok {
+				t.Fatalf("request image = %#v, want an object", images[0])
+			}
+			if image["mediaType"] != format.mediaType {
+				t.Fatalf("image media type = %#v, want %q", image["mediaType"], format.mediaType)
+			}
+			encoded, ok := image["base64"].(string)
+			if !ok {
+				t.Fatalf("image payload = %#v, want a string", image["base64"])
+			}
+			if strings.ContainsAny(encoded, "\r\n") {
+				t.Fatal("the image payload is not a single line of base64")
+			}
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				t.Fatalf("decode the image payload: %v", err)
+			}
+			if !bytes.Equal(decoded, format.payload) {
+				t.Fatalf("the image payload = %v, want %v", decoded, format.payload)
+			}
+		})
+	}
+}
+
+// TestSubQSurfacesAMediaTypeMismatch pins that bytes that do not match the
+// declared media type are the provider's call: the request is sent, and the
+// provider's validation failure comes back as an invalid request.
+func TestSubQSurfacesAMediaTypeMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"detail":{"error_type":"validation_error","message":"images/0: image bytes must match the PNG, JPEG, or WebP mediaType."}}`))
+	}))
+	defer server.Close()
+
+	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, MaxRetries: intPointer(0)})
+	if err != nil {
+		t.Fatalf("NewSubQ() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		State: "state",
+		// JPEG bytes declared as PNG.
+		Images: []lebro.DecisionImage{{MediaType: "image/png", Bytes: []byte{0xff, 0xd8, 0xff, 0xe0}}},
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"q": lebro.NoulQuestion{Instructions: "Is it?"},
+		},
+	})
+	if !errors.Is(err, lebro.ErrDecisionInvalidRequest) {
+		t.Fatalf("Decide() error = %v, want an invalid request failure", err)
+	}
+}
+
 // TestSubQRejectsUnsupportedImagesBeforeHTTP pins that image requests the
 // provider cannot accept fail locally and never reach the network.
 func TestSubQRejectsUnsupportedImagesBeforeHTTP(t *testing.T) {
@@ -225,7 +319,15 @@ func TestSubQRejectsRemoteImageReferences(t *testing.T) {
 // TestSubQRejectsEmptyImageBytes pins that an image without bytes is
 // rejected before the request is sent.
 func TestSubQRejectsEmptyImageBytes(t *testing.T) {
-	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: "https://api.subq.ai"})
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"subq-snap-preview","answers":{}}`))
+	}))
+	defer server.Close()
+
+	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL})
 	if err != nil {
 		t.Fatalf("NewSubQ() error = %v", err)
 	}
@@ -237,22 +339,26 @@ func TestSubQRejectsEmptyImageBytes(t *testing.T) {
 	if !errors.Is(err, lebro.ErrDecisionInvalidRequest) {
 		t.Fatalf("Decide() error = %v, want an invalid request error", err)
 	}
+	if requests != 0 {
+		t.Fatalf("the provider received %d requests, want none", requests)
+	}
 }
 
 // TestSubQMapsStatusCodes pins the normalized failure categories.
 func TestSubQMapsStatusCodes(t *testing.T) {
 	cases := []struct {
-		status int
-		body   string
-		want   lebro.DecisionErrorKind
+		status  int
+		body    string
+		want    lebro.DecisionErrorKind
+		message string
 	}{
-		{status: http.StatusBadRequest, body: `{"detail":{"error_type":"validation_error","message":"bad request"}}`, want: lebro.DecisionErrorInvalidRequest},
-		{status: http.StatusUnauthorized, body: `{"detail":{"error_type":"auth","message":"missing key"}}`, want: lebro.DecisionErrorAuthentication},
-		{status: http.StatusPaymentRequired, body: `{"detail":{"error_type":"billing","message":"out of credits"}}`, want: lebro.DecisionErrorPermissionDenied},
-		{status: http.StatusForbidden, body: `{"detail":{"error_type":"forbidden","message":"model not allowed"}}`, want: lebro.DecisionErrorPermissionDenied},
-		{status: http.StatusUnprocessableEntity, body: `{"detail":{"error_type":"validation_error","message":"images/0: image bytes must match the PNG, JPEG, or WebP mediaType."}}`, want: lebro.DecisionErrorInvalidRequest},
-		{status: http.StatusTooManyRequests, body: `{"detail":{"error_type":"rate_limit","message":"slow down"}}`, want: lebro.DecisionErrorRateLimited},
-		{status: http.StatusServiceUnavailable, body: `{"detail":{"error_type":"unavailable","message":"try later"}}`, want: lebro.DecisionErrorUnavailable},
+		{status: http.StatusBadRequest, body: `{"detail":{"error_type":"validation_error","message":"bad request"}}`, want: lebro.DecisionErrorInvalidRequest, message: "bad request"},
+		{status: http.StatusUnauthorized, body: `{"detail":{"error_type":"auth","message":"missing key"}}`, want: lebro.DecisionErrorAuthentication, message: "missing key"},
+		{status: http.StatusPaymentRequired, body: `{"detail":{"error_type":"billing","message":"out of credits"}}`, want: lebro.DecisionErrorPermissionDenied, message: "out of credits"},
+		{status: http.StatusForbidden, body: `{"detail":{"error_type":"forbidden","message":"model not allowed"}}`, want: lebro.DecisionErrorPermissionDenied, message: "model not allowed"},
+		{status: http.StatusUnprocessableEntity, body: `{"detail":{"error_type":"validation_error","message":"images/0: image bytes must match the PNG, JPEG, or WebP mediaType."}}`, want: lebro.DecisionErrorInvalidRequest, message: "image bytes must match"},
+		{status: http.StatusTooManyRequests, body: `{"detail":{"error_type":"rate_limit","message":"slow down"}}`, want: lebro.DecisionErrorRateLimited, message: "slow down"},
+		{status: http.StatusServiceUnavailable, body: `{"detail":{"error_type":"unavailable","message":"try later"}}`, want: lebro.DecisionErrorUnavailable, message: "try later"},
 	}
 	for _, testCase := range cases {
 		t.Run(http.StatusText(testCase.status), func(t *testing.T) {
@@ -284,8 +390,8 @@ func TestSubQMapsStatusCodes(t *testing.T) {
 			if decisionErr.StatusCode != testCase.status {
 				t.Fatalf("Decide() status = %d, want %d", decisionErr.StatusCode, testCase.status)
 			}
-			if !strings.Contains(decisionErr.Message, "") || decisionErr.Message == "" {
-				t.Fatalf("Decide() message = %q, want the provider description", decisionErr.Message)
+			if !strings.Contains(decisionErr.Message, testCase.message) {
+				t.Fatalf("Decide() message = %q, want it to contain %q", decisionErr.Message, testCase.message)
 			}
 		})
 	}

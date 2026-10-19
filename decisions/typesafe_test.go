@@ -184,9 +184,10 @@ func TestTypeSafeRejectsImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTypeSafe() error = %v", err)
 	}
+	payload := "not-an-image-payload-3f9a2b"
 	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
 		State:  "state",
-		Images: []lebro.DecisionImage{{MediaType: "image/png", Bytes: []byte("not-an-image")}},
+		Images: []lebro.DecisionImage{{MediaType: "image/png", Bytes: []byte(payload)}},
 		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
 			"q": lebro.NoulQuestion{Instructions: "Is it?"},
 		},
@@ -196,6 +197,9 @@ func TestTypeSafeRejectsImages(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("the provider received %d requests, want none", requests)
+	}
+	if strings.Contains(err.Error(), payload) {
+		t.Fatalf("Decide() error = %v, want the image payload kept out of the message", err)
 	}
 }
 

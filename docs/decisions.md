@@ -103,8 +103,7 @@ provider documents no limit, not that the limit is zero.
 | Capability | TypeSafe (Jev) | Fastino (GLiDE) | SubQ (Snap preview) |
 | --- | --- | --- | --- |
 | Endpoint | `POST https://api.typesafe.ai/v1/systemone` | `POST https://api.fastino.ai/v1/systemone` | `POST https://api.subq.ai/v1/systemone` |
-| Model | `jev-latest` (the response echoes the concrete model) | `fastino/GLiDE` (the response echoes `glide`) | `subq-snap-preview` |
-| Authentication | `Authorization: Bearer` | `X-API-Key` | `Authorization: Bearer` |
+| Model | `jev-latest` (the response echoes the concrete model) | `fastino/GLiDE` (the response echoes `glide`) | `subq-snap-preview` || Authentication | `Authorization: Bearer` | `X-API-Key` | `Authorization: Bearer` |
 | Noul, Choice, Score | yes | yes | yes |
 | Multiple questions | yes | yes | yes, up to 16 |
 | Structured state | yes | yes | yes |
@@ -118,6 +117,7 @@ provider documents no limit, not that the limit is zero.
 | Maximum choice options | 255 | 255 | 255 |
 | Maximum score levels | 10 | 255 | 10 |
 | Request body limit | 32 MiB | not documented as a byte limit | 13 MiB |
+| Context window | not documented | about 40,000 tokens per rendered question | 384K tokens (393,216) |
 | Batching | no | no | no |
 | Retryable statuses | 429, 529 | 425, 429, 503 | 429, 503 |
 | Score answer | weighted value, no winning level | winning level and weighted value | weighted value, no winning level |
@@ -127,6 +127,32 @@ TypeSafe documents an image capability of its own. This release does not expose
 it, so the adapter advertises no image support rather than guessing at a wire
 format the release does not implement.
 
+A model identifier is configuration, not a library assumption: each adapter
+sends the model from its configuration, or the model a request names, and
+never rewrites it. The defaults in the matrix are the identifiers the
+providers document today, and `Config.Model` overrides them for an account
+that uses a different alias or a pinned version.
+
+### Running the same adapter through a gateway
+
+A gateway that fronts a System One provider speaks the same protocol, so the
+adapter needs a different endpoint, credential, and model alias and nothing
+else. The application code, the questions, and the answers stay identical:
+
+```go
+model, err := decisions.NewTypeSafe(decisions.TypeSafeConfig{
+    APIKey:  os.Getenv("OPENROUTER_API_KEY"),
+    BaseURL: "https://openrouter.ai/api",
+    Model:   "~typesafe/jev-latest",
+})
+```
+
+The request reaches the provider through the gateway, and the answers keep
+the provider's semantics: a noul answer from Jev still carries no
+confidence, and a score answer still carries no native winner. The gateway
+reports the request identity in its own response header, which the adapter
+reads alongside the provider's.
+
 Fastino accepts text instructions and text criteria only. A request that
 carries structured instructions or criteria fails with
 `lebro.ErrDecisionInvalidRequest` before anything is sent, because the
@@ -135,8 +161,10 @@ provider does not describe a structured form for them.
 ## Image inputs
 
 Image input is an optional, capability-gated part of the contract. A
-`lebro.DecisionImage` carries a media type and raw bytes. It never carries a
-URL, a file path, or a data URL, and an adapter never fetches one.
+`lebro.DecisionImage` carries a media type and raw bytes. It holds image
+data, not a reference to it: an adapter never fetches an image, and a URL or
+a data URL is rejected locally because it is not image data. A file path is
+not image data either, and the provider rejects it as invalid bytes.
 
 An adapter rejects a non-empty `Images` slice before it makes an HTTP request
 unless its advertised `DecisionCapabilities.Images` allows the media type and
@@ -259,6 +287,7 @@ is a separate, opt-in check that needs a credential:
 LEBRO_TYPESAFE_API_KEY=... go test ./decisions/ -run TestLiveTypeSafe -v
 LEBRO_FASTINO_API_KEY=... go test ./decisions/ -run TestLiveFastino -v
 LEBRO_SUBQ_API_KEY=... go test ./decisions/ -run TestLiveSubQ -v
+LEBRO_OPENROUTER_API_KEY=... go test ./decisions/ -run TestLiveTypeSafeViaOpenRouter -v
 ```
 
 Each run reports the provider, the model the provider echoed, the latency,

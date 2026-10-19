@@ -14,6 +14,11 @@ const (
 	fastinoModel    = "fastino/GLiDE"
 )
 
+// fastinoRetryableStatuses are the HTTP status codes Fastino documents as
+// retryable. The client and the advertised capability share this list so the
+// two cannot drift apart.
+var fastinoRetryableStatuses = []int{http.StatusTooEarly, http.StatusTooManyRequests, http.StatusServiceUnavailable}
+
 // FastinoConfig configures the Fastino GLiDE decision adapter. APIKey is
 // required; every other field has a documented default.
 type FastinoConfig struct {
@@ -68,7 +73,7 @@ func NewFastino(config FastinoConfig) (*FastinoModel, error) {
 		"",
 		config.APIKey,
 		model,
-		[]int{http.StatusTooEarly, http.StatusTooManyRequests, http.StatusServiceUnavailable},
+		fastinoRetryableStatuses,
 		httpClientConfig{
 			client:       config.HTTPClient,
 			timeout:      config.Timeout,
@@ -142,6 +147,6 @@ func fastinoCapabilities() lebro.DecisionCapabilities {
 		Confidence:        true,
 		Batching:          false,
 		MaxStateBytes:     0,
-		RetryableStatuses: []int{http.StatusTooEarly, http.StatusTooManyRequests, http.StatusServiceUnavailable},
+		RetryableStatuses: fastinoRetryableStatuses,
 	}
 }

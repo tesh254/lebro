@@ -2,11 +2,11 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestDecisionRequestValidate(t *testing.T) {
@@ -444,6 +444,89 @@ func TestDecisionResponseValidate(t *testing.T) {
 			want: "requires a selected option",
 		},
 		{
+			name: "choice probability out of range",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"a": 1.2}},
+				},
+			},
+			want: "must be between 0 and 1",
+		},
+		{
+			name: "choice option without an ID",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"": 1}},
+				},
+			},
+			want: "empty option ID",
+		},
+		{
+			name: "valid choice",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"a": 0.7, "b": 0.3}},
+				},
+			},
+		},
+		{
+			name: "valid score",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ScoreAnswer{
+						ExpectedLevel: float64Pointer(1.4),
+						Probabilities: map[int]float64{0: 0.2, 1: 0.2, 2: 0.6},
+						Provenance:    ScoreNative,
+					},
+				},
+			},
+		},
+		{
+			name: "score probability out of range",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ScoreAnswer{Probabilities: map[int]float64{0: 1.5}, Provenance: ScoreNative},
+				},
+			},
+			want: "must be between 0 and 1",
+		},
+		{
+			name: "negative score level",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ScoreAnswer{Probabilities: map[int]float64{-1: 1}, Provenance: ScoreNative},
+				},
+			},
+			want: "level must not be negative",
+		},
+		{
+			name: "unknown score provenance",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ScoreAnswer{Provenance: ScoreProvenance("derived")},
+				},
+			},
+			want: "not a known provenance",
+		},
+		{
+			name: "missing score provenance",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ScoreAnswer{},
+				},
+			},
+			want: "not a known provenance",
+		},
+		{
+			name: "score confidence out of range",
+			response: DecisionResponse{
+				Answers: map[DecisionQuestionID]DecisionAnswer{
+					"q": ScoreAnswer{Confidence: float64Pointer(1.2), Provenance: ScoreNative},
+				},
+			},
+			want: "must be between 0 and 1",
+		},
+		{
 			name: "negative attempts",
 			response: DecisionResponse{
 				Attempts: -1,
@@ -613,13 +696,136 @@ func TestDecisionGateValidate(t *testing.T) {
 	}
 }
 
-func TestDecisionErrorDurationIsUnaffected(t *testing.T) {
-	failure := &DecisionError{Kind: DecisionErrorTimeout, RetryAfter: 2 * time.Second}
-	if failure.RetryAfter != 2*time.Second {
-		t.Fatalf("RetryAfter = %v, want 2s", failure.RetryAfter)
-	}
-}
-
 func float64Pointer(value float64) *float64 { return &value }
 
 func int64Pointer(value int64) *int64 { return &value }
+
+// TestDecisionGateFailsClosed pins that a gate which does not validate
+// recommends a review instead of selecting on thresholds it cannot trust.
+func TestDecisionGateFailsClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		gate DecisionGate
+	}{
+		{name: "zero value", gate: DecisionGate{}},
+		{name: "not a number", gate: DecisionGate{SelectProbability: math.NaN(), EscalateProbability: 0.1}},
+		{name: "inverted", gate: DecisionGate{SelectProbability: 0.1, EscalateProbability: 0.9}},
+		{name: "infinite confidence", gate: DecisionGate{SelectProbability: 0.9, EscalateProbability: 0.1, MinimumConfidence: float64Pointer(math.Inf(1))}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			answer := NoulAnswer{ProbabilityYes: 0.99, Confidence: float64Pointer(0.99)}
+			if got := testCase.gate.Noul(answer); got != DecisionOutcomeReview {
+				t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeReview)
+			}
+		})
+	}
+}
+
+// TestDecisionRequestValidateRejectsByteSlices pins that a byte slice is
+// not a JSON value: encoding/json would turn it into a base64 string.
+func TestDecisionRequestValidateRejectsByteSlices(t *testing.T) {
+	request := DecisionRequest{
+		State: []byte("state"),
+		Questions: map[DecisionQuestionID]DecisionQuestion{
+			"q": NoulQuestion{Instructions: "Is it?"},
+		},
+	}
+	err := request.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want a byte slice to be rejected")
+	}
+	if !strings.Contains(err.Error(), "base64 string") {
+		t.Fatalf("Validate() error = %v, want it to mention the base64 encoding", err)
+	}
+}
+
+// TestDecisionRequestValidateAcceptsRawMessage pins that raw JSON is still
+// accepted, because it is already a JSON value.
+func TestDecisionRequestValidateAcceptsRawMessage(t *testing.T) {
+	request := DecisionRequest{
+		State: json.RawMessage(`{"order":"A-104"}`),
+		Questions: map[DecisionQuestionID]DecisionQuestion{
+			"q": NoulQuestion{Instructions: "Is it?"},
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+// TestDecisionRequestValidateChecksImageFormat pins that the bytes must
+// match the media type they declare.
+func TestDecisionRequestValidateChecksImageFormat(t *testing.T) {
+	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a}
+	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0}
+	webp := []byte("RIFF\x00\x00\x00\x00WEBP")
+	cases := []struct {
+		name      string
+		mediaType string
+		bytes     []byte
+		want      string
+	}{
+		{name: "png", mediaType: "image/png", bytes: png},
+		{name: "jpeg", mediaType: "image/jpeg", bytes: jpeg},
+		{name: "webp", mediaType: "image/webp", bytes: webp},
+		{name: "png declared as jpeg", mediaType: "image/jpeg", bytes: png, want: "do not match the declared media type"},
+		{name: "jpeg declared as png", mediaType: "image/png", bytes: jpeg, want: "do not match the declared media type"},
+		{name: "not an image", mediaType: "image/png", bytes: []byte("just some text"), want: "do not match the declared media type"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := DecisionRequest{
+				State:  "state",
+				Images: []DecisionImage{{MediaType: testCase.mediaType, Bytes: testCase.bytes}},
+				Questions: map[DecisionQuestionID]DecisionQuestion{
+					"q": NoulQuestion{Instructions: "Is it?"},
+				},
+			}
+			err := request.Validate()
+			if testCase.want == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Validate() error = nil, want %q", testCase.want)
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("Validate() error = %v, want it to mention %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// TestDecisionRequestValidateAcceptsPointerQuestions pins that the pointer
+// forms of the closed question set validate like the value forms.
+func TestDecisionRequestValidateAcceptsPointerQuestions(t *testing.T) {
+	noul := NoulQuestion{Instructions: "Is it?"}
+	choice := ChoiceQuestion{Instructions: "Which one?", Criteria: map[DecisionOptionID]JSONValue{"a": "one", "b": "two"}}
+	score := ScoreQuestion{Instructions: "How much?", Criteria: []JSONValue{"low", "high"}}
+	request := DecisionRequest{
+		State: "state",
+		Questions: map[DecisionQuestionID]DecisionQuestion{
+			"noul":   &noul,
+			"choice": &choice,
+			"score":  &score,
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+// TestDecisionResponseValidateAcceptsPointerAnswers pins the same for the
+// answer set.
+func TestDecisionResponseValidateAcceptsPointerAnswers(t *testing.T) {
+	noul := NoulAnswer{ProbabilityYes: 0.5}
+	response := DecisionResponse{
+		Answers: map[DecisionQuestionID]DecisionAnswer{"q": &noul},
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}

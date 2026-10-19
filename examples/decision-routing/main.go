@@ -83,10 +83,12 @@ func run(output io.Writer) error {
 	outcome := gate.Noul(noul)
 	fmt.Fprintf(output, "eligibility: probability=%.3f outcome=%s\n", noul.ProbabilityYes, outcome)
 	if outcome != lebro.DecisionOutcomeSelect {
-		fmt.Fprint(output, "action: routed to a human review queue\n")
-		return nil
+		fmt.Fprint(output, "recommendation: route to a human review queue\n")
+	} else {
+		// The gate recommends; it does not authorize. The refund policy
+		// still decides, and the approval path still runs.
+		fmt.Fprint(output, "recommendation: refund eligible, route to the refund approval policy\n")
 	}
-	fmt.Fprint(output, "action: the refund can be issued automatically\n")
 
 	// Composite scoring combines two independent score answers with weights
 	// the application owns. The model supplies the levels; the application
@@ -123,9 +125,41 @@ func run(output io.Writer) error {
 		*urgency.ExpectedLevel, *impact.ExpectedLevel, combined)
 	if combined >= 1.5 {
 		fmt.Fprint(output, "action: escalate to a human, the combined score is high\n")
-		return nil
+	} else {
+		fmt.Fprint(output, "action: handle on the normal queue\n")
 	}
-	fmt.Fprint(output, "action: handle on the normal queue\n")
+
+	// A decision can also select the handler. The option identifiers are the
+	// application's own, so switching from a deterministic reply to a
+	// specialist agent to a human is a configuration change, not a rewrite.
+	handling, err := model.Decide(context.Background(), lebro.DecisionRequest{
+		State: state,
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"handler": lebro.ChoiceQuestion{
+				Instructions: "Who should handle this request?",
+				Criteria: map[lebro.DecisionOptionID]lebro.JSONValue{
+					"auto_reply":       "A deterministic reply handles it",
+					"specialist_agent": "A specialist agent handles it",
+					"human_review":     "A person reviews it",
+				},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	handler, ok := handling.Answers["handler"].(lebro.ChoiceAnswer)
+	if !ok {
+		return fmt.Errorf("expected a choice answer, got %T", handling.Answers["handler"])
+	}
+	switch handler.Choice {
+	case "auto_reply":
+		fmt.Fprint(output, "handler: deterministic reply\n")
+	case "specialist_agent":
+		fmt.Fprint(output, "handler: specialist agent\n")
+	default:
+		fmt.Fprint(output, "handler: human review\n")
+	}
 	return nil
 }
 
@@ -175,23 +209,37 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			answers[id] = lebro.NoulAnswer{ProbabilityYes: 0.93, Confidence: &confidence}
 		case lebro.ChoiceQuestion:
 			options := sortedOptionIDs(typed.Criteria)
-			probabilities := make(map[lebro.DecisionOptionID]float64, len(options))
-			for _, option := range options {
-				probabilities[option] = 1 / float64(len(options)+1)
+			selected := options[0]
+			// The fixture routes to a specialist whenever the caller offers
+			// one, and to billing otherwise.
+			if _, offered := typed.Criteria["specialist_agent"]; offered {
+				selected = "specialist_agent"
 			}
-			probabilities["billing"] = 0.7
+			probabilities := make(map[lebro.DecisionOptionID]float64, len(options))
+			rest := 0.3 / float64(len(options)-1)
+			for _, option := range options {
+				if option == selected {
+					continue
+				}
+				probabilities[option] = rest
+			}
+			probabilities[selected] = 0.7
 			confidence := 0.62
-			answers[id] = lebro.ChoiceAnswer{Choice: "billing", Probabilities: probabilities, Confidence: &confidence}
+			answers[id] = lebro.ChoiceAnswer{Choice: selected, Probabilities: probabilities, Confidence: &confidence}
 		case lebro.ScoreQuestion:
 			levels := len(typed.Criteria)
 			probabilities := make(map[int]float64, levels)
 			legend := make(map[int]lebro.JSONValue, levels)
+			rest := 0.2 / float64(levels-1)
 			for level := range typed.Criteria {
-				probabilities[level] = 1 / float64(levels)
+				probabilities[level] = rest
 				legend[level] = typed.Criteria[level]
 			}
 			probabilities[levels-1] = 0.8
-			expected := float64(levels-1) * 0.8
+			expected := 0.0
+			for level, probability := range probabilities {
+				expected += float64(level) * probability
+			}
 			selected := levels - 1
 			confidence := 0.74
 			answers[id] = lebro.ScoreAnswer{
