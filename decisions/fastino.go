@@ -1,9 +1,7 @@
 package decisions
 
 import (
-	"context"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -46,18 +44,12 @@ type FastinoConfig struct {
 	DisableStorage bool
 }
 
-// FastinoModel adapts Fastino GLiDE to [github.com/tesh254/lebro.DecisionModel].
-// Use [NewFastino] to create instances. The adapter is safe for concurrent
-// use.
-type FastinoModel struct {
-	client  *systemOneClient
-	profile systemOneProfile
-}
-
-var _ lebro.DecisionModel = (*FastinoModel)(nil)
-
 // NewFastino builds a Fastino GLiDE decision adapter.
-func NewFastino(config FastinoConfig) (*FastinoModel, error) {
+//
+// The adapter is a [SystemOneModel] configured with Fastino's documented
+// contract. GLiDE reports a winning score level and a separate
+// probability-weighted value, and the adapter keeps the two apart.
+func NewFastino(config FastinoConfig) (*SystemOneModel, error) {
 	baseURL := config.BaseURL
 	if baseURL == "" {
 		baseURL = fastinoBaseURL
@@ -66,88 +58,34 @@ func NewFastino(config FastinoConfig) (*FastinoModel, error) {
 	if model == "" {
 		model = fastinoModel
 	}
-	client, err := newSystemOneClient(
-		fastinoProvider,
-		baseURL,
-		systemOnePath,
-		"X-API-Key",
-		"",
-		config.APIKey,
-		model,
-		fastinoRetryableStatuses,
-		httpClientConfig{
-			client:       config.HTTPClient,
-			timeout:      config.Timeout,
-			maxRetries:   config.MaxRetries,
-			retryBackoff: config.RetryBackoff,
+	return NewSystemOne(SystemOneConfig{
+		APIKey:     config.APIKey,
+		BaseURL:    baseURL,
+		AuthHeader: "X-API-Key",
+		ProviderID: lebro.ProviderID(fastinoProvider),
+		Model:      model,
+		Score:      SystemOneScoreFields{Weighted: "expected_level", Winner: "score"},
+		Capabilities: lebro.DecisionCapabilities{
+			Noul:                   true,
+			Choice:                 true,
+			Score:                  true,
+			MultipleQuestions:      true,
+			StructuredState:        true,
+			StructuredInstructions: false,
+			Distributions:          true,
+			Confidence:             true,
+			Batching:               false,
+			MaxStateBytes:          0,
+			MaxQuestions:           0,
+			MaxChoiceOptions:       255,
+			MaxScoreLevels:         255,
 		},
-	)
-	if err != nil {
-		return nil, err
-	}
-	disableStorage := config.DisableStorage
-	return &FastinoModel{
-		client: client,
-		profile: systemOneProfile{
-			provider:     fastinoProvider,
-			capabilities: fastinoCapabilities(),
-			scoreMapping: scoreWinnerAndExpectation,
-			buildQuestions: func(questions map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error) {
-				return buildTextOnlyQuestions(questions)
-			},
-			extraFields: func(lebro.DecisionRequest) map[string]any {
-				if !disableStorage {
-					return nil
-				}
-				return map[string]any{"store": false}
-			},
-		},
-	}, nil
-}
-
-// ProviderID identifies the adapter.
-func (m *FastinoModel) ProviderID() lebro.ProviderID {
-	return lebro.ProviderID(fastinoProvider)
-}
-
-// Capabilities describes what Fastino supports. Image inputs are not
-// advertised: this adapter does not expose them.
-func (m *FastinoModel) Capabilities() lebro.DecisionCapabilities {
-	return fastinoCapabilities()
-}
-
-// Decide evaluates the request with GLiDE and returns the typed answers.
-//
-// GLiDE accepts text instructions and text criteria only. A request that
-// carries structured instructions or criteria fails with an invalid-request
-// error before anything is sent, because GLiDE does not describe a structured
-// form for them.
-func (m *FastinoModel) Decide(ctx context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
-	return decide(ctx, m.client, m.profile, request)
-}
-
-// fastinoCapabilities describes the Fastino decision surface.
-//
-// GLiDE reports a winning score level and a separate probability-weighted
-// value, and both are kept. It reports a confidence for every answer type.
-func fastinoCapabilities() lebro.DecisionCapabilities {
-	return lebro.DecisionCapabilities{
-		Noul:                   true,
-		Choice:                 true,
-		Score:                  true,
-		MultipleQuestions:      true,
-		StructuredState:        true,
-		StructuredInstructions: false,
-		Images: lebro.DecisionImageCapabilities{
-			Enabled: false,
-		},
-		MaxQuestions:      0,
-		MaxChoiceOptions:  255,
-		MaxScoreLevels:    255,
-		Distributions:     true,
-		Confidence:        true,
-		Batching:          false,
-		MaxStateBytes:     0,
-		RetryableStatuses: slices.Clone(fastinoRetryableStatuses),
-	}
+		ImageStyle:        SystemOneImagesNone,
+		RetryableStatuses: fastinoRetryableStatuses,
+		DisableStorage:    config.DisableStorage,
+		HTTPClient:        config.HTTPClient,
+		Timeout:           config.Timeout,
+		MaxRetries:        config.MaxRetries,
+		RetryBackoff:      config.RetryBackoff,
+	})
 }

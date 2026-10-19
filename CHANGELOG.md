@@ -32,6 +32,12 @@ All notable changes to this project are documented in this file.
   GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview). Each one is configured
   with its own endpoint, credential, model, HTTP client, timeout, and retry
   policy, and every credential is redacted from errors, logs, and fixtures.
+  The same package exposes the generic form, `decisions.NewSystemOne`, which
+  builds an adapter from a provider's wire contract alone: a provider that is
+  not named here is reachable by configuration, with the score field names,
+  the capabilities, the retryable statuses, and the image style all supplied
+  as data. The named constructors and the generic one return the same
+  `*decisions.SystemOneModel`.
   Retries are bounded, honor `Retry-After`, and never switch providers.
   SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are
   encoded as one line of base64 at the HTTP boundary only, at most four images

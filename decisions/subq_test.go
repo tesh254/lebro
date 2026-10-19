@@ -22,9 +22,10 @@ func subQFixture() decisionFixture {
 		newModel: func(baseURL string) (lebro.DecisionModel, error) {
 			return NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: baseURL, Model: "subq-snap-preview"})
 		},
-		scoreStyle:     scoreWeightedOnly,
-		noulConfidence: false,
-		model:          "subq-snap-preview",
+		scoreWeightedField: "score",
+		scoreWinnerField:   "",
+		noulConfidence:     false,
+		model:              "subq-snap-preview",
 	}
 }
 

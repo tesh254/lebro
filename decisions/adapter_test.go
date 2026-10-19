@@ -24,8 +24,10 @@ type decisionFixture struct {
 	name string
 	// newModel builds the adapter against a test server.
 	newModel func(baseURL string) (lebro.DecisionModel, error)
-	// scoreStyle mirrors how the provider reports a score answer.
-	scoreStyle scoreMapping
+	// scoreWeightedField and scoreWinnerField name the wire fields the
+	// provider uses for a score answer.
+	scoreWeightedField string
+	scoreWinnerField   string
 	// noulConfidence reports whether the provider reports a confidence for a
 	// noul answer.
 	noulConfidence bool
@@ -216,12 +218,10 @@ func renderDecisionWire(request lebro.DecisionRequest, fixture decisionFixture) 
 			if fact.confidence != nil {
 				answer["confidence"] = *fact.confidence
 			}
-			if fixture.scoreStyle == scoreWinnerAndExpectation {
-				answer["score"] = *fact.winner
-				answer["expected_level"] = fact.score
-			} else {
-				answer["score"] = fact.score
+			if fixture.scoreWinnerField != "" {
+				answer[fixture.scoreWinnerField] = *fact.winner
 			}
+			answer[fixture.scoreWeightedField] = fact.score
 			answers[string(id)] = answer
 		}
 	}
@@ -281,7 +281,7 @@ func expectedDecisionResponse(request lebro.DecisionRequest, facts map[lebro.Dec
 				}
 				answer.Legend[index] = description
 			}
-			if fixture.scoreStyle == scoreWinnerAndExpectation {
+			if fixture.scoreWinnerField != "" {
 				winner := *fact.winner
 				answer.SelectedLevel = &winner
 			}

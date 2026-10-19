@@ -134,6 +134,66 @@ never rewrites it. The defaults in the matrix are the identifiers the
 providers document today, and `Config.Model` overrides them for an account
 that uses a different alias or a pinned version.
 
+### The generic System One adapter
+
+The three named adapters are the generic one, configured. Everything that
+differs between the providers is data in `SystemOneConfig`, so a provider
+this package ships no named adapter for is reachable by configuration alone:
+
+```go
+model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
+    APIKey:     os.Getenv("SOME_SYSTEM_ONE_API_KEY"),
+    BaseURL:    "https://api.example.com",
+    AuthHeader: "X-API-Key",
+    Model:      "some-model",
+    Score:      decisions.SystemOneScoreFields{Weighted: "score"},
+    Capabilities: lebro.DecisionCapabilities{
+        Noul: true, Choice: true, Score: true,
+        MultipleQuestions: true, StructuredState: true,
+        StructuredInstructions: true,
+        Distributions: true, Confidence: true,
+        MaxQuestions: 16, MaxChoiceOptions: 255, MaxScoreLevels: 10,
+    },
+    RetryableStatuses: []int{429, 503},
+})
+```
+
+The score field names are the part worth reading twice. A provider reports
+the probability-weighted level in one field, and some report the winning
+level in another, so the names belong to the provider:
+
+| Provider | `SystemOneScoreFields` | Effect |
+| --- | --- | --- |
+| TypeSafe, SubQ | `{Weighted: "score"}` | `ExpectedLevel` is set, `SelectedLevel` stays nil |
+| Fastino | `{Weighted: "expected_level", Winner: "score"}` | `ExpectedLevel` is the weighted value, `SelectedLevel` is the winner |
+
+A configuration whose weighted and winner fields are the same is rejected
+when the adapter is built. A provider that reports no field the
+configuration names is a malformed response, not a silently different
+answer.
+
+The safe defaults are the restrictive ones: instructions and criteria are
+text only, image inputs are disabled, and the provider is unnamed. Set
+`Capabilities.StructuredInstructions` for a provider that accepts
+structured values.
+
+### Image inputs are per provider
+
+The image wire shape is the one part of the protocol the providers do not
+share:
+
+| Provider | Shape |
+| --- | --- |
+| SubQ | a top-level `images` array of `{mediaType, base64}`, alongside the state |
+| TypeSafe | a top-level `assets` map, with references written into the state, instructions, and criteria, and a `TypeSafe-Danger-Zone-Images: true` header |
+| Fastino | `image_url` parts inside the state, carrying URLs |
+
+So the image style is selected per provider. `SystemOneImagesInline` is the
+shape this package implements, and a provider configured with a shape it does
+not implement advertises no image support at all: a request that carries an
+image fails locally with `lebro.ErrDecisionUnsupportedCapability` rather
+than reaching the provider.
+
 ### Running the same adapter through a gateway
 
 A gateway that fronts a System One provider speaks the same protocol, so the

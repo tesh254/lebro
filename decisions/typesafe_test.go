@@ -19,9 +19,10 @@ func typeSafeFixture() decisionFixture {
 		newModel: func(baseURL string) (lebro.DecisionModel, error) {
 			return NewTypeSafe(TypeSafeConfig{APIKey: "test-key", BaseURL: baseURL, Model: "jev-latest"})
 		},
-		scoreStyle:     scoreWeightedOnly,
-		noulConfidence: false,
-		model:          "jev-1.13.0",
+		scoreWeightedField: "score",
+		scoreWinnerField:   "",
+		noulConfidence:     false,
+		model:              "jev-1.13.0",
 	}
 }
 

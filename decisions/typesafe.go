@@ -1,9 +1,7 @@
 package decisions
 
 import (
-	"context"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -51,18 +49,12 @@ type TypeSafeConfig struct {
 	RetryBackoff time.Duration
 }
 
-// TypeSafeModel adapts TypeSafe Jev to [github.com/tesh254/lebro.DecisionModel].
-// Use [NewTypeSafe] to create instances. The adapter is safe for concurrent
-// use.
-type TypeSafeModel struct {
-	client  *systemOneClient
-	profile systemOneProfile
-}
-
-var _ lebro.DecisionModel = (*TypeSafeModel)(nil)
-
 // NewTypeSafe builds a TypeSafe Jev decision adapter.
-func NewTypeSafe(config TypeSafeConfig) (*TypeSafeModel, error) {
+//
+// The adapter is a [SystemOneModel] configured with TypeSafe's documented
+// contract. Point it at a gateway that fronts Jev by setting BaseURL and
+// Model.
+func NewTypeSafe(config TypeSafeConfig) (*SystemOneModel, error) {
 	baseURL := config.BaseURL
 	if baseURL == "" {
 		baseURL = typeSafeBaseURL
@@ -71,79 +63,38 @@ func NewTypeSafe(config TypeSafeConfig) (*TypeSafeModel, error) {
 	if model == "" {
 		model = typeSafeModel
 	}
-	client, err := newSystemOneClient(
-		typeSafeProvider,
-		baseURL,
-		systemOnePath,
-		"Authorization",
-		"Bearer ",
-		config.APIKey,
-		model,
-		typeSafeRetryableStatuses,
-		httpClientConfig{
-			client:       config.HTTPClient,
-			timeout:      config.Timeout,
-			maxRetries:   config.MaxRetries,
-			retryBackoff: config.RetryBackoff,
+	return NewSystemOne(SystemOneConfig{
+		APIKey:     config.APIKey,
+		BaseURL:    baseURL,
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		ProviderID: lebro.ProviderID(typeSafeProvider),
+		Model:      model,
+		Score:      SystemOneScoreFields{Weighted: "score"},
+		Capabilities: lebro.DecisionCapabilities{
+			Noul:                   true,
+			Choice:                 true,
+			Score:                  true,
+			MultipleQuestions:      true,
+			StructuredState:        true,
+			StructuredInstructions: true,
+			Distributions:          true,
+			Confidence:             true,
+			Batching:               false,
+			// TypeSafe documents a request body limit, not a byte limit for
+			// the state alone. The body limit is enforced separately.
+			MaxStateBytes:    0,
+			MaxQuestions:     0,
+			MaxChoiceOptions: 255,
+			MaxScoreLevels:   10,
 		},
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &TypeSafeModel{
-		client: client,
-		profile: systemOneProfile{
-			provider:         typeSafeProvider,
-			capabilities:     typeSafeCapabilities(),
-			scoreMapping:     scoreWeightedOnly,
-			buildQuestions:   buildSystemOneQuestions,
-			requestIDHeaders: []string{typeSafeRequestIDHeader, typeSafeGatewayRequestIDHeader},
-			maxBodyBytes:     typeSafeMaxBodyBytes,
-		},
-	}, nil
-}
-
-// ProviderID identifies the adapter.
-func (m *TypeSafeModel) ProviderID() lebro.ProviderID {
-	return lebro.ProviderID(typeSafeProvider)
-}
-
-// Capabilities describes what TypeSafe supports. Image inputs are not
-// advertised: this adapter does not expose them.
-func (m *TypeSafeModel) Capabilities() lebro.DecisionCapabilities {
-	return typeSafeCapabilities()
-}
-
-// Decide evaluates the request with Jev and returns the typed answers.
-func (m *TypeSafeModel) Decide(ctx context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
-	return decide(ctx, m.client, m.profile, request)
-}
-
-// typeSafeCapabilities describes the TypeSafe decision surface.
-//
-// TypeSafe reports a probability-weighted score and no winning level, so a
-// score answer keeps an expected level and no selected level. Confidence is
-// reported for choice and score answers; a noul answer carries none.
-func typeSafeCapabilities() lebro.DecisionCapabilities {
-	return lebro.DecisionCapabilities{
-		Noul:                   true,
-		Choice:                 true,
-		Score:                  true,
-		MultipleQuestions:      true,
-		StructuredState:        true,
-		StructuredInstructions: true,
-		Images: lebro.DecisionImageCapabilities{
-			Enabled: false,
-		},
-		MaxQuestions:     0,
-		MaxChoiceOptions: 255,
-		MaxScoreLevels:   10,
-		Distributions:    true,
-		Confidence:       true,
-		Batching:         false,
-		// TypeSafe documents a request body limit, not a byte limit for the
-		// state alone. The body limit is enforced separately.
-		MaxStateBytes:     0,
-		RetryableStatuses: slices.Clone(typeSafeRetryableStatuses),
-	}
+		ImageStyle:        SystemOneImagesNone,
+		RetryableStatuses: typeSafeRetryableStatuses,
+		MaxBodyBytes:      typeSafeMaxBodyBytes,
+		RequestIDHeaders:  []string{typeSafeRequestIDHeader, typeSafeGatewayRequestIDHeader},
+		HTTPClient:        config.HTTPClient,
+		Timeout:           config.Timeout,
+		MaxRetries:        config.MaxRetries,
+		RetryBackoff:      config.RetryBackoff,
+	})
 }

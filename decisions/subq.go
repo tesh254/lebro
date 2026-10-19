@@ -1,9 +1,7 @@
 package decisions
 
 import (
-	"context"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -51,17 +49,12 @@ type SubQConfig struct {
 	RetryBackoff time.Duration
 }
 
-// SubQModel adapts SubQ Snap to [github.com/tesh254/lebro.DecisionModel]. Use
-// [NewSubQ] to create instances. The adapter is safe for concurrent use.
-type SubQModel struct {
-	client  *systemOneClient
-	profile systemOneProfile
-}
-
-var _ lebro.DecisionModel = (*SubQModel)(nil)
-
 // NewSubQ builds a SubQ Snap decision adapter.
-func NewSubQ(config SubQConfig) (*SubQModel, error) {
+//
+// The adapter is a [SystemOneModel] configured with SubQ's documented
+// contract, including its image inputs: raw PNG, JPEG, or WebP bytes are
+// encoded as one line of base64 at the HTTP boundary only.
+func NewSubQ(config SubQConfig) (*SystemOneModel, error) {
 	baseURL := config.BaseURL
 	if baseURL == "" {
 		baseURL = subQBaseURL
@@ -70,118 +63,44 @@ func NewSubQ(config SubQConfig) (*SubQModel, error) {
 	if model == "" {
 		model = subQModel
 	}
-	client, err := newSystemOneClient(
-		subQProvider,
-		baseURL,
-		systemOnePath,
-		"Authorization",
-		"Bearer ",
-		config.APIKey,
-		model,
-		subQRetryableStatuses,
-		httpClientConfig{
-			client:       config.HTTPClient,
-			timeout:      config.Timeout,
-			maxRetries:   config.MaxRetries,
-			retryBackoff: config.RetryBackoff,
-		},
-	)
-	if err != nil {
-		return nil, err
-	}
-	return &SubQModel{
-		client: client,
-		profile: systemOneProfile{
-			provider:     subQProvider,
-			capabilities: subQCapabilities(),
-			scoreMapping: scoreWeightedOnly,
-			buildQuestions: func(questions map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error) {
-				return buildSystemOneQuestions(questions)
+	return NewSystemOne(SystemOneConfig{
+		APIKey:     config.APIKey,
+		BaseURL:    baseURL,
+		AuthHeader: "Authorization",
+		AuthPrefix: "Bearer ",
+		ProviderID: lebro.ProviderID(subQProvider),
+		Model:      model,
+		Score:      SystemOneScoreFields{Weighted: "score"},
+		Capabilities: lebro.DecisionCapabilities{
+			Noul:                   true,
+			Choice:                 true,
+			Score:                  true,
+			MultipleQuestions:      true,
+			StructuredState:        true,
+			StructuredInstructions: true,
+			Distributions:          true,
+			Confidence:             true,
+			Batching:               false,
+			Images: lebro.DecisionImageCapabilities{
+				Enabled:          true,
+				MediaTypes:       []string{"image/png", "image/jpeg", "image/webp"},
+				MaxImages:        subQMaxImages,
+				MaxBytesPerImage: subQMaxBytesPerImage,
+				MaxTotalBytes:    subQMaxTotalBytes,
 			},
-			extraFields:    subQExtraFields,
-			requestSecrets: subQRequestSecrets,
-			maxBodyBytes:   subQMaxBodyBytes,
+			// SubQ documents a context window, not a byte limit for the
+			// state alone. The request body limit is enforced separately.
+			MaxStateBytes:    0,
+			MaxQuestions:     16,
+			MaxChoiceOptions: 255,
+			MaxScoreLevels:   10,
 		},
-	}, nil
-}
-
-// ProviderID identifies the adapter.
-func (m *SubQModel) ProviderID() lebro.ProviderID {
-	return lebro.ProviderID(subQProvider)
-}
-
-// Capabilities describes what SubQ supports, including the image inputs it
-// accepts.
-func (m *SubQModel) Capabilities() lebro.DecisionCapabilities {
-	return subQCapabilities()
-}
-
-// Decide evaluates the request with Snap and returns the typed answers.
-//
-// Image bytes are encoded for the wire here and nowhere else. A request that
-// carries an unsupported media type, too many images, or images beyond the
-// documented size limits fails with a typed error before anything is sent.
-func (m *SubQModel) Decide(ctx context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
-	return decide(ctx, m.client, m.profile, request)
-}
-
-// subQExtraFields renders the provider-specific top-level request fields.
-func subQExtraFields(request lebro.DecisionRequest) map[string]any {
-	if len(request.Images) == 0 {
-		return nil
-	}
-	images := make([]any, 0, len(request.Images))
-	for _, image := range request.Images {
-		images = append(images, map[string]any{
-			"mediaType": image.MediaType,
-			"base64":    encodeImageBase64(image.Bytes),
-		})
-	}
-	return map[string]any{"images": images}
-}
-
-// subQRequestSecrets returns the encoded image payloads. They are request
-// content, so a provider error must not echo them back.
-func subQRequestSecrets(request lebro.DecisionRequest) []string {
-	if len(request.Images) == 0 {
-		return nil
-	}
-	secrets := make([]string, 0, len(request.Images))
-	for _, image := range request.Images {
-		secrets = append(secrets, encodeImageBase64(image.Bytes))
-	}
-	return secrets
-}
-
-// subQCapabilities describes the SubQ decision surface.
-//
-// SubQ reports a probability-weighted score and no winning level, so a score
-// answer keeps an expected level and no selected level. It stores decision
-// inputs, including images, under the organization's retention policy.
-func subQCapabilities() lebro.DecisionCapabilities {
-	return lebro.DecisionCapabilities{
-		Noul:                   true,
-		Choice:                 true,
-		Score:                  true,
-		MultipleQuestions:      true,
-		StructuredState:        true,
-		StructuredInstructions: true,
-		Images: lebro.DecisionImageCapabilities{
-			Enabled:          true,
-			MediaTypes:       []string{"image/png", "image/jpeg", "image/webp"},
-			MaxImages:        subQMaxImages,
-			MaxBytesPerImage: subQMaxBytesPerImage,
-			MaxTotalBytes:    subQMaxTotalBytes,
-		},
-		MaxQuestions:     16,
-		MaxChoiceOptions: 255,
-		MaxScoreLevels:   10,
-		Distributions:    true,
-		Confidence:       true,
-		Batching:         false,
-		// SubQ documents a context window, not a byte limit for the state
-		// alone. The request body limit is enforced separately.
-		MaxStateBytes:     0,
-		RetryableStatuses: slices.Clone(subQRetryableStatuses),
-	}
+		ImageStyle:        SystemOneImagesInline,
+		RetryableStatuses: subQRetryableStatuses,
+		MaxBodyBytes:      subQMaxBodyBytes,
+		HTTPClient:        config.HTTPClient,
+		Timeout:           config.Timeout,
+		MaxRetries:        config.MaxRetries,
+		RetryBackoff:      config.RetryBackoff,
+	})
 }

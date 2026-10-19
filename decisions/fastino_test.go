@@ -20,9 +20,10 @@ func fastinoFixture() decisionFixture {
 		newModel: func(baseURL string) (lebro.DecisionModel, error) {
 			return NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: baseURL, Model: "fastino/GLiDE"})
 		},
-		scoreStyle:     scoreWinnerAndExpectation,
-		noulConfidence: true,
-		model:          "glide",
+		scoreWeightedField: "expected_level",
+		scoreWinnerField:   "score",
+		noulConfidence:     true,
+		model:              "glide",
 	}
 }
 

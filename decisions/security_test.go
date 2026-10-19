@@ -192,7 +192,7 @@ func TestScoreRequiresTheProviderFields(t *testing.T) {
 		{
 			name: "weighted provider without a score",
 			body: `{"model":"subq-snap-preview","answers":{"q":{"type":"score","probabilities":{"0":0.5,"1":0.5}}}}`,
-			want: "returned no score",
+			want: `returned no "score" score field`,
 		},
 	}
 	for _, testCase := range cases {
@@ -245,7 +245,7 @@ func TestFastinoRequiresTheWinningLevel(t *testing.T) {
 	if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
 		t.Fatalf("Decide() error = %v, want a malformed response failure", err)
 	}
-	if !strings.Contains(err.Error(), "no winning score level") {
+	if !strings.Contains(err.Error(), `no "score" winning level`) {
 		t.Fatalf("Decide() error = %v, want it to mention the missing level", err)
 	}
 }

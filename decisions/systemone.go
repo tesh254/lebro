@@ -39,18 +39,6 @@ const (
 	defaultUserAgent = "lebro-decisions"
 )
 
-// scoreMapping records how a provider reports a score answer.
-type scoreMapping int
-
-const (
-	// scoreWeightedOnly means the provider reports one probability-weighted
-	// value and no winning level.
-	scoreWeightedOnly scoreMapping = iota
-	// scoreWinnerAndExpectation means the provider reports a winning level
-	// index and a separate probability-weighted value.
-	scoreWinnerAndExpectation
-)
-
 // systemOneProfile captures the documented differences between the providers
 // this package adapts. Everything the providers share lives in the wire and
 // client code; everything they document differently lives here.
@@ -59,13 +47,20 @@ type systemOneProfile struct {
 	provider string
 	// capabilities describes what the provider supports.
 	capabilities lebro.DecisionCapabilities
-	// scoreMapping records how the provider reports a score answer.
-	scoreMapping scoreMapping
+	// scoreWeightedField is the wire field that holds the probability-
+	// weighted level of a score answer.
+	scoreWeightedField string
+	// scoreWinnerField is the wire field that holds the winning level index
+	// of a score answer. It is empty when the provider reports no winner.
+	scoreWinnerField string
 	// buildQuestions renders the question map. It is provider-specific
 	// because one provider accepts text instructions only.
 	buildQuestions func(map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error)
 	// extraFields adds the provider-specific top-level request fields.
 	extraFields func(lebro.DecisionRequest) map[string]any
+	// imageFields renders the provider-specific image fields for a request.
+	// It is nil when the provider takes no images.
+	imageFields func(lebro.DecisionRequest) map[string]any
 	// maxBodyBytes is the largest request body the provider accepts. Zero
 	// means the provider documents no byte limit.
 	maxBodyBytes int64
@@ -226,6 +221,11 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 			body[key] = value
 		}
 	}
+	if profile.imageFields != nil {
+		for key, value := range profile.imageFields(request) {
+			body[key] = value
+		}
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorInvalidRequest, fmt.Sprintf("lebro: encode request: %v", err), err)
@@ -253,7 +253,7 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 	if decoded.Model == "" {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, "lebro: the decision response carries no model identity", nil)
 	}
-	answers, err := mapSystemOneAnswers(request, decoded.Answers, profile.scoreMapping)
+	answers, err := mapSystemOneAnswers(request, decoded.Answers, profile.scoreWeightedField, profile.scoreWinnerField)
 	if err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, err.Error(), err)
 	}
@@ -660,9 +660,39 @@ type systemOneAnswer struct {
 	Choice        *string                    `json:"choice"`
 	Probabilities map[string]float64         `json:"probabilities"`
 	Confidence    *float64                   `json:"confidence"`
-	Score         *json.Number               `json:"score"`
-	ExpectedLevel *float64                   `json:"expected_level"`
 	Legend        map[string]json.RawMessage `json:"legend"`
+	// Fields holds every field of the answer. A provider names its score
+	// fields, so the answer cannot decode them into fixed fields.
+	Fields map[string]json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON keeps every field of the answer alongside the decoded ones.
+func (a *systemOneAnswer) UnmarshalJSON(data []byte) error {
+	type answerFields systemOneAnswer
+	var decoded answerFields
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*a = systemOneAnswer(decoded)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	a.Fields = fields
+	return nil
+}
+
+// number returns a numeric field of the answer.
+func (a systemOneAnswer) number(name string) (json.Number, bool) {
+	raw, ok := a.Fields[name]
+	if !ok {
+		return "", false
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return "", false
+	}
+	return number, true
 }
 
 // decodeSystemOneResponse decodes the shared response envelope.
@@ -679,14 +709,14 @@ func decodeSystemOneResponse(body []byte) (*systemOneResponse, error) {
 
 // mapSystemOneAnswers maps the provider answers onto the requested question
 // identifiers.
-func mapSystemOneAnswers(request lebro.DecisionRequest, wire map[string]systemOneAnswer, mapping scoreMapping) (map[lebro.DecisionQuestionID]lebro.DecisionAnswer, error) {
+func mapSystemOneAnswers(request lebro.DecisionRequest, wire map[string]systemOneAnswer, weightedField, winnerField string) (map[lebro.DecisionQuestionID]lebro.DecisionAnswer, error) {
 	answers := make(map[lebro.DecisionQuestionID]lebro.DecisionAnswer, len(request.Questions))
 	for id, question := range request.Questions {
 		raw, ok := wire[string(id)]
 		if !ok {
 			return nil, fmt.Errorf("lebro: the provider returned no answer for question %q", id)
 		}
-		answer, err := mapSystemOneAnswer(id, question, raw, mapping)
+		answer, err := mapSystemOneAnswer(id, question, raw, weightedField, winnerField)
 		if err != nil {
 			return nil, err
 		}
@@ -696,7 +726,7 @@ func mapSystemOneAnswers(request lebro.DecisionRequest, wire map[string]systemOn
 }
 
 // mapSystemOneAnswer maps one provider answer onto the neutral contract.
-func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQuestion, raw systemOneAnswer, mapping scoreMapping) (lebro.DecisionAnswer, error) {
+func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQuestion, raw systemOneAnswer, weightedField, winnerField string) (lebro.DecisionAnswer, error) {
 	switch typed := question.(type) {
 	case lebro.NoulQuestion:
 		return mapSystemOneNoul(id, raw)
@@ -713,12 +743,12 @@ func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQues
 		}
 		return mapSystemOneChoice(id, *typed, raw)
 	case lebro.ScoreQuestion:
-		return mapSystemOneScore(id, typed, raw, mapping)
+		return mapSystemOneScore(id, typed, raw, weightedField, winnerField)
 	case *lebro.ScoreQuestion:
 		if typed == nil {
 			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return mapSystemOneScore(id, *typed, raw, mapping)
+		return mapSystemOneScore(id, *typed, raw, weightedField, winnerField)
 	default:
 		return nil, fmt.Errorf("lebro: decision question %q has an unsupported type %T", id, question)
 	}
@@ -803,7 +833,7 @@ func mapSystemOneProbabilities(id lebro.DecisionQuestionID, requested map[lebro.
 
 // mapSystemOneScore maps a score answer and keeps a selected level separate
 // from a probability-weighted value.
-func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion, raw systemOneAnswer, mapping scoreMapping) (lebro.DecisionAnswer, error) {
+func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion, raw systemOneAnswer, weightedField, winnerField string) (lebro.DecisionAnswer, error) {
 	if raw.Type != "score" {
 		return nil, fmt.Errorf("lebro: decision question %q expected a score answer, got %q", id, raw.Type)
 	}
@@ -820,33 +850,30 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 		Legend:        legend,
 		Provenance:    lebro.ScoreNative,
 	}
-	switch mapping {
-	case scoreWinnerAndExpectation:
-		if raw.Score == nil {
-			return nil, fmt.Errorf("lebro: decision question %q returned no winning score level", id)
+	// The provider names its score fields, so the adapter reads the fields
+	// the configuration names and requires the ones the provider must send.
+	weighted, ok := raw.number(weightedField)
+	if !ok {
+		return nil, fmt.Errorf("lebro: decision question %q returned no %q score field", id, weightedField)
+	}
+	expected, err := weighted.Float64()
+	if err != nil {
+		return nil, fmt.Errorf("lebro: decision question %q returned a %q score that is not a number", id, weightedField)
+	}
+	answer.ExpectedLevel = &expected
+	if winnerField != "" {
+		winner, ok := raw.number(winnerField)
+		if !ok {
+			return nil, fmt.Errorf("lebro: decision question %q returned no %q winning level", id, winnerField)
 		}
-		level, err := strconv.Atoi(raw.Score.String())
+		level, err := strconv.Atoi(winner.String())
 		if err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q returned a score level that is not an integer", id)
+			return nil, fmt.Errorf("lebro: decision question %q returned a %q level that is not an integer", id, winnerField)
 		}
 		if level < 0 || level >= len(question.Criteria) {
 			return nil, fmt.Errorf("lebro: decision question %q returned score level %d, outside the requested range", id, level)
 		}
 		answer.SelectedLevel = &level
-		if raw.ExpectedLevel == nil {
-			return nil, fmt.Errorf("lebro: decision question %q returned no expected level", id)
-		}
-		expected := *raw.ExpectedLevel
-		answer.ExpectedLevel = &expected
-	default:
-		if raw.Score == nil {
-			return nil, fmt.Errorf("lebro: decision question %q returned no score", id)
-		}
-		expected, err := raw.Score.Float64()
-		if err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q returned a score that is not a number", id)
-		}
-		answer.ExpectedLevel = &expected
 	}
 	if raw.Confidence != nil {
 		if err := checkProbability(*raw.Confidence); err != nil {
