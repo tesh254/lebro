@@ -173,8 +173,14 @@ func (m *SystemOneModel) ProviderID() lebro.ProviderID {
 }
 
 // Capabilities describes what the configured provider supports.
+//
+// The returned value carries copies of the lists, so a caller cannot change
+// the capabilities every later call reports.
 func (m *SystemOneModel) Capabilities() lebro.DecisionCapabilities {
-	return m.profile.capabilities
+	capabilities := m.profile.capabilities
+	capabilities.Images.MediaTypes = append([]string(nil), capabilities.Images.MediaTypes...)
+	capabilities.RetryableStatuses = append([]int(nil), capabilities.RetryableStatuses...)
+	return capabilities
 }
 
 // Decide evaluates the request with the configured provider and returns the

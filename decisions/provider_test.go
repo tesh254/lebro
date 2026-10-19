@@ -418,3 +418,21 @@ func TestGenericProviderHonorsTheRetryPolicy(t *testing.T) {
 		t.Fatalf("the provider received %d attempts, want 1: the status is not retryable", attempts)
 	}
 }
+
+// TestGenericProviderCapabilitiesAreCopied pins that a caller cannot change
+// the capabilities the adapter reports for everyone else.
+func TestGenericProviderCapabilitiesAreCopied(t *testing.T) {
+	model, err := NewSystemOne(genericProviderConfig("https://example.com"))
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	capabilities := model.Capabilities()
+	capabilities.RetryableStatuses[0] = 999
+	if model.Capabilities().RetryableStatuses[0] == 999 {
+		t.Fatal("the retryable statuses are shared between calls")
+	}
+	capabilities.Images.MediaTypes = append(capabilities.Images.MediaTypes, "image/gif")
+	if len(model.Capabilities().Images.MediaTypes) != len(capabilities.Images.MediaTypes)-1 {
+		t.Fatal("the image media types are shared between calls")
+	}
+}
