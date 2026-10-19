@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/tesh254/lebro"
 )
@@ -152,15 +153,15 @@ func TestGenericProviderScoreFieldNames(t *testing.T) {
 		{
 			name:       "a weighted value and no winner",
 			score:      SystemOneScoreFields{Weighted: "score"},
-			body:       `{"model":"m","answers":{"q":{"type":"score","score":1.4,"probabilities":{"0":0.5,"1":0.5}}}}`,
+			body:       `{"model":"m","answers":{"q":{"type":"score","score":1.4,"probabilities":{"0":0.2,"1":0.2,"2":0.6}}}}`,
 			wantLevel:  nil,
 			wantExpect: 1.4,
 		},
 		{
 			name:       "a winner and a weighted value",
 			score:      SystemOneScoreFields{Weighted: "expected_level", Winner: "score"},
-			body:       `{"model":"m","answers":{"q":{"type":"score","score":1,"expected_level":1.4,"probabilities":{"0":0.5,"1":0.5}}}}`,
-			wantLevel:  intPointer(1),
+			body:       `{"model":"m","answers":{"q":{"type":"score","score":2,"expected_level":1.4,"probabilities":{"0":0.2,"1":0.2,"2":0.6}}}}`,
+			wantLevel:  intPointer(2),
 			wantExpect: 1.4,
 		},
 	}
@@ -181,7 +182,7 @@ func TestGenericProviderScoreFieldNames(t *testing.T) {
 			response, err := model.Decide(context.Background(), lebro.DecisionRequest{
 				State: "state",
 				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
-					"q": lebro.ScoreQuestion{Instructions: "How much?", Criteria: []lebro.JSONValue{"low", "high"}},
+					"q": lebro.ScoreQuestion{Instructions: "How much?", Criteria: []lebro.JSONValue{"low", "medium", "high"}},
 				},
 			})
 			if err != nil {
@@ -413,6 +414,7 @@ func TestGenericProviderHonorsTheRetryPolicy(t *testing.T) {
 
 			config := genericProviderConfig(server.URL)
 			config.MaxRetries = intPointer(2)
+			config.RetryBackoff = time.Millisecond
 			model, err := NewSystemOne(config)
 			if err != nil {
 				t.Fatalf("NewSystemOne() error = %v", err)
@@ -498,7 +500,7 @@ func TestConfidenceIsLeftNilWhenTheProviderOmitsIt(t *testing.T) {
 			"answers": {
 				"eligible": {"type": "noul", "noul": 0.7},
 				"team": {"type": "choice", "choice": "billing", "probabilities": {"billing": 0.7, "other": 0.3}},
-				"urgency": {"type": "score", "score": 1.2, "probabilities": {"0": 0.5, "1": 0.5}}
+				"urgency": {"type": "score", "score": 1.2, "probabilities": {"0": 0.3, "1": 0.2, "2": 0.5}}
 			}
 		}`))
 	}))
@@ -518,7 +520,7 @@ func TestConfidenceIsLeftNilWhenTheProviderOmitsIt(t *testing.T) {
 				Instructions: "Which one?",
 				Criteria:     map[lebro.DecisionOptionID]lebro.JSONValue{"billing": "money", "other": "something else"},
 			},
-			"urgency": lebro.ScoreQuestion{Instructions: "How much?", Criteria: []lebro.JSONValue{"low", "high"}},
+			"urgency": lebro.ScoreQuestion{Instructions: "How much?", Criteria: []lebro.JSONValue{"low", "medium", "high"}},
 		},
 	})
 	if err != nil {

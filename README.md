@@ -552,7 +552,14 @@ model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
     AuthHeader: "X-API-Key",
     Model:      "some-model",
     Score:      decisions.SystemOneScoreFields{Weighted: "score"},
-    Capabilities: lebro.DecisionCapabilities{ /* limits and features */ },
+    Capabilities: lebro.DecisionCapabilities{
+        Noul: true, Choice: true, Score: true,
+        MultipleQuestions: true, StructuredState: true,
+        StructuredInstructions: true,
+        Distributions: true, Confidence: true,
+        MaxQuestions: 8, MaxChoiceOptions: 255, MaxScoreLevels: 10,
+        RetryableStatuses: []int{429, 503},
+    },
 })
 ```
 

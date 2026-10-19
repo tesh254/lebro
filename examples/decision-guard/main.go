@@ -239,9 +239,17 @@ func guard(ctx context.Context, model lebro.DecisionModel, invocation lebro.Tool
 		},
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			// A cancelled or expired call is not a denial. The run reports
+			// the cancellation instead of a policy decision.
+			return lebro.ToolApprovalResolution{}, err
+		}
+		// The reason is fixed: a provider error can carry request content
+		// or provider detail, and it does not belong in an approval
+		// record. The typed error stays available for classification.
 		return lebro.ToolApprovalResolution{
 			Outcome: lebro.ToolApprovalDeny,
-			Reason:  "the decision provider failed: " + err.Error(),
+			Reason:  "the decision provider failed",
 		}, nil
 	}
 	answer, ok := response.Answers["is_safe"].(lebro.NoulAnswer)

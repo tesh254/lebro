@@ -474,10 +474,12 @@ func (e *DecisionError) Error() string {
 	if kind == "" {
 		kind = DecisionErrorUnknown
 	}
+	// The message is the only free text in the error, and the adapter
+	// redacts it before it is set. The cause is kept for errors.Is and
+	// errors.As chaining, but its text is never copied into the message, so
+	// a cause that carries request content cannot reach a log through
+	// Error().
 	detail := e.Message
-	if detail == "" && e.Err != nil {
-		detail = e.Err.Error()
-	}
 	provider := ""
 	if e.Provider != "" {
 		provider = " from " + e.Provider
@@ -594,8 +596,8 @@ func (r DecisionResponse) Validate() error {
 			return fmt.Errorf("lebro: decision response answer %q: %w", id, err)
 		}
 	}
-	if r.Attempts < 0 {
-		return errors.New("lebro: decision response attempts must not be negative")
+	if r.Attempts < 1 {
+		return errors.New("lebro: decision response attempts must be at least one")
 	}
 	if r.Usage != nil {
 		if r.Usage.InputTokens != nil && *r.Usage.InputTokens < 0 {
@@ -903,7 +905,13 @@ func decisionImageIsReference(data []byte) bool {
 	if len(trimmed) == 0 {
 		return false
 	}
-	text := strings.ToLower(string(trimmed))
+	// Only the leading bytes decide, so a full-size image is not copied
+	// into a string on every validation.
+	prefix := trimmed
+	if len(prefix) > 8 {
+		prefix = prefix[:8]
+	}
+	text := strings.ToLower(string(prefix))
 	return strings.HasPrefix(text, "http://") ||
 		strings.HasPrefix(text, "https://") ||
 		strings.HasPrefix(text, "data:")
@@ -1009,7 +1017,7 @@ func validateJSONReflect(name string, value reflect.Value, depth int, nodes *int
 		return nil
 	case reflect.Slice, reflect.Array:
 		if value.Type() == reflect.TypeOf(json.RawMessage{}) {
-			return validateJSONRawMessage(name, value.Bytes())
+			return validateJSONRawMessage(name, value.Bytes(), depth, nodes)
 		}
 		if value.Type().Elem().Kind() == reflect.Uint8 {
 			// encoding/json encodes a byte slice as a base64 string, which
@@ -1054,12 +1062,19 @@ func validateJSONStruct(name string, value reflect.Value, depth int, nodes *int)
 	return nil
 }
 
-func validateJSONRawMessage(name string, raw []byte) error {
+// validateJSONRawMessage checks raw JSON through the same bounded traversal
+// as any other value, so a raw message cannot carry a payload past the
+// request's depth and node limits.
+func validateJSONRawMessage(name string, raw []byte, depth int, nodes *int) error {
 	if len(raw) == 0 {
-		return nil
+		return fmt.Errorf("%s contains an empty raw JSON value", name)
 	}
 	if !json.Valid(raw) {
 		return fmt.Errorf("%s contains raw JSON that is not valid", name)
 	}
-	return nil
+	var decoded any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return fmt.Errorf("%s contains raw JSON that cannot be read: %w", name, err)
+	}
+	return validateJSONValue(name, decoded, depth, nodes)
 }

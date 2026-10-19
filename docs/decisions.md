@@ -157,8 +157,8 @@ model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
         StructuredInstructions: true,
         Distributions: true, Confidence: true,
         MaxQuestions: 16, MaxChoiceOptions: 255, MaxScoreLevels: 10,
+        RetryableStatuses: []int{429, 503},
     },
-    RetryableStatuses: []int{429, 503},
 })
 ```
 
@@ -290,7 +290,7 @@ delay when the provider reported one. `errors.Is` matches the kind sentinels:
 | `authentication` | `lebro.ErrDecisionAuthentication` | no |
 | `permission_denied` | `lebro.ErrDecisionPermissionDenied` | no |
 | `rate_limited` | `lebro.ErrDecisionRateLimited` | yes |
-| `unavailable` | `lebro.ErrDecisionUnavailable` | yes |
+| `unavailable` | `lebro.ErrDecisionUnavailable` | yes, when the status is in the provider's `RetryableStatuses` |
 | `timeout` | `lebro.ErrDecisionTimeout` | yes |
 | `transport` | `lebro.ErrDecisionTransport` | yes |
 | `cancelled` | `lebro.ErrDecisionCancelled` | no |

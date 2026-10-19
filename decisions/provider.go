@@ -3,7 +3,10 @@ package decisions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/tesh254/lebro"
@@ -136,9 +139,25 @@ func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 	if baseURL == "" {
 		return nil, errors.New("lebro: a System One provider needs a base URL")
 	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("lebro: invalid base URL: %w", err)
+	}
+	if !parsed.IsAbs() {
+		return nil, fmt.Errorf("lebro: base URL %q must be absolute", baseURL)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("lebro: base URL %q must use http or https", baseURL)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("lebro: base URL %q must name a host", baseURL)
+	}
 	path := config.Path
 	if path == "" {
 		path = systemOnePath
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, errors.New("lebro: a System One path must start with /")
 	}
 	authHeader := config.AuthHeader
 	if authHeader == "" {

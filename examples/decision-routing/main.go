@@ -205,6 +205,12 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 	if err := request.Validate(); err != nil {
 		return lebro.DecisionResponse{}, &lebro.DecisionError{Kind: lebro.DecisionErrorInvalidRequest, Message: err.Error(), Err: err}
 	}
+	// The fixture enforces the limits it advertises, so the example never
+	// claims a capability it does not check.
+	capabilities := m.Capabilities()
+	if capabilities.MaxQuestions > 0 && len(request.Questions) > capabilities.MaxQuestions {
+		return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers at most %d questions per request", capabilities.MaxQuestions)
+	}
 	answers := make(map[lebro.DecisionQuestionID]lebro.DecisionAnswer, len(request.Questions))
 	for id, question := range request.Questions {
 		switch typed := question.(type) {
@@ -212,6 +218,9 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			confidence := 0.91
 			answers[id] = lebro.NoulAnswer{ProbabilityYes: 0.93, Confidence: &confidence}
 		case lebro.ChoiceQuestion:
+			if capabilities.MaxChoiceOptions > 0 && len(typed.Criteria) > capabilities.MaxChoiceOptions {
+				return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers at most %d options per choice", capabilities.MaxChoiceOptions)
+			}
 			options := sortedOptionIDs(typed.Criteria)
 			selected := options[0]
 			// The fixture routes to a specialist whenever the caller offers
@@ -233,6 +242,9 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 		case *lebro.NoulQuestion, *lebro.ChoiceQuestion, *lebro.ScoreQuestion:
 			return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers value question forms only")
 		case lebro.ScoreQuestion:
+			if capabilities.MaxScoreLevels > 0 && len(typed.Criteria) > capabilities.MaxScoreLevels {
+				return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers at most %d levels per score", capabilities.MaxScoreLevels)
+			}
 			levels := len(typed.Criteria)
 			probabilities := make(map[int]float64, levels)
 			legend := make(map[int]lebro.JSONValue, levels)

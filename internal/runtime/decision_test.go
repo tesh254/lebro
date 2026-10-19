@@ -466,6 +466,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": NoulAnswer{ProbabilityYes: 1.5},
 				},
+				Attempts: 1,
 			},
 			want: "must be between 0 and 1",
 		},
@@ -475,6 +476,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": NoulAnswer{ProbabilityYes: math.NaN()},
 				},
+				Attempts: 1,
 			},
 			want: "must be a finite number",
 		},
@@ -484,6 +486,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ChoiceAnswer{Probabilities: map[DecisionOptionID]float64{"a": 1}},
 				},
+				Attempts: 1,
 			},
 			want: "requires a selected option",
 		},
@@ -502,6 +505,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"a": 0.5, "": 0.5}},
 				},
+				Attempts: 1,
 			},
 			want: "empty option ID",
 		},
@@ -511,6 +515,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ChoiceAnswer{Choice: "b", Probabilities: map[DecisionOptionID]float64{"a": 1}},
 				},
+				Attempts: 1,
 			},
 			want: "which the reported distribution does not carry",
 		},
@@ -520,6 +525,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ChoiceAnswer{Choice: "a", Probabilities: map[DecisionOptionID]float64{"a": 0.7, "b": 0.3}},
 				},
+				Attempts: 1,
 			},
 		},
 		{
@@ -532,6 +538,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 						Provenance:    ScoreNative,
 					},
 				},
+				Attempts: 1,
 			},
 		},
 		{
@@ -540,6 +547,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ScoreAnswer{Probabilities: map[int]float64{0: 1.5}, Provenance: ScoreNative},
 				},
+				Attempts: 1,
 			},
 			want: "must be between 0 and 1",
 		},
@@ -549,6 +557,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ScoreAnswer{Probabilities: map[int]float64{-1: 1}, Provenance: ScoreNative},
 				},
+				Attempts: 1,
 			},
 			want: "level must not be negative",
 		},
@@ -558,6 +567,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ScoreAnswer{Provenance: ScoreProvenance("derived")},
 				},
+				Attempts: 1,
 			},
 			want: "not a known provenance",
 		},
@@ -567,6 +577,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ScoreAnswer{},
 				},
+				Attempts: 1,
 			},
 			want: "not a known provenance",
 		},
@@ -576,6 +587,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 				Answers: map[DecisionQuestionID]DecisionAnswer{
 					"q": ScoreAnswer{Confidence: float64Pointer(1.2), Provenance: ScoreNative},
 				},
+				Attempts: 1,
 			},
 			want: "must be between 0 and 1",
 		},
@@ -584,19 +596,21 @@ func TestDecisionResponseValidate(t *testing.T) {
 			response: DecisionResponse{
 				Attempts: -1,
 			},
-			want: "attempts must not be negative",
+			want: "attempts must be at least one",
 		},
 		{
 			name: "negative usage",
 			response: DecisionResponse{
-				Usage: &DecisionUsage{InputTokens: int64Pointer(-1)},
+				Usage:    &DecisionUsage{InputTokens: int64Pointer(-1)},
+				Attempts: 1,
 			},
 			want: "input tokens must not be negative",
 		},
 		{
 			name: "unsupported answer",
 			response: DecisionResponse{
-				Answers: map[DecisionQuestionID]DecisionAnswer{"q": unknownDecisionAnswer{}},
+				Answers:  map[DecisionQuestionID]DecisionAnswer{"q": unknownDecisionAnswer{}},
+				Attempts: 1,
 			},
 			want: "unsupported decision answer type",
 		},
@@ -876,7 +890,8 @@ func TestDecisionRequestValidateAcceptsPointerQuestions(t *testing.T) {
 func TestDecisionResponseValidateAcceptsPointerAnswers(t *testing.T) {
 	noul := NoulAnswer{ProbabilityYes: 0.5}
 	response := DecisionResponse{
-		Answers: map[DecisionQuestionID]DecisionAnswer{"q": &noul},
+		Answers:  map[DecisionQuestionID]DecisionAnswer{"q": &noul},
+		Attempts: 1,
 	}
 	if err := response.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)

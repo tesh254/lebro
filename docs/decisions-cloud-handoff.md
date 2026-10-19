@@ -119,7 +119,8 @@ third-party provider. Cloud must:
   supports it. Fastino honors `FastinoConfig.DisableStorage`, which sends the
   wire field `store: false`, so the Cloud setting is a constructor option
   rather than a wire field. SubQ keeps nothing under a zero data retention
-  organization.
+  organization, and otherwise stores decisions, including their images, under
+  the organization's retention policy.
 
 Cloud must never log or persist the state, the criteria, or the image bytes
 in order to make a decision provider call. If the tenant needs that record,
@@ -143,6 +144,9 @@ latency, the usage, and the observed uncertainty behavior for each run.
       log, a metric, a trace, or an error. The adapter captures the
       credential when it is built, so Cloud rebuilds the adapter after a
       rotation; the rebuilt adapter takes effect without a code change.
+- [ ] A live run records the provider, the model, the model version, the
+      modality it exercised, the latency, the usage, and the uncertainty it
+      observed, and the recorded result is the one the tenant sees.
 - [ ] A noul question returns a probability, and a threshold on that
       probability produces the expected outcome.
 - [ ] A choice question returns the selected option and a distribution that
@@ -155,8 +159,9 @@ latency, the usage, and the observed uncertainty behavior for each run.
       the question identifier.
 - [ ] A provider that reports no confidence produces a `nil` confidence, and
       the tenant's UI shows the uncertainty rather than implying certainty.
-- [ ] A request that exceeds a provider limit fails locally, before any
-      request reaches the provider.
+- [ ] A request that exceeds an adapter-advertised limit fails locally,
+      before any request reaches the provider. A limit the adapter does not
+      model, such as a context window, stays provider-authoritative.
 - [ ] An image request with an unsupported media type fails locally, and the
       image bytes appear nowhere in the failure.
 - [ ] An image request that carries a URL or a data URL fails locally, and

@@ -163,10 +163,13 @@ func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey,
 	}, nil
 }
 
+// errRedirectRefused marks a redirect the adapter refused.
+var errRedirectRefused = errors.New("lebro: the provider refused a redirect")
+
 // refuseRedirect stops the adapter from following a redirect. A redirected
 // request would forward the credential to the redirect target.
 func refuseRedirect(*http.Request, []*http.Request) error {
-	return errors.New("lebro: the provider refused a redirect")
+	return errRedirectRefused
 }
 
 // httpClientConfig holds the transport knobs every provider shares.
@@ -490,14 +493,15 @@ func (c *systemOneClient) transportFailure(ctx context.Context, err error) error
 		return c.failure(lebro.DecisionErrorTimeout, "lebro: the provider request timed out", err)
 	}
 	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Err != nil {
-		if urlErr.Timeout() {
-			return c.failure(lebro.DecisionErrorTimeout, "lebro: the provider request timed out", err)
-		}
-		// The wrapped error text carries the endpoint URL. Keep it out of the
-		// message so a request URL never reaches an error string.
-		return c.failure(lebro.DecisionErrorTransport, "lebro: the provider request failed: "+urlErr.Err.Error(), err)
+	if errors.As(err, &urlErr) && urlErr.Timeout() {
+		return c.failure(lebro.DecisionErrorTimeout, "lebro: the provider request timed out", err)
 	}
+	if errors.Is(err, errRedirectRefused) {
+		return c.failure(lebro.DecisionErrorTransport, "lebro: the provider refused a redirect", err)
+	}
+	// The transport error text is provider-controlled and can carry the
+	// endpoint or the request, so the message stays fixed and only the
+	// cause is retained.
 	return c.failure(lebro.DecisionErrorTransport, "lebro: the provider request failed", err)
 }
 
@@ -828,6 +832,11 @@ func mapSystemOneProbabilities(id lebro.DecisionQuestionID, requested map[lebro.
 	if len(requested) == 0 {
 		return nil, fmt.Errorf("lebro: decision question %q requested no options", id)
 	}
+	if reported == nil {
+		// The provider reported no distribution. The answer carries none
+		// rather than one the provider did not send.
+		return nil, nil
+	}
 	for option := range reported {
 		if _, ok := requested[lebro.DecisionOptionID(option)]; !ok {
 			return nil, fmt.Errorf("lebro: decision question %q returned a probability for option %q, which was not requested", id, option)
@@ -868,15 +877,6 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 	}
 	// The provider names its score fields, so the adapter reads the fields
 	// the configuration names and requires the ones the provider must send.
-	weighted, ok := raw.number(weightedField)
-	if !ok {
-		return nil, fmt.Errorf("lebro: decision question %q returned no %q score field", id, weightedField)
-	}
-	expected, err := weighted.Float64()
-	if err != nil {
-		return nil, fmt.Errorf("lebro: decision question %q returned a %q score that is not a number", id, weightedField)
-	}
-	answer.ExpectedLevel = &expected
 	if winnerField != "" {
 		winner, ok := raw.number(winnerField)
 		if !ok {
@@ -891,6 +891,18 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 		}
 		answer.SelectedLevel = &level
 	}
+	weighted, ok := raw.number(weightedField)
+	if !ok {
+		return nil, fmt.Errorf("lebro: decision question %q returned no %q score field", id, weightedField)
+	}
+	expected, err := weighted.Float64()
+	if err != nil {
+		return nil, fmt.Errorf("lebro: decision question %q returned a %q score that is not a number", id, weightedField)
+	}
+	if expected < 0 || expected > float64(len(question.Criteria)-1) {
+		return nil, fmt.Errorf("lebro: decision question %q returned a weighted score outside the requested range", id)
+	}
+	answer.ExpectedLevel = &expected
 	if raw.Confidence != nil {
 		if err := checkProbability(*raw.Confidence); err != nil {
 			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
@@ -907,6 +919,9 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 func mapSystemOneLevelProbabilities(id lebro.DecisionQuestionID, levels int, reported map[string]float64) (map[int]float64, error) {
 	if levels <= 0 {
 		return nil, fmt.Errorf("lebro: decision question %q requested no levels", id)
+	}
+	if reported == nil {
+		return nil, nil
 	}
 	for key := range reported {
 		level, err := strconv.Atoi(key)
