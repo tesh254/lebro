@@ -139,18 +139,20 @@ func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 	if baseURL == "" {
 		return nil, errors.New("lebro: a System One provider needs a base URL")
 	}
+	// The base URL is never repeated in an error message: it can carry a
+	// credential in its userinfo or its query.
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("lebro: invalid base URL: %w", err)
+		return nil, fmt.Errorf("lebro: the base URL is not a valid URL: %w", errRedirectSafe(err))
 	}
 	if !parsed.IsAbs() {
-		return nil, fmt.Errorf("lebro: base URL %q must be absolute", baseURL)
+		return nil, errors.New("lebro: the base URL must be absolute")
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("lebro: base URL %q must use http or https", baseURL)
+		return nil, errors.New("lebro: the base URL must use http or https")
 	}
 	if parsed.Host == "" {
-		return nil, fmt.Errorf("lebro: base URL %q must name a host", baseURL)
+		return nil, errors.New("lebro: the base URL must name a host")
 	}
 	path := config.Path
 	if path == "" {

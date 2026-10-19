@@ -1072,6 +1072,11 @@ func validateJSONRawMessage(name string, raw []byte, depth int, nodes *int) erro
 	if !json.Valid(raw) {
 		return fmt.Errorf("%s contains raw JSON that is not valid", name)
 	}
+	if !utf8.Valid(raw) {
+		// Decoding would replace the bad bytes before the string check
+		// could see them.
+		return fmt.Errorf("%s contains raw JSON with invalid UTF-8", name)
+	}
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return fmt.Errorf("%s contains raw JSON that cannot be read: %w", name, err)

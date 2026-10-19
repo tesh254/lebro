@@ -106,10 +106,10 @@ func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey,
 	}
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
-		return nil, fmt.Errorf("lebro: invalid base URL: %w", err)
+		return nil, fmt.Errorf("lebro: the base URL is not a valid URL: %w", errRedirectSafe(err))
 	}
 	if !parsed.IsAbs() {
-		return nil, fmt.Errorf("lebro: base URL %q must be absolute", baseURL)
+		return nil, errors.New("lebro: the base URL must be absolute")
 	}
 	// The default timeout applies whether or not the caller supplied a
 	// client: a client with no timeout of its own would otherwise let a
@@ -161,6 +161,16 @@ func newSystemOneClient(provider, baseURL, path, authHeader, authPrefix, apiKey,
 		retryableStatus: retryable,
 		userAgent:       defaultUserAgent,
 	}, nil
+}
+
+// errRedirectSafe keeps a URL parse error from repeating the URL it failed
+// on, because the URL can carry a credential in its userinfo or its query.
+func errRedirectSafe(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return errors.New(urlErr.Err.Error())
+	}
+	return err
 }
 
 // errRedirectRefused marks a redirect the adapter refused.

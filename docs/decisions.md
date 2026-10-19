@@ -56,7 +56,7 @@ Three question kinds are available, and the set is closed:
 | Question | Criteria | Answer |
 | --- | --- | --- |
 | `NoulQuestion` | Optional `True` and `False` descriptions | The probability that the condition holds |
-| `ChoiceQuestion` | A map of caller-owned option IDs to descriptions | The selected option and the distribution over every option |
+| `ChoiceQuestion` | A map of caller-owned option IDs to descriptions | The selected option, and the distribution over every option when the provider reports one |
 | `ScoreQuestion` | An ordered list of level descriptions, lowest first | The weighted level, and a winning level when the provider reports one |
 
 A response carries one answer per requested question, keyed by the
@@ -89,9 +89,10 @@ never fills in a value the provider did not report.
   value, so their `SelectedLevel` stays `nil`; Fastino reports both.
 - **Confidence and distributions are reported, never derived.**
   `Confidence` is `nil` when the provider does not report one, and a
-  distribution must cover every requested option or level. A response that
-  cannot be interpreted is a `lebro.ErrDecisionMalformedResponse` failure, not
-  a partially filled answer.
+  distribution is absent when the provider does not report one. A
+  distribution that *is* reported must cover every requested option or level:
+  a partial one is a `lebro.ErrDecisionMalformedResponse` failure, not a
+  partially filled answer.
 
 `ScoreAnswer.Provenance` records where a value came from. `ScoreNative` means
 the provider reported it; `ScoreNormalized` means an adapter derived it from
