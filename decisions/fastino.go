@@ -72,14 +72,32 @@ func NewFastino(config FastinoConfig) (*SystemOneModel, error) {
 			MultipleQuestions:      true,
 			StructuredState:        true,
 			StructuredInstructions: false,
-			Distributions:          true,
-			Confidence:             true,
 			Batching:               false,
-			MaxStateBytes:          0,
-			MaxQuestions:           0,
-			MaxChoiceOptions:       255,
-			RetryableStatuses:      fastinoRetryableStatuses,
-			MaxScoreLevels:         255,
+			// GLiDE reports a full probability distribution on every choice
+			// and score answer, and a confidence that is the gap between the
+			// two highest probabilities. A noul answer carries no
+			// distribution, and its confidence is the distance of the
+			// probability from one half.
+			NoulUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityUnavailable,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
+			},
+			ChoiceUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
+			ScoreUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
+			MaxStateBytes:     0,
+			MaxQuestions:      0,
+			MaxChoiceOptions:  255,
+			RetryableStatuses: fastinoRetryableStatuses,
+			MaxScoreLevels:    255,
 		},
 		ImageStyle:     SystemOneImagesNone,
 		DisableStorage: config.DisableStorage,

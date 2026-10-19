@@ -66,13 +66,19 @@ hard-coded list, and it must respect what the tenant enabled:
 - `Images.Enabled`, `Images.MediaTypes`, `Images.MaxImages`,
   `Images.MaxBytesPerImage`, and `Images.MaxTotalBytes` gate the image
   inputs a tenant may send.
-- `Distributions` and `Confidence` gate what a UI may promise about an
-  answer. The flag is provider-wide, so the UI must still read the answer
-  itself: a noul answer from TypeSafe and SubQ carries no confidence even
-  though the provider reports confidence for its choice and score answers.
-  A missing confidence is shown as unknown, never as a low or high value.
+- `NoulUncertainty`, `ChoiceUncertainty`, and `ScoreUncertainty` gate what a
+  UI may promise about an answer. The uncertainty belongs to the question
+  kind, not to the provider: a noul answer from TypeSafe and SubQ carries no
+  confidence even though the provider reports confidence for its choice and
+  score answers. A missing confidence is shown as unknown, never as a low or
+  high value, and a UI must not compare two confidences whose
+  `ConfidenceMetric` differs.
 - `RetryableStatuses` describes the provider's own retry contract. The
   adapter applies it; the Cloud must not add retries of its own on top.
+- `CapabilitiesFor(model)` describes one model rather than the adapter as a
+  whole. A picker that offers a model the tenant enabled must read the
+  profile of that model, and it must not offer a model the provider has no
+  verified profile for.
 
 The capability matrix in [decisions.md](decisions.md#capability-matrix) is
 the reference for each provider.
@@ -86,17 +92,20 @@ A decision answer is not an authorization. Cloud owns the boundary:
 2. A guarded action still goes through the existing exact-action approval
    path, so the reviewed payload stays bound to the tool call that was
    reviewed.
-3. A denial, an uncertain answer, a timeout, a cancellation, and a provider
-   failure must all leave the action unauthorized. Treat "no answer" as
-   "not authorized".
+3. A denial, an uncertain answer, a timeout, a cancellation, a provider
+   failure, and a refusal must all leave the action unauthorized. Treat "no
+   answer" as "not authorized", and treat a refusal as "not authorized": a
+   provider that declined to answer has not authorized anything.
 4. A decision sits before the runtime's own guarantees, so it does not
    weaken them. Transcript integrity, tool-pair integrity, compare-and-swap
    fencing of a run, and the deterministic context budget still apply to a
    run whose handler was guarded by a judgment.
 5. The audit trail records that a decision was consulted, which provider and
    model answered, the question identifiers, the outcome, and the attempt
-   count. It does not need the state, the criteria, or the images to be
-   reproducible, and it should not copy them by default.
+   count. It records the requested model, the resolved model, and the upstream
+   provider separately, because a gateway's answer can differ from the model
+   the request named. It does not need the state, the criteria, or the images
+   to be reproducible, and it should not copy them by default.
 
 `lebro.DecisionGate` produces a recommendation from caller-owned thresholds.
 It is useful as the default policy layer, and it deliberately cannot

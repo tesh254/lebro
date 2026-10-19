@@ -110,8 +110,44 @@ type ScoreQuestion struct {
 
 func (ScoreQuestion) isDecisionQuestion() {}
 
+// DecisionConfidenceMetric names what a reported confidence number means.
+//
+// A confidence value can only be compared with another one when both use the
+// same metric. Two providers report a number in the same range for the same
+// question and mean different things by it, so a reported confidence always
+// carries the metric it was computed with.
+type DecisionConfidenceMetric string
+
+const (
+	// DecisionConfidenceUnknown marks a reported confidence whose meaning
+	// the provider does not document. It is an explicit state rather than an
+	// absence: the number is there and it cannot be compared with another.
+	DecisionConfidenceUnknown DecisionConfidenceMetric = "unknown"
+
+	// DecisionConfidenceTopProbabilityUniform marks a confidence measured as
+	// how far the largest probability sits above an even split of the
+	// outcomes. TypeSafe reports it for a choice answer.
+	DecisionConfidenceTopProbabilityUniform DecisionConfidenceMetric = "top_probability_uniform"
+
+	// DecisionConfidenceModalDistanceUniform marks a confidence measured as
+	// the probability-weighted distance from the most likely level, against
+	// the same distance for an even spread across the levels. TypeSafe
+	// reports it for a score answer.
+	DecisionConfidenceModalDistanceUniform DecisionConfidenceMetric = "modal_distance_uniform"
+
+	// DecisionConfidenceTopTwoMargin marks a confidence measured as the gap
+	// between the two highest probabilities. Fastino reports it for a choice
+	// answer and for a score answer.
+	DecisionConfidenceTopTwoMargin DecisionConfidenceMetric = "top_two_margin"
+
+	// DecisionConfidenceDistanceFromHalf marks a confidence measured as the
+	// absolute distance of a probability from one half. Fastino reports it
+	// for a noul answer.
+	DecisionConfidenceDistanceFromHalf DecisionConfidenceMetric = "distance_from_half"
+)
+
 // DecisionAnswer is one answer in a decision response. The set of answer kinds
-// is closed: NoulAnswer, ChoiceAnswer, and ScoreAnswer.
+// is closed: NoulAnswer, ChoiceAnswer, ScoreAnswer, and RefusalAnswer.
 type DecisionAnswer interface{ isDecisionAnswer() }
 
 // NoulAnswer is the answer to a noul question.
@@ -123,19 +159,42 @@ type NoulAnswer struct {
 	// provider does not report confidence, and it is never derived from
 	// ProbabilityYes.
 	Confidence *float64
+	// ConfidenceMetric names what Confidence means for this answer. It is
+	// empty when the answer carries no confidence, and it is
+	// DecisionConfidenceUnknown when the provider reports a confidence
+	// without documenting what it means.
+	ConfidenceMetric DecisionConfidenceMetric
 }
 
 func (NoulAnswer) isDecisionAnswer() {}
+
+// PredicateQuestion is a neutral name for a binary judgment question.
+//
+// It is an alias for [NoulQuestion]: the two names describe the same
+// question, and a predicate question is answered with the probability that a
+// stated condition holds.
+type PredicateQuestion = NoulQuestion
+
+// PredicateAnswer is a neutral name for a binary judgment answer.
+//
+// It is an alias for [NoulAnswer]: the two names describe the same answer.
+type PredicateAnswer = NoulAnswer
 
 // ChoiceAnswer is the answer to a choice question.
 type ChoiceAnswer struct {
 	// Choice is the selected option.
 	Choice DecisionOptionID
-	// Probabilities maps every requested option to its probability.
+	// Probabilities maps every requested option to its probability. It is
+	// empty when the provider reports no distribution.
 	Probabilities map[DecisionOptionID]float64
 	// Confidence is the provider-reported certainty. It is nil when the
 	// provider does not report confidence.
 	Confidence *float64
+	// ConfidenceMetric names what Confidence means for this answer. It is
+	// empty when the answer carries no confidence, and it is
+	// DecisionConfidenceUnknown when the provider reports a confidence
+	// without documenting what it means.
+	ConfidenceMetric DecisionConfidenceMetric
 }
 
 func (ChoiceAnswer) isDecisionAnswer() {}
@@ -146,8 +205,9 @@ type ScoreProvenance string
 const (
 	// ScoreNative marks a value the provider reported directly.
 	ScoreNative ScoreProvenance = "native"
-	// ScoreNormalized marks a value an adapter derived from a documented
-	// distribution instead of receiving it from the provider.
+	// ScoreNormalized marks a value derived from a documented distribution
+	// instead of received from the provider, whether an adapter derived it
+	// or a caller computed it from the answer's own distribution.
 	ScoreNormalized ScoreProvenance = "normalized"
 )
 
@@ -172,12 +232,105 @@ type ScoreAnswer struct {
 	// Confidence is the provider-reported certainty. It is nil when the
 	// provider does not report confidence.
 	Confidence *float64
+	// ConfidenceMetric names what Confidence means for this answer. It is
+	// empty when the answer carries no confidence, and it is
+	// DecisionConfidenceUnknown when the provider reports a confidence
+	// without documenting what it means.
+	ConfidenceMetric DecisionConfidenceMetric
 	// Provenance records whether the values were reported by the provider or
 	// derived by the adapter.
 	Provenance ScoreProvenance
 }
 
 func (ScoreAnswer) isDecisionAnswer() {}
+
+// RefusalAnswer is the answer to a question the provider declined to answer.
+//
+// A refusal is a judgment the provider made about its own ability to answer
+// the question. It is distinct from a false answer, from a low probability,
+// from a missing answer, and from a failure to reach the provider: none of
+// those say that the provider tried and declined.
+//
+// A refusal is not an authorization and not a decision. An application that
+// treats a refusal as a rejection has made that choice, and the contract
+// does not make it for them.
+type RefusalAnswer struct {
+	// Reason is the provider's explanation, when it gave one. It is
+	// optional: a refusal need not carry a reason.
+	Reason string
+}
+
+func (RefusalAnswer) isDecisionAnswer() {}
+
+// ExpectedIndex returns the probability-weighted level index of the answer's
+// distribution.
+//
+// The value is derived from the reported distribution, not reported by the
+// provider: a provider's own ExpectedLevel stays exactly as the provider
+// reported it. It reports false when the answer carries no distribution.
+//
+// The returned index is a derived quantity. A caller that stores it
+// alongside the answer records it with [ScoreNormalized], the provenance of
+// a value derived from a documented distribution rather than received from
+// the provider.
+func (a ScoreAnswer) ExpectedIndex() (float64, bool) {
+	if len(a.Probabilities) == 0 {
+		return 0, false
+	}
+	var total, weighted float64
+	for level, probability := range a.Probabilities {
+		total += probability
+		weighted += float64(level) * probability
+	}
+	if total == 0 {
+		return 0, false
+	}
+	return weighted / total, true
+}
+
+// DecisionTopProbability returns the largest probability in a distribution
+// and whether the distribution carries one.
+//
+// The value is derived from the reported distribution, not reported by the
+// provider. A caller that needs the provider's own number uses the answer it
+// came with.
+func DecisionTopProbability[T comparable](distribution map[T]float64) (float64, bool) {
+	top := 0.0
+	found := false
+	for _, probability := range distribution {
+		if !found || probability > top {
+			top = probability
+			found = true
+		}
+	}
+	return top, found
+}
+
+// DecisionTopTwoMargin returns the difference between the two largest
+// probabilities in a distribution, and whether the distribution carries two.
+//
+// The value is derived from the reported distribution, not reported by the
+// provider. It is the measure one provider uses for its own confidence, and
+// it is not the measure another provider uses.
+func DecisionTopTwoMargin[T comparable](distribution map[T]float64) (float64, bool) {
+	top := 0.0
+	second := 0.0
+	count := 0
+	for _, probability := range distribution {
+		count++
+		switch {
+		case probability > top:
+			second = top
+			top = probability
+		case probability > second:
+			second = probability
+		}
+	}
+	if count < 2 {
+		return 0, false
+	}
+	return top - second, true
+}
 
 // DecisionUsage is the token usage a provider reported for a decision
 // request. A nil field means the provider did not report that count.
@@ -192,7 +345,17 @@ type DecisionUsage struct {
 type DecisionResponse struct {
 	// Provider identifies the adapter that produced the response.
 	Provider ProviderID
-	// Model is the provider model that produced the response.
+	// UpstreamProvider identifies the provider that actually served the
+	// request, when a gateway reports it. It is empty when the adapter
+	// reached the provider directly, and it is never the same fact as
+	// Provider: a gateway fronts a provider without being it.
+	UpstreamProvider ProviderID
+	// RequestedModel is the model the request asked for. It is the
+	// adapter's own default model when the request named none.
+	RequestedModel string
+	// Model is the resolved model identity the provider reported. It can
+	// differ from RequestedModel: an alias resolves to a dated model, and
+	// a provider may report its own short name.
 	Model string
 	// Answers holds one answer per requested question, keyed by the
 	// caller-owned question identifier.
@@ -228,15 +391,91 @@ type DecisionImageCapabilities struct {
 	MaxTotalBytes int64
 }
 
+// DecisionAvailability says whether a provider reports a value for a
+// question kind, and whether its absence is a malformed response.
+type DecisionAvailability string
+
+const (
+	// DecisionAvailabilityUnavailable marks a value the provider does not
+	// report for the kind. A response never carries one.
+	DecisionAvailabilityUnavailable DecisionAvailability = "unavailable"
+
+	// DecisionAvailabilityOptional marks a value the provider may report. A
+	// response without it is valid, and the value stays absent.
+	DecisionAvailabilityOptional DecisionAvailability = "optional"
+
+	// DecisionAvailabilityRequired marks a value the provider reports. A
+	// response without it is a malformed response.
+	DecisionAvailabilityRequired DecisionAvailability = "required"
+)
+
+// DecisionUncertainty describes the uncertainty a provider reports for one
+// question kind.
+//
+// Uncertainty is a property of the question kind, not of the provider. One
+// provider can report a confidence for a choice answer and none for a noul
+// answer, and two providers can report the same kind with different
+// metrics, so the uncertainty belongs with the kind.
+type DecisionUncertainty struct {
+	// Distribution says whether the provider reports a probability
+	// distribution for this kind.
+	Distribution DecisionAvailability
+	// Confidence says whether the provider reports a confidence for this
+	// kind.
+	Confidence DecisionAvailability
+	// ConfidenceMetric names what a reported confidence means for this kind.
+	// It is empty when the provider reports no confidence for the kind.
+	ConfidenceMetric DecisionConfidenceMetric
+	// Refusal reports whether the provider may refuse this kind.
+	Refusal bool
+}
+
+// Validate checks that the uncertainty describes a usable contract.
+//
+// An unset availability means the provider reports nothing for the kind: the
+// restrictive reading, so a configuration that leaves it out never claims a
+// value it has not verified.
+func (u DecisionUncertainty) Validate(kind string) error {
+	switch u.Confidence {
+	case "", DecisionAvailabilityUnavailable:
+		if u.ConfidenceMetric != "" {
+			return fmt.Errorf("lebro: decision %s uncertainty reports no confidence, so it must not name a confidence metric", kind)
+		}
+	case DecisionAvailabilityOptional, DecisionAvailabilityRequired:
+		if u.ConfidenceMetric == "" {
+			return fmt.Errorf("lebro: decision %s uncertainty reports a confidence, so it must name a confidence metric", kind)
+		}
+	default:
+		return fmt.Errorf("lebro: decision %s confidence availability %q is not a known availability", kind, u.Confidence)
+	}
+	switch u.Distribution {
+	case "", DecisionAvailabilityUnavailable, DecisionAvailabilityOptional, DecisionAvailabilityRequired:
+	default:
+		return fmt.Errorf("lebro: decision %s distribution availability %q is not a known availability", kind, u.Distribution)
+	}
+	return nil
+}
+
 // DecisionCapabilities describes what a decision provider supports. Callers
 // use it to pick a provider and to validate a request before it is sent.
+//
+// A capability belongs to one route and one model. Two providers report
+// confidence with different meanings, and one provider may report a
+// confidence for a choice answer and none for a noul answer, so the
+// capabilities describe a kind rather than an adapter.
 type DecisionCapabilities struct {
 	// Noul reports whether binary questions are supported.
 	Noul bool
+	// NoulUncertainty describes the uncertainty a noul answer carries.
+	NoulUncertainty DecisionUncertainty
 	// Choice reports whether choice questions are supported.
 	Choice bool
+	// ChoiceUncertainty describes the uncertainty a choice answer carries.
+	ChoiceUncertainty DecisionUncertainty
 	// Score reports whether score questions are supported.
 	Score bool
+	// ScoreUncertainty describes the uncertainty a score answer carries.
+	ScoreUncertainty DecisionUncertainty
 	// MultipleQuestions reports whether one request may carry more than one
 	// question.
 	MultipleQuestions bool
@@ -257,11 +496,6 @@ type DecisionCapabilities struct {
 	// MaxScoreLevels is the largest number of levels one score question may
 	// carry. Zero means unspecified.
 	MaxScoreLevels int
-	// Distributions reports whether the provider returns a probability
-	// distribution alongside an answer.
-	Distributions bool
-	// Confidence reports whether the provider reports confidence.
-	Confidence bool
 	// Batching reports whether the provider accepts a batch of independent
 	// requests in one call.
 	Batching bool
@@ -271,6 +505,26 @@ type DecisionCapabilities struct {
 	// RetryableStatuses lists the HTTP status codes the provider documents as
 	// retryable.
 	RetryableStatuses []int
+}
+
+// Validate checks that the capabilities describe a usable contract.
+//
+// A kind that reports a confidence must name the metric that confidence
+// means, and a kind that reports no confidence must not name one.
+func (c DecisionCapabilities) Validate() error {
+	for _, kind := range []struct {
+		name        string
+		uncertainty DecisionUncertainty
+	}{
+		{"noul", c.NoulUncertainty},
+		{"choice", c.ChoiceUncertainty},
+		{"score", c.ScoreUncertainty},
+	} {
+		if err := kind.uncertainty.Validate(kind.name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DecisionModel is implemented by decision adapters. It is a separate
@@ -283,8 +537,14 @@ type DecisionCapabilities struct {
 type DecisionModel interface {
 	// ProviderID identifies the adapter.
 	ProviderID() ProviderID
-	// Capabilities describes what the adapter supports.
+	// Capabilities describes what the adapter supports for its default
+	// model.
 	Capabilities() DecisionCapabilities
+	// CapabilitiesFor describes what the adapter supports for a named
+	// model. It reports false for a model the adapter has no verified
+	// profile for, and a request that names such a model is rejected
+	// rather than answered under another model's contract.
+	CapabilitiesFor(model string) (DecisionCapabilities, bool)
 	// Decide evaluates the request and returns the typed answers.
 	Decide(context.Context, DecisionRequest) (DecisionResponse, error)
 }
@@ -322,6 +582,14 @@ type DecisionGate struct {
 	// select. A nil value ignores confidence. An answer without a reported
 	// confidence never selects.
 	MinimumConfidence *float64
+	// ConfidenceMetric names the metric MinimumConfidence is expressed in.
+	//
+	// A gate with a confidence threshold must name the metric: two
+	// providers report a confidence in the same range and mean different
+	// things by it, so a number is only comparable with a threshold that
+	// was written against the same measure. An answer whose metric does
+	// not match never selects.
+	ConfidenceMetric DecisionConfidenceMetric
 }
 
 // Validate checks that the thresholds are usable.
@@ -349,6 +617,12 @@ func (g DecisionGate) Validate() error {
 			return fmt.Errorf("lebro: decision gate minimum confidence must be between 0 and 1, got %v", *g.MinimumConfidence)
 		}
 	}
+	if g.MinimumConfidence != nil && g.ConfidenceMetric == "" {
+		// A confidence threshold without the metric it is expressed in
+		// would be compared against a number that may mean something else
+		// entirely.
+		return errors.New("lebro: decision gate confidence threshold requires a confidence metric")
+	}
 	if g.SelectProbability == 0 && g.EscalateProbability == 0 && g.MinimumConfidence == nil {
 		// A gate with no thresholds would select every answer. An
 		// unconfigured gate is a misconfiguration, and it fails closed.
@@ -370,7 +644,16 @@ func (g DecisionGate) Noul(answer NoulAnswer) DecisionOutcome {
 		return DecisionOutcomeReview
 	}
 	if g.MinimumConfidence != nil {
-		if answer.Confidence == nil || *answer.Confidence < *g.MinimumConfidence {
+		if answer.Confidence == nil {
+			return DecisionOutcomeReview
+		}
+		if answer.ConfidenceMetric != g.ConfidenceMetric {
+			// The reported number and the threshold do not mean the same
+			// thing, so comparing them would answer a question the caller
+			// did not ask.
+			return DecisionOutcomeReview
+		}
+		if *answer.Confidence < *g.MinimumConfidence {
 			return DecisionOutcomeReview
 		}
 	}
@@ -379,6 +662,27 @@ func (g DecisionGate) Noul(answer NoulAnswer) DecisionOutcome {
 		return DecisionOutcomeSelect
 	case answer.ProbabilityYes <= g.EscalateProbability:
 		return DecisionOutcomeEscalate
+	default:
+		return DecisionOutcomeReview
+	}
+}
+
+// Answer returns the recommendation for an answer of any kind.
+//
+// The gate's thresholds describe a binary judgment. A refusal, a choice
+// answer, a score answer, and an answer of an unknown kind are all a
+// review: none of them satisfies a threshold the gate cannot read, and a
+// refusal is a decision the provider made about its own ability to answer
+// rather than a judgment about the state.
+func (g DecisionGate) Answer(answer DecisionAnswer) DecisionOutcome {
+	switch typed := answer.(type) {
+	case NoulAnswer:
+		return g.Noul(typed)
+	case *NoulAnswer:
+		if typed == nil {
+			return DecisionOutcomeReview
+		}
+		return g.Noul(*typed)
 	default:
 		return DecisionOutcomeReview
 	}
@@ -709,16 +1013,29 @@ func validateDecisionAnswer(answer DecisionAnswer) error {
 			return errors.New("lebro: decision answer must not be nil")
 		}
 		return validateScoreAnswer(*typed)
+	case RefusalAnswer:
+		return validateRefusalAnswer(typed)
+	case *RefusalAnswer:
+		if typed == nil {
+			return errors.New("lebro: decision answer must not be nil")
+		}
+		return validateRefusalAnswer(*typed)
 	default:
 		return fmt.Errorf("lebro: unsupported decision answer type %T", answer)
 	}
+}
+
+// validateRefusalAnswer checks a refusal. The reason is optional: a
+// provider may decline a question without explaining itself.
+func validateRefusalAnswer(typed RefusalAnswer) error {
+	return nil
 }
 
 func validateNoulAnswer(typed NoulAnswer) error {
 	if err := validateProbability("noul probability", typed.ProbabilityYes); err != nil {
 		return err
 	}
-	return validateOptionalConfidence(typed.Confidence)
+	return validateOptionalConfidence(typed.Confidence, typed.ConfidenceMetric)
 }
 
 func validateChoiceAnswer(typed ChoiceAnswer) error {
@@ -738,7 +1055,7 @@ func validateChoiceAnswer(typed ChoiceAnswer) error {
 			return err
 		}
 	}
-	return validateOptionalConfidence(typed.Confidence)
+	return validateOptionalConfidence(typed.Confidence, typed.ConfidenceMetric)
 }
 
 func validateScoreAnswer(typed ScoreAnswer) error {
@@ -763,7 +1080,7 @@ func validateScoreAnswer(typed ScoreAnswer) error {
 	default:
 		return fmt.Errorf("lebro: score answer provenance %q is not a known provenance", typed.Provenance)
 	}
-	return validateOptionalConfidence(typed.Confidence)
+	return validateOptionalConfidence(typed.Confidence, typed.ConfidenceMetric)
 }
 
 func validateProbability(name string, probability float64) error {
@@ -776,9 +1093,21 @@ func validateProbability(name string, probability float64) error {
 	return nil
 }
 
-func validateOptionalConfidence(confidence *float64) error {
+// validateOptionalConfidence checks a reported confidence and the metric that
+// says what it means.
+//
+// A confidence and its metric travel together: an answer that reports a
+// number without saying what the number means is a different answer from one
+// that reports no number at all.
+func validateOptionalConfidence(confidence *float64, metric DecisionConfidenceMetric) error {
 	if confidence == nil {
+		if metric != "" {
+			return errors.New("lebro: a decision answer without a confidence must not name a confidence metric")
+		}
 		return nil
+	}
+	if metric == "" {
+		return errors.New("lebro: a decision answer with a confidence must name a confidence metric")
 	}
 	return validateProbability("confidence", *confidence)
 }

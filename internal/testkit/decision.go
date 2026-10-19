@@ -228,6 +228,12 @@ func assertDecisionResponse(t TestingT, got, want lebro.DecisionResponse, reques
 	if got.Model != want.Model {
 		t.Fatalf("Decide() model = %q, want %q", got.Model, want.Model)
 	}
+	if got.RequestedModel != want.RequestedModel {
+		t.Fatalf("Decide() requested model = %q, want %q", got.RequestedModel, want.RequestedModel)
+	}
+	if got.UpstreamProvider != want.UpstreamProvider {
+		t.Fatalf("Decide() upstream provider = %q, want %q", got.UpstreamProvider, want.UpstreamProvider)
+	}
 	if got.Attempts < 1 {
 		t.Fatalf("Decide() attempts = %d, want at least 1", got.Attempts)
 	}

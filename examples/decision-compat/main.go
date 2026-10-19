@@ -80,6 +80,14 @@ func (fixtureDecisionModel) Capabilities() lebro.DecisionCapabilities {
 	return lebro.DecisionCapabilities{Noul: true}
 }
 
+// CapabilitiesFor reports the capabilities of the fixture's only model.
+func (m fixtureDecisionModel) CapabilitiesFor(model string) (lebro.DecisionCapabilities, bool) {
+	if model != "" && model != "example-model" {
+		return lebro.DecisionCapabilities{}, false
+	}
+	return m.Capabilities(), true
+}
+
 func (m fixtureDecisionModel) Decide(_ context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
 	answers := make(map[lebro.DecisionQuestionID]lebro.DecisionAnswer, len(request.Questions))
 	for id := range request.Questions {

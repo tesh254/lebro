@@ -24,11 +24,32 @@ func (contractDecisionModel) Capabilities() DecisionCapabilities {
 		MultipleQuestions:      true,
 		StructuredState:        true,
 		StructuredInstructions: true,
-		Distributions:          true,
-		Confidence:             true,
 		MaxChoiceOptions:       255,
 		MaxScoreLevels:         10,
+		NoulUncertainty: DecisionUncertainty{
+			Distribution:     DecisionAvailabilityUnavailable,
+			Confidence:       DecisionAvailabilityRequired,
+			ConfidenceMetric: DecisionConfidenceTopTwoMargin,
+		},
+		ChoiceUncertainty: DecisionUncertainty{
+			Distribution:     DecisionAvailabilityRequired,
+			Confidence:       DecisionAvailabilityRequired,
+			ConfidenceMetric: DecisionConfidenceTopTwoMargin,
+		},
+		ScoreUncertainty: DecisionUncertainty{
+			Distribution:     DecisionAvailabilityRequired,
+			Confidence:       DecisionAvailabilityRequired,
+			ConfidenceMetric: DecisionConfidenceTopTwoMargin,
+		},
 	}
+}
+
+// CapabilitiesFor reports the capabilities of the contract's only model.
+func (contractDecisionModel) CapabilitiesFor(model string) (DecisionCapabilities, bool) {
+	if model != "" && model != "contract-model" {
+		return DecisionCapabilities{}, false
+	}
+	return contractDecisionModel{}.Capabilities(), true
 }
 
 func (contractDecisionModel) Decide(_ context.Context, request DecisionRequest) (DecisionResponse, error) {
@@ -42,7 +63,7 @@ func (contractDecisionModel) Decide(_ context.Context, request DecisionRequest) 
 	for id, question := range request.Questions {
 		switch typed := question.(type) {
 		case NoulQuestion:
-			answers[id] = NoulAnswer{ProbabilityYes: 0.8, Confidence: &confidence}
+			answers[id] = NoulAnswer{ProbabilityYes: 0.8, Confidence: &confidence, ConfidenceMetric: DecisionConfidenceTopTwoMargin}
 		case ChoiceQuestion:
 			options := make([]DecisionOptionID, 0, len(typed.Criteria))
 			for option := range typed.Criteria {
@@ -52,7 +73,12 @@ func (contractDecisionModel) Decide(_ context.Context, request DecisionRequest) 
 			for index, option := range options {
 				probabilities[option] = float64(index+1) / float64(len(options)+1)
 			}
-			answers[id] = ChoiceAnswer{Choice: options[0], Probabilities: probabilities, Confidence: &confidence}
+			answers[id] = ChoiceAnswer{
+				Choice:           options[0],
+				Probabilities:    probabilities,
+				Confidence:       &confidence,
+				ConfidenceMetric: DecisionConfidenceTopTwoMargin,
+			}
 		case ScoreQuestion:
 			probabilities := make(map[int]float64, len(typed.Criteria))
 			legend := make(map[int]JSONValue, len(typed.Criteria))
@@ -61,12 +87,13 @@ func (contractDecisionModel) Decide(_ context.Context, request DecisionRequest) 
 				legend[level] = typed.Criteria[level]
 			}
 			answers[id] = ScoreAnswer{
-				SelectedLevel: &selected,
-				ExpectedLevel: &expected,
-				Probabilities: probabilities,
-				Legend:        legend,
-				Confidence:    &confidence,
-				Provenance:    ScoreNative,
+				SelectedLevel:    &selected,
+				ExpectedLevel:    &expected,
+				Probabilities:    probabilities,
+				Legend:           legend,
+				Confidence:       &confidence,
+				ConfidenceMetric: DecisionConfidenceTopTwoMargin,
+				Provenance:       ScoreNative,
 			}
 		}
 	}
@@ -162,17 +189,25 @@ func TestValidateDecisionImagesFacade(t *testing.T) {
 
 func TestDecisionGateFacade(t *testing.T) {
 	minimum := 0.8
-	gate := DecisionGate{SelectProbability: 0.9, EscalateProbability: 0.1, MinimumConfidence: &minimum}
+	gate := DecisionGate{
+		SelectProbability:   0.9,
+		EscalateProbability: 0.1,
+		MinimumConfidence:   &minimum,
+		ConfidenceMetric:    DecisionConfidenceTopTwoMargin,
+	}
 	if err := gate.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
 	}
-	if got := gate.Noul(NoulAnswer{ProbabilityYes: 0.95, Confidence: float64Pointer(0.85)}); got != DecisionOutcomeSelect {
+	answer := NoulAnswer{ProbabilityYes: 0.95, Confidence: float64Pointer(0.85), ConfidenceMetric: DecisionConfidenceTopTwoMargin}
+	if got := gate.Noul(answer); got != DecisionOutcomeSelect {
 		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeSelect)
 	}
-	if got := gate.Noul(NoulAnswer{ProbabilityYes: 0.5, Confidence: float64Pointer(0.85)}); got != DecisionOutcomeReview {
+	ambiguous := NoulAnswer{ProbabilityYes: 0.5, Confidence: float64Pointer(0.85), ConfidenceMetric: DecisionConfidenceTopTwoMargin}
+	if got := gate.Noul(ambiguous); got != DecisionOutcomeReview {
 		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeReview)
 	}
-	if got := gate.Noul(NoulAnswer{ProbabilityYes: 0.05, Confidence: float64Pointer(0.85)}); got != DecisionOutcomeEscalate {
+	escalate := NoulAnswer{ProbabilityYes: 0.05, Confidence: float64Pointer(0.85), ConfidenceMetric: DecisionConfidenceTopTwoMargin}
+	if got := gate.Noul(escalate); got != DecisionOutcomeEscalate {
 		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeEscalate)
 	}
 }
@@ -182,3 +217,35 @@ func float64Pointer(value float64) *float64 { return &value }
 
 // int64Pointer returns a pointer to a copy of value.
 func int64Pointer(value int64) *int64 { return &value }
+
+// TestDecisionDerivedHelpersFacade pins that the derived helpers are usable
+// from outside the runtime package.
+func TestDecisionDerivedHelpersFacade(t *testing.T) {
+	distribution := map[DecisionOptionID]float64{"a": 0.75, "b": 0.25}
+	top, ok := DecisionTopProbability(distribution)
+	if !ok || top != 0.75 {
+		t.Fatalf("DecisionTopProbability() = %v, %v, want 0.75, true", top, ok)
+	}
+	margin, ok := DecisionTopTwoMargin(distribution)
+	if !ok || margin != 0.5 {
+		t.Fatalf("DecisionTopTwoMargin() = %v, %v, want 0.5, true", margin, ok)
+	}
+	score := ScoreAnswer{Probabilities: map[int]float64{0: 0.2, 1: 0.3, 2: 0.5}, Provenance: ScoreNative}
+	index, ok := score.ExpectedIndex()
+	if !ok || index != 1.3 {
+		t.Fatalf("ExpectedIndex() = %v, %v, want 1.3, true", index, ok)
+	}
+}
+
+// TestDecisionRefusalFacade pins that a refusal is a usable answer through
+// the public façade and that the gate fails closed on it.
+func TestDecisionRefusalFacade(t *testing.T) {
+	var answer DecisionAnswer = RefusalAnswer{Reason: "the state is too ambiguous"}
+	if _, ok := answer.(RefusalAnswer); !ok {
+		t.Fatalf("the answer = %#v, want a refusal answer", answer)
+	}
+	gate := DecisionGate{SelectProbability: 0.9, EscalateProbability: 0.1}
+	if got := gate.Answer(answer); got != DecisionOutcomeReview {
+		t.Fatalf("Answer() = %q, want %q", got, DecisionOutcomeReview)
+	}
+}

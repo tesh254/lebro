@@ -20,10 +20,14 @@ func fastinoFixture() decisionFixture {
 		newModel: func(baseURL string) (lebro.DecisionModel, error) {
 			return NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: baseURL, Model: "fastino/GLiDE"})
 		},
-		scoreWeightedField: "expected_level",
-		scoreWinnerField:   "score",
-		noulConfidence:     true,
-		model:              "glide",
+		scoreWeightedField:     "expected_level",
+		scoreWinnerField:       "score",
+		noulConfidence:         true,
+		noulConfidenceMetric:   lebro.DecisionConfidenceDistanceFromHalf,
+		choiceConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+		scoreConfidenceMetric:  lebro.DecisionConfidenceTopTwoMargin,
+		model:                  "glide",
+		requestedModel:         "fastino/GLiDE",
 	}
 }
 
@@ -164,7 +168,7 @@ func TestFastinoSendsAPIKeyHeader(t *testing.T) {
 		apiKey = r.Header.Get("X-API-Key")
 		authorization = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5}}}`))
+		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
 	}))
 	defer server.Close()
 
@@ -197,7 +201,7 @@ func TestFastinoDisableStorage(t *testing.T) {
 		}
 		body = string(raw)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5}}}`))
+		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
 	}))
 	defer server.Close()
 

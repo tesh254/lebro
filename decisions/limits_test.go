@@ -285,7 +285,9 @@ func TestAdapterRejectsUnparseableBaseURL(t *testing.T) {
 	}
 }
 
-// TestAdapterUsesTheRequestModel pins that a request may select a model.
+// TestAdapterUsesTheRequestModel pins that a request may select a model
+// the adapter has a verified profile for, and that the profile's rules are
+// the ones that apply to it.
 func TestAdapterUsesTheRequestModel(t *testing.T) {
 	var body struct {
 		Model string `json:"model"`
@@ -296,25 +298,84 @@ func TestAdapterUsesTheRequestModel(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"subq-snap-preview","answers":{"q":{"type":"noul","noul":0.5}}}`))
+		_, _ = w.Write([]byte(`{"model":"requested-model-2026","answers":{"q":{"type":"noul","noul":0.5}}}`))
 	}))
 	defer server.Close()
 
-	// The configured default differs from the requested model, so the test
-	// proves the request wins rather than the default.
-	model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL, Model: "configured-default"})
-	if err != nil {
-		t.Fatalf("NewSubQ() error = %v", err)
+	config := genericProviderConfig(server.URL)
+	config.Model = "configured-default"
+	config.Profiles = []SystemOneModelProfile{
+		{
+			Model: "requested-model",
+			Capabilities: lebro.DecisionCapabilities{
+				Noul: true,
+				NoulUncertainty: lebro.DecisionUncertainty{
+					Distribution: lebro.DecisionAvailabilityUnavailable,
+					Confidence:   lebro.DecisionAvailabilityUnavailable,
+				},
+			},
+		},
 	}
-	if _, err := model.Decide(context.Background(), lebro.DecisionRequest{
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
 		Model:     "requested-model",
 		State:     "state",
 		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Decide() error = %v", err)
 	}
 	if body.Model != "requested-model" {
 		t.Fatalf("request model = %q, want %q", body.Model, "requested-model")
+	}
+	if response.RequestedModel != "requested-model" {
+		t.Fatalf("Decide() requested model = %q, want %q", response.RequestedModel, "requested-model")
+	}
+	if response.Model != "requested-model-2026" {
+		t.Fatalf("Decide() model = %q, want %q", response.Model, "requested-model-2026")
+	}
+	capabilities, ok := model.CapabilitiesFor("requested-model")
+	if !ok {
+		t.Fatal("CapabilitiesFor() = false, want the model to have a profile")
+	}
+	if capabilities.NoulUncertainty.Confidence != lebro.DecisionAvailabilityUnavailable {
+		t.Fatalf("the profile's noul confidence = %q, want it unavailable", capabilities.NoulUncertainty.Confidence)
+	}
+}
+
+// TestAdapterRejectsAModelWithoutAProfile pins that a request naming a
+// model the adapter has no verified profile for is rejected. Answering it
+// under the default model's rules would advertise capabilities the named
+// model does not have.
+func TestAdapterRejectsAModelWithoutAProfile(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"noul","noul":0.5}}}`))
+	}))
+	defer server.Close()
+
+	model, err := NewSystemOne(genericProviderConfig(server.URL))
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		Model:     "unverified-model",
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	})
+	if !errors.Is(err, lebro.ErrDecisionUnsupportedCapability) {
+		t.Fatalf("Decide() error = %v, want an unsupported capability failure", err)
+	}
+	if requests != 0 {
+		t.Fatalf("the provider received %d requests, want none", requests)
+	}
+	if _, ok := model.CapabilitiesFor("unverified-model"); ok {
+		t.Fatal("CapabilitiesFor() = true, want false for a model without a profile")
 	}
 }
 
@@ -331,27 +392,33 @@ func TestRequestBodyCarriesOnlyDocumentedKeys(t *testing.T) {
 		name  string
 		build func(baseURL string) (lebro.DecisionModel, error)
 		want  []string
+		// answer is the response the provider sends. It follows each
+		// provider's documented answer shape.
+		answer string
 	}{
 		{
 			name: "typesafe",
 			build: func(baseURL string) (lebro.DecisionModel, error) {
 				return NewTypeSafe(TypeSafeConfig{APIKey: "test-key", BaseURL: baseURL})
 			},
-			want: []string{"model", "questions", "state"},
+			want:   []string{"model", "questions", "state"},
+			answer: `{"model":"model","answers":{"q":{"type":"noul","noul":0.5}}}`,
 		},
 		{
 			name: "fastino",
 			build: func(baseURL string) (lebro.DecisionModel, error) {
 				return NewFastino(FastinoConfig{APIKey: "test-key", BaseURL: baseURL})
 			},
-			want: []string{"model", "questions", "state"},
+			want:   []string{"model", "questions", "state"},
+			answer: `{"model":"model","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`,
 		},
 		{
 			name: "subq",
 			build: func(baseURL string) (lebro.DecisionModel, error) {
 				return NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: baseURL})
 			},
-			want: []string{"model", "questions", "state"},
+			want:   []string{"model", "questions", "state"},
+			answer: `{"model":"model","answers":{"q":{"type":"noul","noul":0.5}}}`,
 		},
 	}
 	for _, testCase := range cases {
@@ -363,7 +430,7 @@ func TestRequestBodyCarriesOnlyDocumentedKeys(t *testing.T) {
 					return
 				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"model":"model","answers":{"q":{"type":"noul","noul":0.5}}}`))
+				_, _ = w.Write([]byte(testCase.answer))
 			}))
 			defer server.Close()
 
@@ -400,7 +467,7 @@ func TestFastinoSendsTheStorageOptOutOnlyWhenAsked(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5}}}`))
+		_, _ = w.Write([]byte(`{"model":"glide","answers":{"q":{"type":"noul","noul":0.5,"confidence":0}}}`))
 	}))
 	defer server.Close()
 

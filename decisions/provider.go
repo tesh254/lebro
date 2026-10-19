@@ -53,6 +53,23 @@ const (
 	SystemOneImagesInline SystemOneImageStyle = "inline"
 )
 
+// SystemOneModelProfile binds a provider model to the contract it was
+// verified for.
+//
+// A provider can serve several models, and the models do not necessarily
+// agree on their limits, on the fields their score answers use, or on the
+// uncertainty they report. A profile says which contract a model was
+// verified against, so an adapter never answers one model under another
+// model's rules.
+type SystemOneModelProfile struct {
+	// Model is the provider model identifier. It is required.
+	Model string
+	// Score names the wire fields that hold a score answer for this model.
+	Score SystemOneScoreFields
+	// Capabilities describes what this model supports.
+	Capabilities lebro.DecisionCapabilities
+}
+
 // SystemOneConfig describes a System One provider's wire contract.
 //
 // Every difference between the providers this package adapts is data here:
@@ -86,8 +103,23 @@ type SystemOneConfig struct {
 	// carries the image limits, StructuredInstructions selects whether
 	// instructions and criteria may be structured, MaxStateBytes is checked
 	// before a request is sent, and RetryableStatuses are the HTTP statuses
-	// the provider documents as retryable.
+	// the provider documents as retryable. The uncertainty of each question
+	// kind is described here too, because a provider can report a
+	// confidence for one kind and none for another.
 	Capabilities lebro.DecisionCapabilities
+	// Profiles lists the models the adapter may serve besides the one this
+	// configuration names. A request that names a model with no profile is
+	// rejected: the adapter has no verified contract for that model, and
+	// answering it under the default model's rules would advertise
+	// capabilities it does not have.
+	//
+	// A profile that names the same model as this configuration replaces
+	// that model's capabilities.
+	Profiles []SystemOneModelProfile
+	// DistributionTolerance is the largest deviation a reported probability
+	// distribution may have from a total of one. It covers a provider that
+	// rounds its probabilities. Zero uses the default.
+	DistributionTolerance float64
 	// ImageStyle is the wire shape the provider uses for image inputs. A
 	// shape this package does not implement leaves image inputs disabled.
 	ImageStyle SystemOneImageStyle
@@ -118,8 +150,12 @@ type SystemOneConfig struct {
 // credential placement, model, score fields, capabilities, and retry policy
 // are all configuration. The adapter is safe for concurrent use.
 type SystemOneModel struct {
-	client  *systemOneClient
+	client *systemOneClient
+	// profile is the contract of the adapter's default model.
 	profile systemOneProfile
+	// profiles holds every model the adapter may serve, keyed by model
+	// identifier.
+	profiles map[string]systemOneProfile
 }
 
 var _ lebro.DecisionModel = (*SystemOneModel)(nil)
@@ -132,6 +168,10 @@ var _ lebro.DecisionModel = (*SystemOneModel)(nil)
 // here, or for a gateway that fronts one.
 func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 	profile, err := config.profile()
+	if err != nil {
+		return nil, err
+	}
+	profiles, err := config.profiles(profile)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +224,7 @@ func NewSystemOne(config SystemOneConfig) (*SystemOneModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &SystemOneModel{client: client, profile: profile}, nil
+	return &SystemOneModel{client: client, profile: profile, profiles: profiles}, nil
 }
 
 // ProviderID identifies the adapter.
@@ -192,21 +232,55 @@ func (m *SystemOneModel) ProviderID() lebro.ProviderID {
 	return lebro.ProviderID(m.profile.provider)
 }
 
-// Capabilities describes what the configured provider supports.
+// Capabilities describes what the configured provider supports for its
+// default model.
 //
 // The returned value carries copies of the lists, so a caller cannot change
 // the capabilities every later call reports.
 func (m *SystemOneModel) Capabilities() lebro.DecisionCapabilities {
-	capabilities := m.profile.capabilities
+	capabilities, _ := m.CapabilitiesFor("")
+	return capabilities
+}
+
+// CapabilitiesFor describes what the configured provider supports for a
+// named model. An empty model name means the adapter's default model.
+//
+// It reports false for a model the adapter has no verified profile for.
+func (m *SystemOneModel) CapabilitiesFor(model string) (lebro.DecisionCapabilities, bool) {
+	profile, ok := m.profileFor(model)
+	if !ok {
+		return lebro.DecisionCapabilities{}, false
+	}
+	capabilities := profile.capabilities
 	capabilities.Images.MediaTypes = append([]string(nil), capabilities.Images.MediaTypes...)
 	capabilities.RetryableStatuses = append([]int(nil), capabilities.RetryableStatuses...)
-	return capabilities
+	return capabilities, true
+}
+
+// profileFor resolves the contract of a model.
+//
+// An empty model name means the adapter's default model. A named model needs
+// a verified profile: the adapter never answers one model under another
+// model's capabilities.
+func (m *SystemOneModel) profileFor(model string) (systemOneProfile, bool) {
+	if model == "" {
+		return m.profile, true
+	}
+	if profile, ok := m.profiles[model]; ok {
+		return profile, true
+	}
+	return systemOneProfile{}, false
 }
 
 // Decide evaluates the request with the configured provider and returns the
 // typed answers.
 func (m *SystemOneModel) Decide(ctx context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
-	return decide(ctx, m.client, m.profile, request)
+	profile, ok := m.profileFor(request.Model)
+	if !ok {
+		return lebro.DecisionResponse{}, m.client.failure(lebro.DecisionErrorUnsupportedCapability,
+			fmt.Sprintf("lebro: the provider has no verified profile for model %q", request.Model), nil)
+	}
+	return decide(ctx, m.client, profile, request)
 }
 
 // profile turns the configuration into the internal provider contract.
@@ -215,31 +289,18 @@ func (c SystemOneConfig) profile() (systemOneProfile, error) {
 	if provider == "" {
 		provider = defaultSystemOneProviderID
 	}
-	weighted := c.Score.Weighted
-	if weighted == "" {
-		weighted = defaultScoreWeightedField
-	}
-	if c.Score.Winner != "" && c.Score.Winner == weighted {
-		return systemOneProfile{}, errors.New("lebro: the score weighted and winner fields must differ")
-	}
 	capabilities := c.Capabilities
-	capabilities.RetryableStatuses = append([]int(nil), c.Capabilities.RetryableStatuses...)
-	capabilities.Images.MediaTypes = append([]string(nil), c.Capabilities.Images.MediaTypes...)
-	if c.ImageStyle != SystemOneImagesInline {
-		// A shape this package does not implement leaves image inputs off,
-		// so a request that carries one fails locally.
-		capabilities.Images = lebro.DecisionImageCapabilities{}
-	}
-	buildQuestions := buildSystemOneQuestions
-	if !capabilities.StructuredInstructions {
-		buildQuestions = buildTextOnlyQuestions
+	if err := capabilities.Validate(); err != nil {
+		return systemOneProfile{}, err
 	}
 	profile := systemOneProfile{
-		provider:           provider,
-		capabilities:       capabilities,
-		scoreWeightedField: weighted,
-		scoreWinnerField:   c.Score.Winner,
-		buildQuestions:     buildQuestions,
+		provider:              provider,
+		model:                 c.Model,
+		capabilities:          c.capabilities(),
+		scoreWeightedField:    c.Score.Weighted,
+		scoreWinnerField:      c.Score.Winner,
+		distributionTolerance: c.tolerance(),
+		buildQuestions:        questionBuilder(capabilities),
 		extraFields: func(lebro.DecisionRequest) map[string]any {
 			if !c.DisableStorage {
 				return nil
@@ -249,11 +310,98 @@ func (c SystemOneConfig) profile() (systemOneProfile, error) {
 		maxBodyBytes:     c.MaxBodyBytes,
 		requestIDHeaders: append([]string(nil), c.RequestIDHeaders...),
 	}
-	if capabilities.Images.Enabled {
+	if profile.scoreWeightedField == "" {
+		profile.scoreWeightedField = defaultScoreWeightedField
+	}
+	if profile.scoreWinnerField != "" && profile.scoreWinnerField == profile.scoreWeightedField {
+		return systemOneProfile{}, errors.New("lebro: the score weighted and winner fields must differ")
+	}
+	if profile.capabilities.Images.Enabled {
 		profile.imageFields = inlineImageFields
 		profile.requestSecrets = inlineImageSecrets
 	}
 	return profile, nil
+}
+
+// profiles builds the contracts of every model the adapter may serve.
+//
+// The default model comes from the configuration, and a profile that names
+// it replaces its capabilities. A profile for any other model adds that
+// model to the adapter.
+func (c SystemOneConfig) profiles(defaultProfile systemOneProfile) (map[string]systemOneProfile, error) {
+	profiles := map[string]systemOneProfile{}
+	if defaultProfile.model != "" {
+		profiles[defaultProfile.model] = defaultProfile
+	}
+	for _, entry := range c.Profiles {
+		if entry.Model == "" {
+			return nil, errors.New("lebro: a System One model profile requires a model")
+		}
+		capabilities := entry.Capabilities
+		if err := capabilities.Validate(); err != nil {
+			return nil, err
+		}
+		profile := defaultProfile
+		profile.model = entry.Model
+		profile.capabilities = capabilities
+		if c.ImageStyle != SystemOneImagesInline {
+			// The wire shape is the route's, so a model cannot enable an
+			// input the route cannot encode.
+			profile.capabilities.Images = lebro.DecisionImageCapabilities{}
+		}
+		profile.scoreWeightedField = entry.Score.Weighted
+		profile.scoreWinnerField = entry.Score.Winner
+		if profile.scoreWeightedField == "" {
+			profile.scoreWeightedField = defaultScoreWeightedField
+		}
+		if profile.scoreWinnerField != "" && profile.scoreWinnerField == profile.scoreWeightedField {
+			return nil, errors.New("lebro: the score weighted and winner fields must differ")
+		}
+		if profile.capabilities.Images.Enabled {
+			profile.imageFields = inlineImageFields
+			profile.requestSecrets = inlineImageSecrets
+		} else {
+			profile.imageFields = nil
+			profile.requestSecrets = nil
+		}
+		profile.buildQuestions = questionBuilder(profile.capabilities)
+		profiles[entry.Model] = profile
+	}
+	return profiles, nil
+}
+
+// capabilities returns the configured capabilities with the copies and the
+// image style applied.
+func (c SystemOneConfig) capabilities() lebro.DecisionCapabilities {
+	capabilities := c.Capabilities
+	capabilities.RetryableStatuses = append([]int(nil), c.Capabilities.RetryableStatuses...)
+	capabilities.Images.MediaTypes = append([]string(nil), c.Capabilities.Images.MediaTypes...)
+	if c.ImageStyle != SystemOneImagesInline {
+		// A shape this package does not implement leaves image inputs off,
+		// so a request that carries one fails locally.
+		capabilities.Images = lebro.DecisionImageCapabilities{}
+	}
+	return capabilities
+}
+
+// questionBuilder returns the renderer for the question map.
+//
+// The renderer follows the capabilities it is given, so a model whose profile
+// accepts structured instructions is not answered with the text-only shape.
+func questionBuilder(capabilities lebro.DecisionCapabilities) func(map[lebro.DecisionQuestionID]lebro.DecisionQuestion) (map[string]any, error) {
+	if !capabilities.StructuredInstructions {
+		return buildTextOnlyQuestions
+	}
+	return buildSystemOneQuestions
+}
+
+// tolerance returns the largest deviation a reported probability
+// distribution may have from a total of one.
+func (c SystemOneConfig) tolerance() float64 {
+	if c.DistributionTolerance <= 0 {
+		return defaultDistributionTolerance
+	}
+	return c.DistributionTolerance
 }
 
 // inlineImageFields renders the images in a top-level "images" array of

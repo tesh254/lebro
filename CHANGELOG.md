@@ -27,6 +27,25 @@ All notable changes to this project are documented in this file.
   binary answer into a deterministic `select`, `review`, or `escalate`
   recommendation and never authorizes an action on the application's behalf.
 
+  The answer contract carries what a provider needs to be understood without
+  being re-interpreted. `RefusalAnswer` is a first-class answer: a provider
+  that declines a question said so, which is not a false answer and not a
+  failure to reach the provider. `PredicateQuestion` and `PredicateAnswer` are
+  aliases for the binary judgment, so a provider's own name for it needs no
+  second meaning. Every reported confidence carries the metric it was
+  computed with (`DecisionConfidenceMetric`), because two providers report a
+  confidence in the same range and mean different things by it;
+  `DecisionGate.ConfidenceMetric` binds a threshold to the measure it was
+  written against, and an answer that reports a different measure never
+  selects. `DecisionUncertainty` describes the distribution and the
+  confidence of each question kind separately, so an adapter no longer
+  claims a confidence for a kind its provider does not report one for.
+  `DecisionResponse` separates the requested model from the resolved one and
+  reports the upstream provider when a gateway names it. `DecisionTopProbability`,
+  `DecisionTopTwoMargin`, and `ScoreAnswer.ExpectedIndex` compute derived
+  quantities from a reported distribution without ever replacing a reported
+  value.
+
   The new `decisions` package adapts three System One providers:
   `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino` (Fastino
   GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview). Each one is configured
@@ -40,6 +59,13 @@ All notable changes to this project are documented in this file.
   A provider with a different wire contract needs its own adapter. The named
   constructors and the generic one return the same `*decisions.SystemOneModel`.
   Retries are bounded, honor `Retry-After`, and never switch providers.
+  Capabilities belong to a model rather than to an adapter:
+  `SystemOneConfig.Profiles` binds each model the adapter may serve to the
+  contract it was verified against, `DecisionModel.CapabilitiesFor` reports
+  it, and a request that names a model with no profile is rejected rather
+  than answered under another model's rules. A reported distribution must
+  cover every requested outcome and add up to one, and
+  `SystemOneConfig.DistributionTolerance` covers a provider that rounds.
   SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are
   encoded as one line of base64 at the HTTP boundary only, at most four images
   of at most 4 MiB each and 8 MiB in total, and an unsupported or over-limit

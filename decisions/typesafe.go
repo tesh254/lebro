@@ -78,9 +78,26 @@ func NewTypeSafe(config TypeSafeConfig) (*SystemOneModel, error) {
 			MultipleQuestions:      true,
 			StructuredState:        true,
 			StructuredInstructions: true,
-			Distributions:          true,
-			Confidence:             true,
 			Batching:               false,
+			// TypeSafe reports a probability distribution and a confidence
+			// on every choice and score answer, and it reports neither on a
+			// noul answer: the probability already carries the uncertainty
+			// there. The two confidence measures mean different things, so
+			// each kind names the one it uses.
+			NoulUncertainty: lebro.DecisionUncertainty{
+				Distribution: lebro.DecisionAvailabilityUnavailable,
+				Confidence:   lebro.DecisionAvailabilityUnavailable,
+			},
+			ChoiceUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceTopProbabilityUniform,
+			},
+			ScoreUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceModalDistanceUniform,
+			},
 			// TypeSafe documents a request body limit, not a byte limit for
 			// the state alone. The body limit is enforced separately.
 			MaxStateBytes:     0,

@@ -585,7 +585,7 @@ func TestDecisionResponseValidate(t *testing.T) {
 			name: "score confidence out of range",
 			response: DecisionResponse{
 				Answers: map[DecisionQuestionID]DecisionAnswer{
-					"q": ScoreAnswer{Confidence: float64Pointer(1.2), Provenance: ScoreNative},
+					"q": ScoreAnswer{Confidence: float64Pointer(1.2), ConfidenceMetric: DecisionConfidenceUnknown, Provenance: ScoreNative},
 				},
 				Attempts: 1,
 			},
@@ -689,7 +689,12 @@ func TestDecisionErrorPreservesCause(t *testing.T) {
 
 func TestDecisionGate(t *testing.T) {
 	minimum := 0.6
-	gate := DecisionGate{SelectProbability: 0.8, EscalateProbability: 0.2, MinimumConfidence: &minimum}
+	gate := DecisionGate{
+		SelectProbability:   0.8,
+		EscalateProbability: 0.2,
+		MinimumConfidence:   &minimum,
+		ConfidenceMetric:    DecisionConfidenceTopTwoMargin,
+	}
 	cases := []struct {
 		name   string
 		gate   DecisionGate
@@ -699,25 +704,25 @@ func TestDecisionGate(t *testing.T) {
 		{
 			name:   "confident yes",
 			gate:   gate,
-			answer: NoulAnswer{ProbabilityYes: 0.9, Confidence: float64Pointer(0.7)},
+			answer: NoulAnswer{ProbabilityYes: 0.9, Confidence: float64Pointer(0.7), ConfidenceMetric: DecisionConfidenceTopTwoMargin},
 			want:   DecisionOutcomeSelect,
 		},
 		{
 			name:   "ambiguous",
 			gate:   gate,
-			answer: NoulAnswer{ProbabilityYes: 0.5, Confidence: float64Pointer(0.7)},
+			answer: NoulAnswer{ProbabilityYes: 0.5, Confidence: float64Pointer(0.7), ConfidenceMetric: DecisionConfidenceTopTwoMargin},
 			want:   DecisionOutcomeReview,
 		},
 		{
 			name:   "confident no",
 			gate:   gate,
-			answer: NoulAnswer{ProbabilityYes: 0.1, Confidence: float64Pointer(0.7)},
+			answer: NoulAnswer{ProbabilityYes: 0.1, Confidence: float64Pointer(0.7), ConfidenceMetric: DecisionConfidenceTopTwoMargin},
 			want:   DecisionOutcomeEscalate,
 		},
 		{
 			name:   "low confidence",
 			gate:   gate,
-			answer: NoulAnswer{ProbabilityYes: 0.9, Confidence: float64Pointer(0.2)},
+			answer: NoulAnswer{ProbabilityYes: 0.9, Confidence: float64Pointer(0.2), ConfidenceMetric: DecisionConfidenceTopTwoMargin},
 			want:   DecisionOutcomeReview,
 		},
 		{
@@ -753,6 +758,7 @@ func TestDecisionGateValidate(t *testing.T) {
 		{name: "escalate below zero", gate: DecisionGate{EscalateProbability: -0.1}},
 		{name: "inverted thresholds", gate: DecisionGate{SelectProbability: 0.2, EscalateProbability: 0.8}},
 		{name: "confidence above one", gate: DecisionGate{MinimumConfidence: float64Pointer(1.5)}},
+		{name: "confidence without a metric", gate: DecisionGate{MinimumConfidence: float64Pointer(0.5)}},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -781,7 +787,7 @@ func TestDecisionGateFailsClosed(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			answer := NoulAnswer{ProbabilityYes: 0.99, Confidence: float64Pointer(0.99)}
+			answer := NoulAnswer{ProbabilityYes: 0.99, Confidence: float64Pointer(0.99), ConfidenceMetric: DecisionConfidenceTopTwoMargin}
 			if got := testCase.gate.Noul(answer); got != DecisionOutcomeReview {
 				t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeReview)
 			}
@@ -895,5 +901,191 @@ func TestDecisionResponseValidateAcceptsPointerAnswers(t *testing.T) {
 	}
 	if err := response.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+// TestDecisionRefusalAnswer pins that a refusal is a valid answer and that
+// it is distinct from every other answer kind. A provider declining to
+// answer is not a low probability and not a failure to reach the provider.
+func TestDecisionRefusalAnswer(t *testing.T) {
+	response := DecisionResponse{
+		Answers:  map[DecisionQuestionID]DecisionAnswer{"q": RefusalAnswer{Reason: "the state is too ambiguous"}},
+		Attempts: 1,
+	}
+	if err := response.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+	withoutReason := DecisionResponse{
+		Answers:  map[DecisionQuestionID]DecisionAnswer{"q": RefusalAnswer{}},
+		Attempts: 1,
+	}
+	if err := withoutReason.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+// TestDecisionGateFailsClosedOnARefusal pins that a gate never turns a
+// refusal into a selection. The gate's thresholds describe a binary
+// judgment, and a refusal is not one.
+func TestDecisionGateFailsClosedOnARefusal(t *testing.T) {
+	gate := DecisionGate{SelectProbability: 0.8, EscalateProbability: 0.2}
+	if got := gate.Answer(RefusalAnswer{Reason: "the state is too ambiguous"}); got != DecisionOutcomeReview {
+		t.Fatalf("Answer() = %q, want %q", got, DecisionOutcomeReview)
+	}
+	if got := gate.Answer(ChoiceAnswer{Choice: "a"}); got != DecisionOutcomeReview {
+		t.Fatalf("Answer() = %q, want %q", got, DecisionOutcomeReview)
+	}
+	if got := gate.Answer(ScoreAnswer{}); got != DecisionOutcomeReview {
+		t.Fatalf("Answer() = %q, want %q", got, DecisionOutcomeReview)
+	}
+	if got := gate.Answer(NoulAnswer{ProbabilityYes: 0.95}); got != DecisionOutcomeSelect {
+		t.Fatalf("Answer() = %q, want %q", got, DecisionOutcomeSelect)
+	}
+}
+
+// TestDecisionGateFailsClosedOnAnotherMetric pins that a confidence is only
+// compared with a threshold written against the same measure.
+func TestDecisionGateFailsClosedOnAnotherMetric(t *testing.T) {
+	minimum := 0.5
+	gate := DecisionGate{
+		SelectProbability:   0.8,
+		EscalateProbability: 0.2,
+		MinimumConfidence:   &minimum,
+		ConfidenceMetric:    DecisionConfidenceTopTwoMargin,
+	}
+	other := NoulAnswer{ProbabilityYes: 0.95, Confidence: float64Pointer(0.9), ConfidenceMetric: DecisionConfidenceTopProbabilityUniform}
+	if got := gate.Noul(other); got != DecisionOutcomeReview {
+		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeReview)
+	}
+	same := NoulAnswer{ProbabilityYes: 0.95, Confidence: float64Pointer(0.9), ConfidenceMetric: DecisionConfidenceTopTwoMargin}
+	if got := gate.Noul(same); got != DecisionOutcomeSelect {
+		t.Fatalf("Noul() = %q, want %q", got, DecisionOutcomeSelect)
+	}
+}
+
+// TestDecisionAnswerConfidenceNeedsAMetric pins that a confidence and the
+// metric that says what it means travel together.
+func TestDecisionAnswerConfidenceNeedsAMetric(t *testing.T) {
+	withConfidence := ScoreAnswer{Confidence: float64Pointer(0.9), Provenance: ScoreNative}
+	if err := validateDecisionAnswer(withConfidence); err == nil {
+		t.Fatal("validateDecisionAnswer() error = nil, want a failure")
+	}
+	withMetric := ScoreAnswer{ConfidenceMetric: DecisionConfidenceUnknown, Provenance: ScoreNative}
+	if err := validateDecisionAnswer(withMetric); err == nil {
+		t.Fatal("validateDecisionAnswer() error = nil, want a failure")
+	}
+	complete := ScoreAnswer{Confidence: float64Pointer(0.9), ConfidenceMetric: DecisionConfidenceUnknown, Provenance: ScoreNative}
+	if err := validateDecisionAnswer(complete); err != nil {
+		t.Fatalf("validateDecisionAnswer() error = %v, want nil", err)
+	}
+}
+
+// TestDecisionDerivedHelpers pins that the derived helpers report what they
+// compute and never stand in for a provider's own number.
+func TestDecisionDerivedHelpers(t *testing.T) {
+	choice := ChoiceAnswer{
+		Choice:        "a",
+		Probabilities: map[DecisionOptionID]float64{"a": 0.75, "b": 0.25, "c": 0},
+	}
+	top, ok := DecisionTopProbability(choice.Probabilities)
+	if !ok || top != 0.75 {
+		t.Fatalf("DecisionTopProbability() = %v, %v, want 0.75, true", top, ok)
+	}
+	margin, ok := DecisionTopTwoMargin(choice.Probabilities)
+	if !ok || margin != 0.5 {
+		t.Fatalf("DecisionTopTwoMargin() = %v, %v, want 0.5, true", margin, ok)
+	}
+	if _, ok := DecisionTopTwoMargin(map[DecisionOptionID]float64{"a": 0.5}); ok {
+		t.Fatal("DecisionTopTwoMargin() = true, want false for a single outcome")
+	}
+	if _, ok := DecisionTopProbability(map[DecisionOptionID]float64{}); ok {
+		t.Fatal("DecisionTopProbability() = true, want false for an empty distribution")
+	}
+
+	score := ScoreAnswer{
+		Probabilities: map[int]float64{0: 0.2, 1: 0.3, 2: 0.5},
+		ExpectedLevel: float64Pointer(99),
+		Provenance:    ScoreNative,
+	}
+	index, ok := score.ExpectedIndex()
+	if !ok || index != 1.3 {
+		t.Fatalf("ExpectedIndex() = %v, %v, want 1.3, true", index, ok)
+	}
+	if score.ExpectedLevel == nil || *score.ExpectedLevel != 99 {
+		t.Fatal("ExpectedIndex() overwrote the provider's own score")
+	}
+	if _, ok := (ScoreAnswer{}).ExpectedIndex(); ok {
+		t.Fatal("ExpectedIndex() = true, want false without a distribution")
+	}
+}
+
+// TestDecisionCapabilitiesValidate pins that a kind that reports a
+// confidence names the metric that confidence means.
+func TestDecisionCapabilitiesValidate(t *testing.T) {
+	cases := []struct {
+		name         string
+		capabilities DecisionCapabilities
+		wantError    bool
+	}{
+		{
+			name: "a confidence without a metric",
+			capabilities: DecisionCapabilities{
+				ChoiceUncertainty: DecisionUncertainty{Confidence: DecisionAvailabilityRequired},
+			},
+			wantError: true,
+		},
+		{
+			name: "a metric without a confidence",
+			capabilities: DecisionCapabilities{
+				ChoiceUncertainty: DecisionUncertainty{ConfidenceMetric: DecisionConfidenceUnknown},
+			},
+			wantError: true,
+		},
+		{
+			name: "an unknown availability",
+			capabilities: DecisionCapabilities{
+				ScoreUncertainty: DecisionUncertainty{Confidence: DecisionAvailabilityRequired, ConfidenceMetric: DecisionConfidenceUnknown, Distribution: DecisionAvailability("maybe")},
+			},
+			wantError: true,
+		},
+		{
+			name: "a complete contract",
+			capabilities: DecisionCapabilities{
+				NoulUncertainty:   DecisionUncertainty{Confidence: DecisionAvailabilityUnavailable},
+				ChoiceUncertainty: DecisionUncertainty{Confidence: DecisionAvailabilityRequired, ConfidenceMetric: DecisionConfidenceUnknown},
+			},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := testCase.capabilities.Validate()
+			if testCase.wantError && err == nil {
+				t.Fatal("Validate() error = nil, want a failure")
+			}
+			if !testCase.wantError && err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestPredicateAliases pins that the neutral name and the provider name
+// describe the same question and the same answer.
+func TestPredicateAliases(t *testing.T) {
+	var question DecisionQuestion = PredicateQuestion{Instructions: "Is it?"}
+	noul, ok := question.(NoulQuestion)
+	if !ok {
+		t.Fatalf("the question = %#v, want a noul question", question)
+	}
+	if noul.Instructions != "Is it?" {
+		t.Fatalf("the instructions = %#v, want %q", noul.Instructions, "Is it?")
+	}
+	var answer DecisionAnswer = PredicateAnswer{ProbabilityYes: 0.8, ConfidenceMetric: DecisionConfidenceUnknown}
+	predicate, ok := answer.(NoulAnswer)
+	if !ok {
+		t.Fatalf("the answer = %#v, want a noul answer", answer)
+	}
+	if predicate.ProbabilityYes != 0.8 {
+		t.Fatalf("the probability = %v, want 0.8", predicate.ProbabilityYes)
 	}
 }

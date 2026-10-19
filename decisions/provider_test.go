@@ -29,12 +29,25 @@ func genericProviderConfig(baseURL string) SystemOneConfig {
 			MultipleQuestions:      true,
 			StructuredState:        true,
 			StructuredInstructions: true,
-			Distributions:          true,
-			Confidence:             true,
 			MaxQuestions:           8,
 			MaxChoiceOptions:       16,
 			MaxScoreLevels:         5,
 			RetryableStatuses:      []int{http.StatusTooManyRequests},
+			NoulUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityUnavailable,
+				Confidence:       lebro.DecisionAvailabilityOptional,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
+			ChoiceUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityOptional,
+				Confidence:       lebro.DecisionAvailabilityOptional,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
+			ScoreUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityOptional,
+				Confidence:       lebro.DecisionAvailabilityOptional,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
 		},
 		ImageStyle:       SystemOneImagesInline,
 		MaxBodyBytes:     1 << 20,
@@ -136,6 +149,9 @@ func TestGenericProviderByConfiguration(t *testing.T) {
 	}
 	if noul.Confidence == nil || *noul.Confidence != 0.62 {
 		t.Fatalf("Decide() confidence = %#v, want 0.62", noul.Confidence)
+	}
+	if noul.ConfidenceMetric != lebro.DecisionConfidenceTopTwoMargin {
+		t.Fatalf("Decide() confidence metric = %q, want %q", noul.ConfidenceMetric, lebro.DecisionConfidenceTopTwoMargin)
 	}
 }
 
@@ -546,5 +562,214 @@ func TestConfidenceIsLeftNilWhenTheProviderOmitsIt(t *testing.T) {
 	}
 	if score.Confidence != nil {
 		t.Fatal("the score answer invented a confidence")
+	}
+}
+
+// TestAdapterReportsTheUpstreamProvider pins that a gateway's answer says
+// which provider served it, and that the generation identifier reaches the
+// caller when no header carries one.
+func TestAdapterReportsTheUpstreamProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "gen-dec-1792446822-QOJ1kflabCtbSXe9ESrY",
+			"provider": "TypeSafe",
+			"model": "typesafe/jev-1.14-20261014",
+			"answers": {"q": {"type": "noul", "noul": 0.89}},
+			"usage": {"input_tokens": 428, "output_tokens": 71, "cost": 0.000017976}
+		}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.NoulUncertainty = lebro.DecisionUncertainty{
+		Distribution: lebro.DecisionAvailabilityUnavailable,
+		Confidence:   lebro.DecisionAvailabilityUnavailable,
+	}
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if response.UpstreamProvider != "TypeSafe" {
+		t.Fatalf("Decide() upstream provider = %q, want %q", response.UpstreamProvider, "TypeSafe")
+	}
+	if response.Provider != "generic" {
+		t.Fatalf("Decide() provider = %q, want %q", response.Provider, "generic")
+	}
+	if response.RequestedModel != "generic-model" {
+		t.Fatalf("Decide() requested model = %q, want %q", response.RequestedModel, "generic-model")
+	}
+	if response.Model != "typesafe/jev-1.14-20261014" {
+		t.Fatalf("Decide() model = %q, want %q", response.Model, "typesafe/jev-1.14-20261014")
+	}
+	if response.RequestID != "gen-dec-1792446822-QOJ1kflabCtbSXe9ESrY" {
+		t.Fatalf("Decide() request ID = %q, want the generation identifier", response.RequestID)
+	}
+}
+
+// TestAdapterRejectsAMissingRequiredDistribution pins that a response
+// without a distribution the provider always sends is malformed. The
+// per-outcome probabilities cannot be reconstructed.
+func TestAdapterRejectsAMissingRequiredDistribution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"choice","choice":"a"}}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.ChoiceUncertainty.Distribution = lebro.DecisionAvailabilityRequired
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		State: "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"q": lebro.ChoiceQuestion{
+				Instructions: "Which one?",
+				Criteria:     map[lebro.DecisionOptionID]lebro.JSONValue{"a": "first", "b": "second"},
+			},
+		},
+	})
+	if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
+		t.Fatalf("Decide() error = %v, want a malformed response failure", err)
+	}
+}
+
+// TestAdapterRejectsADistributionThatDoesNotAddUp pins that a reported
+// distribution has to be a distribution.
+func TestAdapterRejectsADistributionThatDoesNotAddUp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.9,"b":0.4}}}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.ChoiceUncertainty.Distribution = lebro.DecisionAvailabilityRequired
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		State: "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"q": lebro.ChoiceQuestion{
+				Instructions: "Which one?",
+				Criteria:     map[lebro.DecisionOptionID]lebro.JSONValue{"a": "first", "b": "second"},
+			},
+		},
+	})
+	if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
+		t.Fatalf("Decide() error = %v, want a malformed response failure", err)
+	}
+}
+
+// TestAdapterAcceptsARoundedDistribution pins that a provider that rounds
+// its probabilities to two decimals is still a provider whose distribution
+// adds up to one.
+func TestAdapterAcceptsARoundedDistribution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.34,"b":0.33,"c":0.33}}}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.ChoiceUncertainty.Distribution = lebro.DecisionAvailabilityRequired
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
+		State: "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+			"q": lebro.ChoiceQuestion{
+				Instructions: "Which one?",
+				Criteria: map[lebro.DecisionOptionID]lebro.JSONValue{
+					"a": "first", "b": "second", "c": "third",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	answer, ok := response.Answers["q"].(lebro.ChoiceAnswer)
+	if !ok {
+		t.Fatalf("Decide() answer = %#v, want a choice answer", response.Answers["q"])
+	}
+	if len(answer.Probabilities) != 3 {
+		t.Fatalf("Decide() probabilities = %#v, want three options", answer.Probabilities)
+	}
+}
+
+// TestAdapterRejectsAnAnswerForAnUnknownQuestion pins that an answer the
+// caller never asked for is a response the adapter cannot place.
+func TestAdapterRejectsAnAnswerForAnUnknownQuestion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"noul","noul":0.5},"other":{"type":"noul","noul":0.6}}}`))
+	}))
+	defer server.Close()
+
+	model, err := NewSystemOne(genericProviderConfig(server.URL))
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	})
+	if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
+		t.Fatalf("Decide() error = %v, want a malformed response failure", err)
+	}
+}
+
+// TestAdapterStampsTheConfidenceMetric pins that a reported confidence
+// carries the metric that says what it means, and that a provider whose
+// profile does not describe it gets an unknown metric rather than a
+// fabricated one.
+func TestAdapterStampsTheConfidenceMetric(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"q":{"type":"noul","noul":0.5,"confidence":0.9}}}`))
+	}))
+	defer server.Close()
+
+	config := genericProviderConfig(server.URL)
+	config.Capabilities.NoulUncertainty = lebro.DecisionUncertainty{
+		Distribution:     lebro.DecisionAvailabilityUnavailable,
+		Confidence:       lebro.DecisionAvailabilityOptional,
+		ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+	}
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	response, err := model.Decide(context.Background(), lebro.DecisionRequest{
+		State:     "state",
+		Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": lebro.NoulQuestion{Instructions: "Is it?"}},
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	answer, ok := response.Answers["q"].(lebro.NoulAnswer)
+	if !ok {
+		t.Fatalf("Decide() answer = %#v, want a noul answer", response.Answers["q"])
+	}
+	if answer.Confidence == nil || *answer.Confidence != 0.9 {
+		t.Fatalf("Decide() confidence = %#v, want 0.9", answer.Confidence)
+	}
+	if answer.ConfidenceMetric != lebro.DecisionConfidenceUnknown {
+		t.Fatalf("Decide() confidence metric = %q, want %q", answer.ConfidenceMetric, lebro.DecisionConfidenceUnknown)
 	}
 }

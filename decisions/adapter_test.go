@@ -32,8 +32,17 @@ type decisionFixture struct {
 	// noulConfidence reports whether the provider reports a confidence for a
 	// noul answer.
 	noulConfidence bool
+	// noulConfidenceMetric, choiceConfidenceMetric, and scoreConfidenceMetric
+	// name the metric each kind's confidence means for the provider. An
+	// empty metric means the provider reports no confidence for that kind.
+	noulConfidenceMetric   lebro.DecisionConfidenceMetric
+	choiceConfidenceMetric lebro.DecisionConfidenceMetric
+	scoreConfidenceMetric  lebro.DecisionConfidenceMetric
 	// model is the model identity the provider reports.
 	model string
+	// requestedModel is the model the request asks for. It can differ from
+	// the reported one when a provider resolves an alias.
+	requestedModel string
 }
 
 // decisionFacts is the computed answer content for one question.
@@ -253,6 +262,7 @@ func expectedDecisionResponse(request lebro.DecisionRequest, facts map[lebro.Dec
 			answer := lebro.NoulAnswer{ProbabilityYes: fact.noul}
 			if fixture.noulConfidence {
 				answer.Confidence = floatPointer(*fact.confidence)
+				answer.ConfidenceMetric = fixture.noulConfidenceMetric
 			}
 			answers[id] = answer
 		case "choice":
@@ -264,6 +274,7 @@ func expectedDecisionResponse(request lebro.DecisionRequest, facts map[lebro.Dec
 				answer.Probabilities[lebro.DecisionOptionID(option)] = probability
 			}
 			answer.Confidence = floatPointer(*fact.confidence)
+			answer.ConfidenceMetric = fixture.choiceConfidenceMetric
 			answers[id] = answer
 		case "score":
 			answer := lebro.ScoreAnswer{
@@ -292,13 +303,15 @@ func expectedDecisionResponse(request lebro.DecisionRequest, facts map[lebro.Dec
 			expected := fact.score
 			answer.ExpectedLevel = &expected
 			answer.Confidence = floatPointer(*fact.confidence)
+			answer.ConfidenceMetric = fixture.scoreConfidenceMetric
 			answers[id] = answer
 		}
 	}
 	return lebro.DecisionResponse{
-		Provider: lebro.ProviderID(fixture.name),
-		Model:    fixture.model,
-		Answers:  answers,
+		Provider:       lebro.ProviderID(fixture.name),
+		RequestedModel: fixture.requestedModel,
+		Model:          fixture.model,
+		Answers:        answers,
 		Usage: &lebro.DecisionUsage{
 			InputTokens:  &inputTokens,
 			OutputTokens: &outputTokens,

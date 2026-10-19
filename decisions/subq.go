@@ -78,9 +78,26 @@ func NewSubQ(config SubQConfig) (*SystemOneModel, error) {
 			MultipleQuestions:      true,
 			StructuredState:        true,
 			StructuredInstructions: true,
-			Distributions:          true,
-			Confidence:             true,
 			Batching:               false,
+			// SubQ reports a probability for every option and a confidence on
+			// every choice and score answer, and a noul answer carries
+			// neither. SubQ documents that it exposes a confidence but not
+			// what the number means, so the metric stays unknown: the value
+			// is there and it cannot be compared with another provider's.
+			NoulUncertainty: lebro.DecisionUncertainty{
+				Distribution: lebro.DecisionAvailabilityUnavailable,
+				Confidence:   lebro.DecisionAvailabilityUnavailable,
+			},
+			ChoiceUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+			},
+			ScoreUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+			},
 			Images: lebro.DecisionImageCapabilities{
 				Enabled:          true,
 				MediaTypes:       []string{"image/png", "image/jpeg", "image/webp"},

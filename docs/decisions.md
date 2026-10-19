@@ -59,10 +59,29 @@ Three question kinds are available, and the set is closed:
 | `ChoiceQuestion` | A map of caller-owned option IDs to descriptions | The selected option, and the distribution over every option when the provider reports one |
 | `ScoreQuestion` | An ordered list of level descriptions, lowest first | The weighted level, and a winning level when the provider reports one |
 
+`PredicateQuestion` and `PredicateAnswer` are aliases for `NoulQuestion` and
+`NoulAnswer`. A binary judgment is the same judgment whatever it is called,
+and one of the providers calls it a predicate.
+
 A response carries one answer per requested question, keyed by the
-caller-owned question ID, plus the provider and model identity, the reported
+caller-owned question ID, plus the identity of the exchange, the reported
 usage, the provider request identifier, the elapsed time, and the number of
 attempts.
+
+The identity has three parts, because they answer three different questions:
+
+```go
+response.Provider            // the adapter that made the request
+response.UpstreamProvider    // the provider that served it, when a gateway reports it
+response.RequestedModel      // the model the request asked for
+response.Model               // the model the provider resolved it to
+```
+
+`RequestedModel` and `Model` differ whenever the provider resolves an alias:
+OpenRouter answers the `~typesafe/jev-latest` alias with
+`typesafe/jev-1.14-20261014`, and Fastino answers `fastino/GLiDE` with
+`glide_v2`. An application that records what it asked for and what it got
+keeps both.
 
 ```go
 answer := response.Answers["urgency"].(lebro.ScoreAnswer)
@@ -90,14 +109,49 @@ never fills in a value the provider did not report.
 - **Confidence and distributions are reported, never derived.**
   `Confidence` is `nil` when the provider does not report one, and a
   distribution is absent when the provider does not report one. A
-  distribution that *is* reported must cover every requested option or level:
-  a partial one is a `lebro.ErrDecisionMalformedResponse` failure, not a
-  partially filled answer.
+  distribution that *is* reported must cover every requested option or level
+  and must add up to one: a partial or an unbalanced one is a
+  `lebro.ErrDecisionMalformedResponse` failure, not a partially filled
+  answer. An absent distribution is never read as a distribution of zeros.
+- **A confidence means one thing at a time.** Two providers report a
+  confidence in the same range for the same question and mean different
+  things by it, so every answer carries the metric its confidence was
+  computed with:
+
+  | Metric | Meaning | Reported by |
+  | --- | --- | --- |
+  | `DecisionConfidenceTopProbabilityUniform` | how far the largest probability sits above an even split | TypeSafe, choice |
+  | `DecisionConfidenceModalDistanceUniform` | the weighted distance from the most likely level, against an even spread | TypeSafe, score |
+  | `DecisionConfidenceTopTwoMargin` | the gap between the two highest probabilities | Fastino, choice and score |
+  | `DecisionConfidenceDistanceFromHalf` | the absolute distance of a probability from one half | Fastino, noul |
+  | `DecisionConfidenceUnknown` | the provider reports a number and does not document what it means | SubQ, choice and score |
+
+  A number and a threshold are only comparable when both were written
+  against the same measure, so `lebro.DecisionGate` binds its confidence
+  threshold to a metric and fails closed on an answer that reports a
+  different one.
+- **A refusal is a judgment, not a failure.** `RefusalAnswer` is a first
+  class answer: the provider tried to answer and declined. It is not a false
+  answer, not a low probability, and not a failure to reach the provider. A
+  gate turns a refusal into a review, never into a selection.
 
 `ScoreAnswer.Provenance` records where a value came from. `ScoreNative` means
 the provider reported it; `ScoreNormalized` means an adapter derived it from
 a documented distribution. The adapters in this release report native values
 only.
+
+A caller who wants the probability-weighted level of a distribution the
+provider already sent can compute one, and the contract keeps it apart from
+the provider's own number:
+
+```go
+index, ok := answer.ExpectedIndex() // derived from the reported distribution
+top, ok := lebro.DecisionTopProbability(answer.Probabilities)
+margin, ok := lebro.DecisionTopTwoMargin(answer.Probabilities)
+```
+
+A derived value never overwrites a reported one: `ExpectedLevel` stays exactly
+as the provider sent it.
 
 ## Capability matrix
 
@@ -114,8 +168,16 @@ provider documents no limit, not that the limit is zero.
 | Multiple questions | yes | yes | yes, up to 16 |
 | Structured state | yes | yes | yes |
 | Structured instructions | yes | no, text only | yes |
-| Distributions | yes | yes | yes |
-| Confidence | choice and score only | every answer type | choice and score only |
+| Distribution, noul | no | no | no |
+| Distribution, choice | required | required | required |
+| Distribution, score | required | required | required |
+| Confidence, noul | no | required | no |
+| Confidence, choice | required | required | required |
+| Confidence, score | required | required | required |
+| Confidence metric, noul | — | `distance_from_half` | — |
+| Confidence metric, choice | `top_probability_uniform` | `top_two_margin` | unknown |
+| Confidence metric, score | `modal_distance_uniform` | `top_two_margin` | unknown |
+| Refusal | no | no | no |
 | Image media types | not exposed by this adapter | not exposed by this adapter | `image/png`, `image/jpeg`, `image/webp` |
 | Maximum images | not exposed by this adapter | not exposed by this adapter | 4 |
 | Maximum bytes per image | not exposed by this adapter | not exposed by this adapter | 4 MiB decoded |
@@ -132,6 +194,13 @@ provider documents no limit, not that the limit is zero.
 TypeSafe documents an image capability of its own. This release does not expose
 it, so the adapter advertises no image support rather than guessing at a wire
 format the release does not implement.
+
+"Required" means the provider reports the value on every answer of that kind,
+and an answer without it is a malformed response. "No" means the provider
+reports no such value for that kind. The uncertainty belongs to the question
+kind rather than to the adapter: TypeSafe reports a confidence on a choice
+answer and none on a noul answer, so an adapter-wide confidence flag would
+have been wrong.
 
 A model identifier is configuration, not a library assumption: each adapter
 sends the model from its configuration, or the model a request names, and
@@ -156,9 +225,23 @@ model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
         Noul: true, Choice: true, Score: true,
         MultipleQuestions: true, StructuredState: true,
         StructuredInstructions: true,
-        Distributions: true, Confidence: true,
         MaxQuestions: 16, MaxChoiceOptions: 255, MaxScoreLevels: 10,
         RetryableStatuses: []int{429, 503},
+        NoulUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityUnavailable,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+        ChoiceUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityRequired,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+        ScoreUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityRequired,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
     },
 })
 ```
@@ -178,9 +261,41 @@ configuration names is a malformed response, not a silently different
 answer.
 
 The safe defaults are the restrictive ones: instructions and criteria are
-text only, image inputs are disabled, and the provider is unnamed. Set
-`Capabilities.StructuredInstructions` for a provider that accepts
-structured values.
+text only, image inputs are disabled, the provider is unnamed, and a kind
+whose uncertainty is left out reports nothing. Set
+`Capabilities.StructuredInstructions` for a provider that accepts structured
+values, and describe the uncertainty of each kind the provider reports.
+
+### Capabilities belong to a model
+
+A provider can serve several models, and the models do not necessarily agree
+on their limits, on the fields their score answers use, or on the uncertainty
+they report. The capabilities an adapter advertises are therefore the
+capabilities of one model, and a request that names another model is answered
+under that model's profile or rejected:
+
+```go
+model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
+    // ... the default model's contract ...
+    Profiles: []decisions.SystemOneModelProfile{
+        {
+            Model: "some-other-model",
+            Score: decisions.SystemOneScoreFields{Weighted: "expected_level", Winner: "score"},
+            Capabilities: lebro.DecisionCapabilities{ /* that model's contract */ },
+        },
+    },
+})
+```
+
+`CapabilitiesFor(model)` reports the contract of a named model, and reports
+false for a model the adapter has no profile for. A request that names such a
+model fails with `lebro.ErrDecisionUnsupportedCapability` before it reaches
+the provider: answering it under the default model's rules would advertise
+limits and uncertainty the named model does not have.
+
+A gateway is part of a model's identity. The same model behind two routes can
+read the state differently, so the profile belongs to the route and the model
+together.
 
 ### Image inputs are per provider
 
@@ -217,7 +332,15 @@ The request reaches the provider through the gateway, and the answers keep
 the provider's semantics: a noul answer from Jev still carries no
 confidence, and a score answer still carries no native winner. The gateway
 reports the request identity in its own response header, which the adapter
-reads alongside the provider's.
+reads alongside the provider's, and it names the provider that served the
+request, which reaches the caller as `Response.UpstreamProvider`. The model
+the request named and the model the gateway resolved it to are reported
+separately, so an application can tell `~typesafe/jev-latest` from
+`typesafe/jev-1.14-20261014`.
+
+The gateway is part of the model's identity: the same model behind two routes
+can read the state differently, so the capabilities belong to the route and
+the model together.
 
 A gateway's System One endpoint takes the provider's own model alias, not the
 gateway's chat model of the same family. On OpenRouter that alias is
@@ -330,12 +453,15 @@ deployment is expected to handle this.
 OpenAI's native Decisions API is **not** implemented in this release, and the
 `openai` package remains a chat-completions adapter. The OpenAI Decisions
 surface differs from the System One protocol these adapters share: its
-questions and answers are arrays rather than maps, its binary question is a
-`predicate` rather than a noul, it can answer with a refusal, and its input
-takes user messages rather than a shared state. An adapter for it needs its
-own wire translation, a refusal answer in the public contract, and its own
-contract suite. That work is tracked separately and does not block the three
-working adapters.
+questions and answers are arrays rather than maps, its input takes user
+messages rather than a shared state, and each question can refuse on its own.
+
+The public contract already carries what such an adapter needs:
+`PredicateQuestion` and `PredicateAnswer` are the neutral names for its
+binary judgment, and `RefusalAnswer` is the answer its refusals map onto. What
+remains is the wire translation, its own request and response codec, and its
+own contract suite. That work is tracked separately and does not block the
+three working adapters.
 
 ## Examples
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -37,6 +38,11 @@ const (
 	defaultMaxRetries = 2
 	// defaultUserAgent identifies lebro's decision adapters.
 	defaultUserAgent = "lebro-decisions"
+	// defaultDistributionTolerance is the largest deviation a reported
+	// probability distribution may have from a total of one when the
+	// configuration does not name one. It covers a provider that rounds
+	// its probabilities to two decimals.
+	defaultDistributionTolerance = 0.01
 )
 
 // systemOneProfile captures the documented differences between the providers
@@ -45,8 +51,13 @@ const (
 type systemOneProfile struct {
 	// provider is the stable provider identifier reported in a response.
 	provider string
+	// model is the provider model the profile was verified for.
+	model string
 	// capabilities describes what the provider supports.
 	capabilities lebro.DecisionCapabilities
+	// distributionTolerance is the largest deviation a reported probability
+	// distribution may have from a total of one.
+	distributionTolerance float64
 	// scoreWeightedField is the wire field that holds the probability-
 	// weighted level of a score answer.
 	scoreWeightedField string
@@ -282,18 +293,25 @@ func decide(ctx context.Context, client *systemOneClient, profile systemOneProfi
 	if decoded.Model == "" {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, "lebro: the decision response carries no model identity", nil)
 	}
-	answers, err := mapSystemOneAnswers(request, decoded.Answers, profile.scoreWeightedField, profile.scoreWinnerField)
+	answers, err := mapSystemOneAnswers(request, decoded.Answers, profile)
 	if err != nil {
 		return lebro.DecisionResponse{}, client.failure(lebro.DecisionErrorMalformedResponse, err.Error(), err)
 	}
 
 	response := lebro.DecisionResponse{
-		Provider:  lebro.ProviderID(profile.provider),
-		Model:     decoded.Model,
-		Answers:   answers,
-		RequestID: result.requestID,
-		Duration:  result.duration,
-		Attempts:  result.attempts,
+		Provider:         lebro.ProviderID(profile.provider),
+		UpstreamProvider: lebro.ProviderID(decoded.Provider),
+		RequestedModel:   model,
+		Model:            decoded.Model,
+		Answers:          answers,
+		RequestID:        result.requestID,
+		Duration:         result.duration,
+		Attempts:         result.attempts,
+	}
+	if response.RequestID == "" {
+		// A gateway reports the generation it made in the body when it does
+		// not repeat it in a header.
+		response.RequestID = decoded.ID
 	}
 	if decoded.Usage != nil {
 		usage := &lebro.DecisionUsage{}
@@ -671,9 +689,15 @@ func decisionStatusKind(status int) lebro.DecisionErrorKind {
 
 // systemOneResponse is the shared System One response envelope.
 type systemOneResponse struct {
-	Model   string                     `json:"model"`
-	Answers map[string]systemOneAnswer `json:"answers"`
-	Usage   *systemOneUsage            `json:"usage"`
+	Model string `json:"model"`
+	// ID is the provider's identifier for the exchange. A gateway reports
+	// the generation it made here.
+	ID string `json:"id"`
+	// Provider names the provider that actually served the request. A
+	// gateway reports it; a direct connection leaves it empty.
+	Provider string                     `json:"provider"`
+	Answers  map[string]systemOneAnswer `json:"answers"`
+	Usage    *systemOneUsage            `json:"usage"`
 }
 
 // systemOneUsage is the shared System One usage envelope.
@@ -739,46 +763,119 @@ func decodeSystemOneResponse(body []byte) (*systemOneResponse, error) {
 
 // mapSystemOneAnswers maps the provider answers onto the requested question
 // identifiers.
-func mapSystemOneAnswers(request lebro.DecisionRequest, wire map[string]systemOneAnswer, weightedField, winnerField string) (map[lebro.DecisionQuestionID]lebro.DecisionAnswer, error) {
+func mapSystemOneAnswers(request lebro.DecisionRequest, wire map[string]systemOneAnswer, profile systemOneProfile) (map[lebro.DecisionQuestionID]lebro.DecisionAnswer, error) {
 	answers := make(map[lebro.DecisionQuestionID]lebro.DecisionAnswer, len(request.Questions))
 	for id, question := range request.Questions {
 		raw, ok := wire[string(id)]
 		if !ok {
 			return nil, fmt.Errorf("lebro: the provider returned no answer for question %q", id)
 		}
-		answer, err := mapSystemOneAnswer(id, question, raw, weightedField, winnerField)
+		answer, err := mapSystemOneAnswer(id, question, raw, profile)
 		if err != nil {
 			return nil, err
 		}
 		answers[id] = answer
 	}
+	for key := range wire {
+		if _, ok := request.Questions[lebro.DecisionQuestionID(key)]; !ok {
+			// An answer for a question that was never asked is a response
+			// the adapter cannot place, not an answer to ignore.
+			return nil, fmt.Errorf("lebro: the provider returned an answer for the unknown question %q", key)
+		}
+	}
 	return answers, nil
 }
 
+// questionUncertainty returns the uncertainty the profile advertises for a
+// question kind.
+func questionUncertainty(capabilities lebro.DecisionCapabilities, question lebro.DecisionQuestion) lebro.DecisionUncertainty {
+	switch question.(type) {
+	case lebro.NoulQuestion, *lebro.NoulQuestion:
+		return capabilities.NoulUncertainty
+	case lebro.ChoiceQuestion, *lebro.ChoiceQuestion:
+		return capabilities.ChoiceUncertainty
+	case lebro.ScoreQuestion, *lebro.ScoreQuestion:
+		return capabilities.ScoreUncertainty
+	default:
+		return lebro.DecisionUncertainty{}
+	}
+}
+
+// applyConfidence stamps the metric on a reported confidence.
+//
+// A provider that reports a confidence the profile does not describe gets an
+// unknown metric: the number is there and what it means is not known.
+func applyConfidence(id lebro.DecisionQuestionID, uncertainty lebro.DecisionUncertainty, reported *float64) (*float64, lebro.DecisionConfidenceMetric, error) {
+	if reported == nil {
+		if uncertainty.Confidence == lebro.DecisionAvailabilityRequired {
+			return nil, "", fmt.Errorf("lebro: decision question %q returned no confidence", id)
+		}
+		return nil, "", nil
+	}
+	if err := checkProbability(*reported); err != nil {
+		return nil, "", fmt.Errorf("lebro: decision question %q: %w", id, err)
+	}
+	metric := uncertainty.ConfidenceMetric
+	if metric == "" {
+		metric = lebro.DecisionConfidenceUnknown
+	}
+	confidence := *reported
+	return &confidence, metric, nil
+}
+
+// checkDistribution checks a reported probability distribution.
+//
+// A reported distribution must add up to one within the provider's
+// tolerance. A distribution the provider did not report is absent: it is
+// malformed only when the profile says the provider always reports one.
+func checkDistribution(id lebro.DecisionQuestionID, uncertainty lebro.DecisionUncertainty, reported bool, total, tolerance float64) error {
+	if !reported {
+		if uncertainty.Distribution == lebro.DecisionAvailabilityRequired {
+			return fmt.Errorf("lebro: decision question %q returned no probability distribution", id)
+		}
+		return nil
+	}
+	if tolerance > 0 {
+		if difference := math.Abs(total - 1); difference > tolerance {
+			return fmt.Errorf("lebro: decision question %q returned a probability distribution that adds up to %v instead of one", id, total)
+		}
+	}
+	return nil
+}
+
+// systemOneDistribution is a probability distribution the provider reported.
+type systemOneDistribution struct {
+	// present reports whether the provider sent a distribution at all.
+	present bool
+	// total is the sum of the reported probabilities.
+	total float64
+}
+
 // mapSystemOneAnswer maps one provider answer onto the neutral contract.
-func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQuestion, raw systemOneAnswer, weightedField, winnerField string) (lebro.DecisionAnswer, error) {
+func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQuestion, raw systemOneAnswer, profile systemOneProfile) (lebro.DecisionAnswer, error) {
+	uncertainty := questionUncertainty(profile.capabilities, question)
 	switch typed := question.(type) {
 	case lebro.NoulQuestion:
-		return mapSystemOneNoul(id, raw)
+		return mapSystemOneNoul(id, raw, uncertainty)
 	case *lebro.NoulQuestion:
 		if typed == nil {
 			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return mapSystemOneNoul(id, raw)
+		return mapSystemOneNoul(id, raw, uncertainty)
 	case lebro.ChoiceQuestion:
-		return mapSystemOneChoice(id, typed, raw)
+		return mapSystemOneChoice(id, typed, raw, uncertainty, profile.distributionTolerance)
 	case *lebro.ChoiceQuestion:
 		if typed == nil {
 			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return mapSystemOneChoice(id, *typed, raw)
+		return mapSystemOneChoice(id, *typed, raw, uncertainty, profile.distributionTolerance)
 	case lebro.ScoreQuestion:
-		return mapSystemOneScore(id, typed, raw, weightedField, winnerField)
+		return mapSystemOneScore(id, typed, raw, uncertainty, profile)
 	case *lebro.ScoreQuestion:
 		if typed == nil {
 			return nil, fmt.Errorf("lebro: decision question %q must not be nil", id)
 		}
-		return mapSystemOneScore(id, *typed, raw, weightedField, winnerField)
+		return mapSystemOneScore(id, *typed, raw, uncertainty, profile)
 	default:
 		return nil, fmt.Errorf("lebro: decision question %q has an unsupported type %T", id, question)
 	}
@@ -786,7 +883,7 @@ func mapSystemOneAnswer(id lebro.DecisionQuestionID, question lebro.DecisionQues
 
 // mapSystemOneNoul maps a noul answer. The provider confidence is reported
 // only when the provider sends one.
-func mapSystemOneNoul(id lebro.DecisionQuestionID, raw systemOneAnswer) (lebro.DecisionAnswer, error) {
+func mapSystemOneNoul(id lebro.DecisionQuestionID, raw systemOneAnswer, uncertainty lebro.DecisionUncertainty) (lebro.DecisionAnswer, error) {
 	if raw.Type != "noul" {
 		return nil, fmt.Errorf("lebro: decision question %q expected a noul answer, got %q", id, raw.Type)
 	}
@@ -796,19 +893,15 @@ func mapSystemOneNoul(id lebro.DecisionQuestionID, raw systemOneAnswer) (lebro.D
 	if err := checkProbability(*raw.Noul); err != nil {
 		return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
 	}
-	answer := lebro.NoulAnswer{ProbabilityYes: *raw.Noul}
-	if raw.Confidence != nil {
-		if err := checkProbability(*raw.Confidence); err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
-		}
-		confidence := *raw.Confidence
-		answer.Confidence = &confidence
+	confidence, metric, err := applyConfidence(id, uncertainty, raw.Confidence)
+	if err != nil {
+		return nil, err
 	}
-	return answer, nil
+	return lebro.NoulAnswer{ProbabilityYes: *raw.Noul, Confidence: confidence, ConfidenceMetric: metric}, nil
 }
 
 // mapSystemOneChoice maps a choice answer.
-func mapSystemOneChoice(id lebro.DecisionQuestionID, question lebro.ChoiceQuestion, raw systemOneAnswer) (lebro.DecisionAnswer, error) {
+func mapSystemOneChoice(id lebro.DecisionQuestionID, question lebro.ChoiceQuestion, raw systemOneAnswer, uncertainty lebro.DecisionUncertainty, tolerance float64) (lebro.DecisionAnswer, error) {
 	if raw.Type != "choice" {
 		return nil, fmt.Errorf("lebro: decision question %q expected a choice answer, got %q", id, raw.Type)
 	}
@@ -819,61 +912,67 @@ func mapSystemOneChoice(id lebro.DecisionQuestionID, question lebro.ChoiceQuesti
 	if _, ok := question.Criteria[selected]; !ok {
 		return nil, fmt.Errorf("lebro: decision question %q selected option %q, which was not requested", id, selected)
 	}
-	probabilities, err := mapSystemOneProbabilities(id, question.Criteria, raw.Probabilities)
+	probabilities, distribution, err := mapSystemOneProbabilities(id, question.Criteria, raw.Probabilities)
 	if err != nil {
 		return nil, err
 	}
-	answer := lebro.ChoiceAnswer{Choice: selected, Probabilities: probabilities}
-	if raw.Confidence != nil {
-		if err := checkProbability(*raw.Confidence); err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
-		}
-		confidence := *raw.Confidence
-		answer.Confidence = &confidence
+	if err := checkDistribution(id, uncertainty, distribution.present, distribution.total, tolerance); err != nil {
+		return nil, err
 	}
-	return answer, nil
+	confidence, metric, err := applyConfidence(id, uncertainty, raw.Confidence)
+	if err != nil {
+		return nil, err
+	}
+	return lebro.ChoiceAnswer{Choice: selected, Probabilities: probabilities, Confidence: confidence, ConfidenceMetric: metric}, nil
 }
 
 // mapSystemOneProbabilities maps the provider distribution onto the requested
 // options. Every requested option must carry a probability: a partial
 // distribution is a malformed response, not a distribution with implicit
 // zeros.
-func mapSystemOneProbabilities(id lebro.DecisionQuestionID, requested map[lebro.DecisionOptionID]lebro.JSONValue, reported map[string]float64) (map[lebro.DecisionOptionID]float64, error) {
+func mapSystemOneProbabilities(id lebro.DecisionQuestionID, requested map[lebro.DecisionOptionID]lebro.JSONValue, reported map[string]float64) (map[lebro.DecisionOptionID]float64, systemOneDistribution, error) {
 	if len(requested) == 0 {
-		return nil, fmt.Errorf("lebro: decision question %q requested no options", id)
+		return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q requested no options", id)
 	}
 	if reported == nil {
 		// The provider reported no distribution. The answer carries none
 		// rather than one the provider did not send.
-		return nil, nil
+		return nil, systemOneDistribution{}, nil
 	}
 	for option := range reported {
 		if _, ok := requested[lebro.DecisionOptionID(option)]; !ok {
-			return nil, fmt.Errorf("lebro: decision question %q returned a probability for option %q, which was not requested", id, option)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q returned a probability for option %q, which was not requested", id, option)
 		}
 	}
 	probabilities := make(map[lebro.DecisionOptionID]float64, len(requested))
+	distribution := systemOneDistribution{present: true}
 	for option := range requested {
 		probability, ok := reported[string(option)]
 		if !ok {
-			return nil, fmt.Errorf("lebro: decision question %q returned no probability for option %q", id, option)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q returned no probability for option %q", id, option)
 		}
 		if err := checkProbability(probability); err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q: %w", id, err)
 		}
 		probabilities[option] = probability
+		distribution.total += probability
 	}
-	return probabilities, nil
+	return probabilities, distribution, nil
 }
 
 // mapSystemOneScore maps a score answer and keeps a selected level separate
 // from a probability-weighted value.
-func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion, raw systemOneAnswer, weightedField, winnerField string) (lebro.DecisionAnswer, error) {
+func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion, raw systemOneAnswer, uncertainty lebro.DecisionUncertainty, profile systemOneProfile) (lebro.DecisionAnswer, error) {
 	if raw.Type != "score" {
 		return nil, fmt.Errorf("lebro: decision question %q expected a score answer, got %q", id, raw.Type)
 	}
-	probabilities, err := mapSystemOneLevelProbabilities(id, len(question.Criteria), raw.Probabilities)
+	weightedField := profile.scoreWeightedField
+	winnerField := profile.scoreWinnerField
+	probabilities, distribution, err := mapSystemOneLevelProbabilities(id, len(question.Criteria), raw.Probabilities)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkDistribution(id, uncertainty, distribution.present, distribution.total, profile.distributionTolerance); err != nil {
 		return nil, err
 	}
 	legend, err := mapSystemOneLegend(id, len(question.Criteria), raw.Legend)
@@ -913,47 +1012,48 @@ func mapSystemOneScore(id lebro.DecisionQuestionID, question lebro.ScoreQuestion
 		return nil, fmt.Errorf("lebro: decision question %q returned a weighted score outside the requested range", id)
 	}
 	answer.ExpectedLevel = &expected
-	if raw.Confidence != nil {
-		if err := checkProbability(*raw.Confidence); err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
-		}
-		confidence := *raw.Confidence
-		answer.Confidence = &confidence
+	confidence, metric, err := applyConfidence(id, uncertainty, raw.Confidence)
+	if err != nil {
+		return nil, err
 	}
+	answer.Confidence = confidence
+	answer.ConfidenceMetric = metric
 	return answer, nil
 }
 
 // mapSystemOneLevelProbabilities maps the provider level distribution onto
 // the requested level indexes. A level the caller did not ask for is a
 // malformed response, not a level to ignore.
-func mapSystemOneLevelProbabilities(id lebro.DecisionQuestionID, levels int, reported map[string]float64) (map[int]float64, error) {
+func mapSystemOneLevelProbabilities(id lebro.DecisionQuestionID, levels int, reported map[string]float64) (map[int]float64, systemOneDistribution, error) {
 	if levels <= 0 {
-		return nil, fmt.Errorf("lebro: decision question %q requested no levels", id)
+		return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q requested no levels", id)
 	}
 	if reported == nil {
-		return nil, nil
+		return nil, systemOneDistribution{}, nil
 	}
 	for key := range reported {
 		level, err := strconv.Atoi(key)
 		if err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q returned a probability key that is not a level index", id)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q returned a probability key that is not a level index", id)
 		}
 		if level < 0 || level >= levels {
-			return nil, fmt.Errorf("lebro: decision question %q returned probability for level %d, outside the requested range", id, level)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q returned probability for level %d, outside the requested range", id, level)
 		}
 	}
 	probabilities := make(map[int]float64, levels)
+	distribution := systemOneDistribution{present: true}
 	for level := 0; level < levels; level++ {
 		probability, ok := reported[strconv.Itoa(level)]
 		if !ok {
-			return nil, fmt.Errorf("lebro: decision question %q returned no probability for level %d", id, level)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q returned no probability for level %d", id, level)
 		}
 		if err := checkProbability(probability); err != nil {
-			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
+			return nil, systemOneDistribution{}, fmt.Errorf("lebro: decision question %q: %w", id, err)
 		}
 		probabilities[level] = probability
+		distribution.total += probability
 	}
-	return probabilities, nil
+	return probabilities, distribution, nil
 }
 
 // mapSystemOneLegend maps the provider legend onto the requested level

@@ -556,9 +556,23 @@ model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
         Noul: true, Choice: true, Score: true,
         MultipleQuestions: true, StructuredState: true,
         StructuredInstructions: true,
-        Distributions: true, Confidence: true,
         MaxQuestions: 8, MaxChoiceOptions: 255, MaxScoreLevels: 10,
         RetryableStatuses: []int{429, 503},
+        NoulUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityUnavailable,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+        ChoiceUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityRequired,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+        ScoreUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityRequired,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
     },
 })
 ```
@@ -566,8 +580,13 @@ model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
 The contract keeps the provider's meaning intact. A binary probability stays a
 probability, a selected score level stays separate from the
 probability-weighted value, and a confidence or a distribution appears only
-when the provider actually reported one. `lebro.DecisionGate` turns an answer
-into a deterministic `select`, `review`, or `escalate` recommendation using
+when the provider actually reported one. A reported confidence carries the
+metric it was computed with, because two providers report a confidence in the
+same range and mean different things by it, and a threshold is only
+comparable with a number written against the same measure. A provider that
+declines a question answers with a refusal, which is distinct from a false
+answer and from a failure. `lebro.DecisionGate` turns an answer into a
+deterministic `select`, `review`, or `escalate` recommendation using
 caller-owned thresholds, and never authorizes an action by itself.
 
 SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are

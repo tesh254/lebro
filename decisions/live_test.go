@@ -127,13 +127,33 @@ func runLiveDecision(t *testing.T, model lebro.DecisionModel, modality string) {
 	if !ok {
 		t.Fatalf("the score answer = %#v, want a score answer", response.Answers["urgency"])
 	}
-	t.Logf("provider=%s model=%s modality=%s latency=%s attempts=%d",
-		response.Provider, response.Model, modality, time.Since(started), response.Attempts)
+	t.Logf("provider=%s upstream=%s requested_model=%s model=%s modality=%s latency=%s attempts=%d",
+		response.Provider, formatLiveUpstream(response.UpstreamProvider), response.RequestedModel,
+		response.Model, modality, time.Since(started), response.Attempts)
 	t.Logf("usage=%s", formatLiveUsage(response.Usage))
-	t.Logf("noul probability=%.4f confidence=%s", noul.ProbabilityYes, formatLiveConfidence(noul.Confidence))
-	t.Logf("choice=%s confidence=%s", choice.Choice, formatLiveConfidence(choice.Confidence))
-	t.Logf("score expected=%s selected=%s confidence=%s",
-		formatLiveLevel(score.ExpectedLevel), formatLiveSelected(score.SelectedLevel), formatLiveConfidence(score.Confidence))
+	t.Logf("noul probability=%.4f confidence=%s metric=%s",
+		noul.ProbabilityYes, formatLiveConfidence(noul.Confidence), formatLiveMetric(noul.ConfidenceMetric))
+	t.Logf("choice=%s confidence=%s metric=%s",
+		choice.Choice, formatLiveConfidence(choice.Confidence), formatLiveMetric(choice.ConfidenceMetric))
+	t.Logf("score expected=%s selected=%s confidence=%s metric=%s",
+		formatLiveLevel(score.ExpectedLevel), formatLiveSelected(score.SelectedLevel),
+		formatLiveConfidence(score.Confidence), formatLiveMetric(score.ConfidenceMetric))
+}
+
+// formatLiveUpstream renders the upstream provider.
+func formatLiveUpstream(upstream lebro.ProviderID) string {
+	if upstream == "" {
+		return "none"
+	}
+	return string(upstream)
+}
+
+// formatLiveMetric renders the metric a reported confidence means.
+func formatLiveMetric(metric lebro.DecisionConfidenceMetric) string {
+	if metric == "" {
+		return "none"
+	}
+	return string(metric)
 }
 
 // closeIdleConnections releases the pooled provider connections.

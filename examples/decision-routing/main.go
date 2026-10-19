@@ -76,6 +76,7 @@ func run(output io.Writer) error {
 		SelectProbability:   0.85,
 		EscalateProbability: 0.30,
 		MinimumConfidence:   &minimumConfidence,
+		ConfidenceMetric:    lebro.DecisionConfidenceUnknown,
 	}
 	if err := gate.Validate(); err != nil {
 		return err
@@ -194,11 +195,34 @@ func (ticketDecisionModel) Capabilities() lebro.DecisionCapabilities {
 		MultipleQuestions:      true,
 		StructuredState:        true,
 		StructuredInstructions: true,
-		Distributions:          true,
-		Confidence:             true,
 		MaxChoiceOptions:       255,
 		MaxScoreLevels:         10,
+		NoulUncertainty: lebro.DecisionUncertainty{
+			Distribution: lebro.DecisionAvailabilityUnavailable,
+			Confidence:   lebro.DecisionAvailabilityRequired,
+			// The stand-in reports a number without documenting what it
+			// means, so the metric says exactly that.
+			ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+		},
+		ChoiceUncertainty: lebro.DecisionUncertainty{
+			Distribution:     lebro.DecisionAvailabilityRequired,
+			Confidence:       lebro.DecisionAvailabilityRequired,
+			ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+		},
+		ScoreUncertainty: lebro.DecisionUncertainty{
+			Distribution:     lebro.DecisionAvailabilityRequired,
+			Confidence:       lebro.DecisionAvailabilityRequired,
+			ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+		},
 	}
+}
+
+// CapabilitiesFor reports the capabilities of the stand-in's only model.
+func (m ticketDecisionModel) CapabilitiesFor(model string) (lebro.DecisionCapabilities, bool) {
+	if model != "" && model != "example-model" {
+		return lebro.DecisionCapabilities{}, false
+	}
+	return m.Capabilities(), true
 }
 
 func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionRequest) (lebro.DecisionResponse, error) {
@@ -220,7 +244,11 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 		switch typed := question.(type) {
 		case lebro.NoulQuestion:
 			confidence := 0.91
-			answers[id] = lebro.NoulAnswer{ProbabilityYes: 0.93, Confidence: &confidence}
+			answers[id] = lebro.NoulAnswer{
+				ProbabilityYes:   0.93,
+				Confidence:       &confidence,
+				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+			}
 		case lebro.ChoiceQuestion:
 			if capabilities.MaxChoiceOptions > 0 && len(typed.Criteria) > capabilities.MaxChoiceOptions {
 				return lebro.DecisionResponse{}, &lebro.DecisionError{
@@ -246,7 +274,12 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			}
 			probabilities[selected] = 0.7
 			confidence := 0.62
-			answers[id] = lebro.ChoiceAnswer{Choice: selected, Probabilities: probabilities, Confidence: &confidence}
+			answers[id] = lebro.ChoiceAnswer{
+				Choice:           selected,
+				Probabilities:    probabilities,
+				Confidence:       &confidence,
+				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+			}
 		case *lebro.NoulQuestion, *lebro.ChoiceQuestion, *lebro.ScoreQuestion:
 			return lebro.DecisionResponse{}, fmt.Errorf("the fixture answers value question forms only")
 		case lebro.ScoreQuestion:
@@ -273,12 +306,13 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			selected := levels - 1
 			confidence := 0.74
 			answers[id] = lebro.ScoreAnswer{
-				SelectedLevel: &selected,
-				ExpectedLevel: &expected,
-				Probabilities: probabilities,
-				Legend:        legend,
-				Confidence:    &confidence,
-				Provenance:    lebro.ScoreNative,
+				SelectedLevel:    &selected,
+				ExpectedLevel:    &expected,
+				Probabilities:    probabilities,
+				Legend:           legend,
+				Confidence:       &confidence,
+				ConfidenceMetric: lebro.DecisionConfidenceUnknown,
+				Provenance:       lebro.ScoreNative,
 			}
 		}
 	}

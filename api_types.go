@@ -323,9 +323,15 @@ type (
 	ScoreQuestion             = runtime.ScoreQuestion
 	DecisionAnswer            = runtime.DecisionAnswer
 	NoulAnswer                = runtime.NoulAnswer
+	PredicateQuestion         = runtime.PredicateQuestion
+	PredicateAnswer           = runtime.PredicateAnswer
 	ChoiceAnswer              = runtime.ChoiceAnswer
 	ScoreAnswer               = runtime.ScoreAnswer
+	RefusalAnswer             = runtime.RefusalAnswer
 	ScoreProvenance           = runtime.ScoreProvenance
+	DecisionConfidenceMetric  = runtime.DecisionConfidenceMetric
+	DecisionAvailability      = runtime.DecisionAvailability
+	DecisionUncertainty       = runtime.DecisionUncertainty
 	DecisionUsage             = runtime.DecisionUsage
 	DecisionResponse          = runtime.DecisionResponse
 	DecisionImageCapabilities = runtime.DecisionImageCapabilities
@@ -565,6 +571,16 @@ const (
 	DecisionOutcomeSelect   = runtime.DecisionOutcomeSelect
 	DecisionOutcomeReview   = runtime.DecisionOutcomeReview
 	DecisionOutcomeEscalate = runtime.DecisionOutcomeEscalate
+
+	DecisionConfidenceUnknown               = runtime.DecisionConfidenceUnknown
+	DecisionConfidenceTopProbabilityUniform = runtime.DecisionConfidenceTopProbabilityUniform
+	DecisionConfidenceModalDistanceUniform  = runtime.DecisionConfidenceModalDistanceUniform
+	DecisionConfidenceTopTwoMargin          = runtime.DecisionConfidenceTopTwoMargin
+	DecisionConfidenceDistanceFromHalf      = runtime.DecisionConfidenceDistanceFromHalf
+
+	DecisionAvailabilityUnavailable = runtime.DecisionAvailabilityUnavailable
+	DecisionAvailabilityOptional    = runtime.DecisionAvailabilityOptional
+	DecisionAvailabilityRequired    = runtime.DecisionAvailabilityRequired
 
 	DecisionErrorInvalidRequest        = runtime.DecisionErrorInvalidRequest
 	DecisionErrorUnsupportedCapability = runtime.DecisionErrorUnsupportedCapability

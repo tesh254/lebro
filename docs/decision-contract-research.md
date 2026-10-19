@@ -2,11 +2,21 @@
 
 Research snapshot: 20 October 2026, Africa/Nairobi. This is a design proposal, not an implemented API. Sources are official documentation, official SDK schemas inspected during research, and unauthenticated model-catalog GETs. No paid inference or account-specific availability checks were performed.
 
+> **Scope.** This snapshot is the research the decision contract was built
+> from, and it is not this release's scope. The contract work in MAD-142
+> landed the runtime contract and the three System One adapters: the refusal
+> answer, the predicate alias, the per-kind uncertainty with a confidence
+> metric, the model-bound capabilities, the response identity, and the derived
+> helpers. The OpenRouter Decisions adapter and the direct OpenAI Decisions
+> adapter are **later slices**, gated on their own wire contract and their own
+> contract suite, exactly as the implementation order below describes. The
+> OpenAI Decisions API is not implemented in this release.
+
 ## Recommendation
 
 Keep `DecisionModel.Decide` as the runtime boundary. The common abstraction is **shared evidence and named independent questions producing typed judgments**, with predicate, choice, and ordered score as the initial primitives. Provider JSON belongs in adapters. The existing runtime is already close to this contract; expanding the configuration of `NewSystemOne` alone will not cover the differences.
 
-Implement native decision protocols first: the existing System One adapters, OpenRouter Decisions, and direct OpenAI Decisions. Ordinary chat models with structured output can be a separate, explicitly selected adapter later. JSON schema support establishes output shape; it does not establish that generated probability numbers have the same statistical meaning as native decision probabilities.
+Implement native decision protocols first: the existing System One adapters, and then OpenRouter Decisions and direct OpenAI Decisions as their own slices. Ordinary chat models with structured output can be a separate, explicitly selected adapter later. JSON schema support establishes output shape; it does not establish that generated probability numbers have the same statistical meaning as native decision probabilities.
 
 ## What OpenRouter actually offers
 
@@ -156,10 +166,10 @@ flowchart LR
 
 1. Extend the runtime answer contract and shared contract suite for refusal, answer association, uncertainty absence, score provenance, and model-profile selection. Keep existing types and maps; add aliases rather than requiring a naming migration.
 2. Harden the existing System One profile constructor: explicit scoring fields and validated declared capabilities. Keep it a protocol-specific advanced constructor.
-3. Add a named OpenRouter Decisions adapter using `/api/alpha/decisions`, with explicit provider routing and response metadata handling. Start with a small verified text-only profile set, then image-capable profiles. Discovery should expose unsupported/unknown models without claiming them as verified.
-4. Add direct OpenAI Decisions translation and partial-refusal fixtures. Serialize structured state explicitly. Retain its distinct request and response codec even if it shares the HTTP transport.
-5. Expand neutral image translation per route. Add more modalities only when an actual caller needs them and their contracts are verified.
-6. Consider a structured-generation adapter separately. Reuse `ModelRequest.OutputSchema`; require explicit opt-in and local schema validation. A generated yes/no answer must not be converted into probability 0 or 1. The current required `NoulAnswer.ProbabilityYes` cannot represent a boolean-only judgment faithfully, so this expansion needs a deliberate result-contract decision rather than a fabricated probability.
+3. **Deferred to its own slice.** Add a named OpenRouter Decisions adapter using `/api/alpha/decisions`, with explicit provider routing and response metadata handling. Start with a small verified text-only profile set, then image-capable profiles. Discovery should expose unsupported/unknown models without claiming them as verified.
+4. **Deferred to its own slice.** Add direct OpenAI Decisions translation and partial-refusal fixtures. Serialize structured state explicitly. Retain its distinct request and response codec even if it shares the HTTP transport. The public contract already carries the `RefusalAnswer` and the `PredicateQuestion` alias this needs, so what remains is the wire translation and its own contract suite.
+5. **Deferred to its own slice.** Expand neutral image translation per route. Add more modalities only when an actual caller needs them and their contracts are verified.
+6. **Deferred to its own slice.** Consider a structured-generation adapter separately. Reuse `ModelRequest.OutputSchema`; require explicit opt-in and local schema validation. A generated yes/no answer must not be converted into probability 0 or 1. The current required `NoulAnswer.ProbabilityYes` cannot represent a boolean-only judgment faithfully, so this expansion needs a deliberate result-contract decision rather than a fabricated probability.
 
 The first implementation slice is complete when one unchanged caller request can run through the existing direct adapters, OpenRouter Decisions, and direct OpenAI Decisions, with equivalent question identity and score meanings, preserved refusals, explicit uncertainty semantics, and local rejection of unsupported input. This does not require equal judgments or identical confidence values across models.
 

@@ -45,12 +45,25 @@ func run(output io.Writer) error {
 			MultipleQuestions:      true,
 			StructuredState:        true,
 			StructuredInstructions: true,
-			Distributions:          true,
-			Confidence:             true,
 			MaxQuestions:           8,
 			MaxChoiceOptions:       16,
 			MaxScoreLevels:         5,
 			RetryableStatuses:      []int{http.StatusTooManyRequests, http.StatusServiceUnavailable},
+			NoulUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityUnavailable,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
+			ChoiceUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
+			ScoreUncertainty: lebro.DecisionUncertainty{
+				Distribution:     lebro.DecisionAvailabilityRequired,
+				Confidence:       lebro.DecisionAvailabilityRequired,
+				ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+			},
 		},
 	})
 	if err != nil {
