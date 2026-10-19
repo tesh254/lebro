@@ -30,6 +30,14 @@ Run the deterministic, network-free model protocol and fixture example:
 go run ./examples/model-fixtures
 ```
 
+Run the decision provider example, which builds a provider from its wire
+contract alone, the way an integration would for a provider that has no
+named adapter:
+
+```sh
+go run ./examples/decision-provider
+```
+
 Run the decision example, which routes a request, gates an action on a
 confidence threshold, and combines score answers with application-owned
 weights:

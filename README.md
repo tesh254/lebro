@@ -88,6 +88,7 @@ their selected command. Examples marked **external** need the named service.
 | OpenAI-compatible model | [Provider adapters](#model-provider-adapters) | [`model-openai`](examples/model-openai): `go run ./examples/model-openai` |
 | Provider routing and fallback | [Provider adapters](#model-provider-adapters) | [`model-routing`](examples/model-routing): `go run ./examples/model-routing` |
 | BYOK decision models | [Decision models](#decision-models) | [`decision-routing`](examples/decision-routing): `go run ./examples/decision-routing` |
+| A decision provider from configuration | [Decision models](#decision-models) | [`decision-provider`](examples/decision-provider): `go run ./examples/decision-provider` |
 | Decision-gated tool execution | [Decision models](#decision-models) | [`decision-guard`](examples/decision-guard): `go run ./examples/decision-guard` |
 | Decision model image input | [Decision models](#decision-models) | [`decision-images`](examples/decision-images): `go run ./examples/decision-images` |
 | Generative and decision models together | [Decision models](#decision-models) | [`decision-compat`](examples/decision-compat): `go run ./examples/decision-compat` |
@@ -539,6 +540,21 @@ with its own endpoint, credential, model, HTTP client, timeout, and retry
 policy: `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino`
 (Fastino GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview). Switching
 providers changes configuration, not application logic.
+
+The same package exposes the generic form, `decisions.NewSystemOne`, which
+builds an adapter from a provider's wire contract alone, so a provider with
+no named adapter is reachable by configuration:
+
+```go
+model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
+    APIKey:     os.Getenv("SOME_SYSTEM_ONE_API_KEY"),
+    BaseURL:    "https://api.example.com",
+    AuthHeader: "X-API-Key",
+    Model:      "some-model",
+    Score:      decisions.SystemOneScoreFields{Weighted: "score"},
+    Capabilities: lebro.DecisionCapabilities{ /* limits and features */ },
+})
+```
 
 The contract keeps the provider's meaning intact. A binary probability stays a
 probability, a selected score level stays separate from the
@@ -2199,6 +2215,14 @@ feature set. The schema-validation example validates both tool input and output:
 
 ```sh
 go run ./examples/schema-validation
+```
+
+The decision-provider example builds a decision provider from its wire
+contract alone, the way an integration would for a provider that has no
+named adapter:
+
+```sh
+go run ./examples/decision-provider
 ```
 
 The decision-routing example routes a request, gates an action on a
