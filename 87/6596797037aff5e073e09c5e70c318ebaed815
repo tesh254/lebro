@@ -1,0 +1,61 @@
+decisions/subq_test.go
+  ai_agent 25-31
+README.md
+  ai_agent 561-575,583-589
+decisions/provider_test.go
+  ai_agent 36-50,153-155,567-773
+decision.go
+  ai_agent 11-29
+decisions/fastino.go
+  ai_agent 76-100
+decision_contract_test.go
+  ai_agent 29-50,52,66,76-81,90-96,192-197,201-202,205-206,209-210,220-251
+CHANGELOG.md
+  ai_agent 30-48,62-68
+decisions/systemone.go
+  ai_agent 11,41-45,54-55,58-60,296,302-314,692-700,766,773,779-785,789-853,855-856,859,864,866,871,873,878,886,896-898,900,904,915,919-920,922-926,933,935,940,944,948,952,955,958,960,965,969-971,975-977,1015-1017,1019-1020,1027,1029,1032,1037,1040,1044,1048,1051,1054,1056
+docs/decision-contract-research.md
+  ai_agent 5-14,19,169-172
+decisions/limits_test.go
+  ai_agent 288-290,301,305-319,321,323,327-328,334-379,395-397,404-405,412-413,420-421,433,470
+docs/decisions.md
+  ai_agent 62-65,67,71-85,112-136,143-155,171-180,198-204,230-244,264-298,335-343,456-464
+decisions/typesafe.go
+  ai_agent 82-100
+decisions/subq.go
+  ai_agent 82-100
+examples/decision-compat/main.go
+  ai_agent 83-90
+decisions/adapter_test.go
+  ai_agent 35-40,43-45,265,277,306,311-314
+decisions/provider.go
+  ai_agent 56-72,106-108,110-122,153-154,156-158,174-177,227,235-236,241-254,257-272,278-283,293-294,297-303,313-319,326-404
+decisions/live_test.go
+  ai_agent 130-132,134-156
+internal/runtime/decision_test.go
+  ai_agent 588,692-697,707,713,719,725,761,790,906-1089
+docs/decisions-cloud-handoff.md
+  ai_agent 69-75,78-81,95-98,105-108
+decisions/typesafe_test.go
+  ai_agent 22-28
+examples/decision-guard/main.go
+  ai_agent 207-214,274,375-392,399-403,423-430,448-453
+decisions/fastino_test.go
+  ai_agent 23-30,171,204
+examples/decision-provider/main.go
+  ai_agent 52-66
+examples/decision-routing/main.go
+  ai_agent 79,200-223,225,247-251,277-282,309-315
+internal/runtime/decision.go
+  ai_agent 113-148,150,162-166,171-182,187-188,193-197,208-210,235-239,247-334,348-358,394-458,461-465,469-470,473-474,477-478,510-529,540-541,543-547,585-592,620-625,647-656,670-690,1016-1022,1028-1033,1038,1058,1083,1096-1102,1104-1106,1109-1110
+internal/testkit/decision.go
+  ai_agent 231-236
+api_types.go
+  ai_agent 326-327,330,332-334,575-583
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "876596797037aff5e073e09c5e70c318ebaed815",
+  "prompts": {}
+}
