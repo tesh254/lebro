@@ -380,3 +380,99 @@ func TestCancellationDuringTheBackoffStops(t *testing.T) {
 		t.Fatalf("the provider received %d attempts, want 1", attempts)
 	}
 }
+
+// TestNoulCriteriaOnTheWire pins how the noul criteria reach the provider:
+// both descriptions, one description, or none at all.
+func TestNoulCriteriaOnTheWire(t *testing.T) {
+	cases := []struct {
+		name     string
+		criteria *lebro.NoulCriteria
+		want     map[string]any
+	}{
+		{
+			name:     "both descriptions",
+			criteria: &lebro.NoulCriteria{True: "yes means yes", False: "no means no"},
+			want:     map[string]any{"true": "yes means yes", "false": "no means no"},
+		},
+		{
+			name:     "only the true description",
+			criteria: &lebro.NoulCriteria{True: "yes means yes"},
+			want:     map[string]any{"true": "yes means yes"},
+		},
+		{
+			name:     "only the false description",
+			criteria: &lebro.NoulCriteria{False: "no means no"},
+			want:     map[string]any{"false": "no means no"},
+		},
+		{
+			name:     "no criteria",
+			criteria: nil,
+			want:     nil,
+		},
+		{
+			name:     "an empty criteria pair",
+			criteria: &lebro.NoulCriteria{},
+			want:     nil,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"model":"subq-snap-preview","answers":{"q":{"type":"noul","noul":0.5}}}`))
+			}))
+			defer server.Close()
+
+			model, err := NewSubQ(SubQConfig{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatalf("NewSubQ() error = %v", err)
+			}
+			if _, err := model.Decide(context.Background(), lebro.DecisionRequest{
+				State: "state",
+				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+					"q": lebro.NoulQuestion{Instructions: "Is it?", Criteria: testCase.criteria},
+				},
+			}); err != nil {
+				t.Fatalf("Decide() error = %v", err)
+			}
+			questions, ok := body["questions"].(map[string]any)
+			if !ok {
+				t.Fatalf("request questions = %#v, want an object", body["questions"])
+			}
+			question, ok := questions["q"].(map[string]any)
+			if !ok {
+				t.Fatalf("request question = %#v, want an object", questions["q"])
+			}
+			if question["type"] != "noul" {
+				t.Fatalf("request question type = %#v, want %q", question["type"], "noul")
+			}
+			criteria, present := question["criteria"]
+			if testCase.want == nil {
+				if present {
+					t.Fatalf("request criteria = %#v, want none", criteria)
+				}
+				return
+			}
+			if !present {
+				t.Fatalf("request question = %#v, want criteria", question)
+			}
+			got, ok := criteria.(map[string]any)
+			if !ok {
+				t.Fatalf("request criteria = %#v, want an object", criteria)
+			}
+			if len(got) != len(testCase.want) {
+				t.Fatalf("request criteria = %#v, want %#v", got, testCase.want)
+			}
+			for key, value := range testCase.want {
+				if got[key] != value {
+					t.Fatalf("request criteria = %#v, want %#v", got, testCase.want)
+				}
+			}
+		})
+	}
+}

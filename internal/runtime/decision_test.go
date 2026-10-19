@@ -164,6 +164,50 @@ func TestDecisionRequestValidate(t *testing.T) {
 			want: "requires at least two levels",
 		},
 		{
+			name: "noul criteria must carry content",
+			request: DecisionRequest{
+				State: "state",
+				Questions: map[DecisionQuestionID]DecisionQuestion{
+					"q": NoulQuestion{
+						Instructions: "Is it?",
+						Criteria:     &NoulCriteria{True: "  ", False: "no means no"},
+					},
+				},
+			},
+			want: "criteria true must not be empty",
+		},
+		{
+			name: "noul criteria false must carry content",
+			request: DecisionRequest{
+				State: "state",
+				Questions: map[DecisionQuestionID]DecisionQuestion{
+					"q": NoulQuestion{
+						Instructions: "Is it?",
+						Criteria:     &NoulCriteria{True: "yes means yes", False: ""},
+					},
+				},
+			},
+			want: "criteria false must not be empty",
+		},
+		{
+			name: "noul without criteria",
+			request: DecisionRequest{
+				State: "state",
+				Questions: map[DecisionQuestionID]DecisionQuestion{
+					"q": NoulQuestion{Instructions: "Is it?"},
+				},
+			},
+		},
+		{
+			name: "noul with an empty criteria pair",
+			request: DecisionRequest{
+				State: "state",
+				Questions: map[DecisionQuestionID]DecisionQuestion{
+					"q": NoulQuestion{Instructions: "Is it?", Criteria: &NoulCriteria{}},
+				},
+			},
+		},
+		{
 			name: "image needs a media type",
 			request: DecisionRequest{
 				State:     "state",
