@@ -1,0 +1,31 @@
+docs/decision-contract-research.md
+  s_7e4c1127a81c22::t_a21d470567478e 31
+  s_7e4c1127a81c22::t_6271cc626833f6 32,110-111
+  s_7e4c1127a81c22::t_2e99b73aabc65f 1-30,33-109,112-172
+docs/decisions.md
+  ai_agent 59,92-95
+examples/decision-routing/main.go
+  ai_agent 212-216,226-230,254-258
+decisions/provider.go
+  ai_agent 142-143,146,149,152,155
+decisions/systemone.go
+  ai_agent 109,112,166-173
+internal/runtime/decision.go
+  ai_agent 1075-1079
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "60457934de6779d4d8366cc78f415bcaf6866168",
+  "prompts": {},
+  "sessions": {
+    "s_7e4c1127a81c22": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1560f-b523-7572-b3af-94b256a985bd",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "tesh254 <ewachira254@gmail.com>"
+    }
+  }
+}
