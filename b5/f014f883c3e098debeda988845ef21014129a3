@@ -1,0 +1,29 @@
+decisions/openai.go
+  ai_agent 154,399-403,815-818,821-825,881-883,889-892,895-899
+docs/decisions.md
+  ai_agent 447-451,471-474,479-482
+examples/decision-guard/main.go
+  ai_agent 373,389-390
+docs/decisions-cloud-handoff.md
+  ai_agent 4,122-126
+decisions/openai_test.go
+  ai_agent 5,579-581,878-961
+decisions/transport.go
+  ai_agent 75-80,382-406,420-423,439-456
+decisions/provider.go
+  ai_agent 368-369
+decisions/systemone.go
+  ai_agent 364-365,367-370
+decisions/security_test.go
+  ai_agent 9,336-399
+examples/decision-routing/main.go
+  ai_agent 290,323,343,347
+decisions/provider_test.go
+  ai_agent 929-972
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.2",
+  "base_commit_sha": "b5f014f883c3e098debeda988845ef21014129a3",
+  "prompts": {}
+}
