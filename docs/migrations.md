@@ -108,3 +108,27 @@ unknown fields.
 MCP uses the protocol version declared by the `mcp` package. Upgrade its client
 and server together when that protocol or a tool's declared input/output schema
 changes. Preserve tool IDs and schema compatibility during staged deployments.
+
+## Decision models
+
+The decision surface is additive: a new `lebro.DecisionModel` contract, a new
+`decisions` adapter package, and a new set of root types. No existing
+generative client changes, no persisted record changes, and no store migration
+is required. `Model`, `ModelRequest`, and `ModelResponse` are untouched.
+
+Nothing calls a decision model implicitly. A request only reaches a provider
+when the application calls `Decide`, so a deployment can enable one provider
+and one guarded action at a time and roll it back by removing the call.
+
+Two things change what a deployment sends, so check them before enabling a
+provider:
+
+- A decision request sends the application's state, criteria, and images to a
+  third-party provider. A tenant that could not send that content to its
+  generative provider must not send it to a decision provider either. See the
+  [provider retention notes](decisions.md#provider-retention).
+- The provider's documented limits are enforced locally. A request beyond a
+  limit now fails before it is sent instead of being rejected by the provider,
+  so a caller that relied on the provider's error surfaces the new
+  `lebro.ErrDecisionInvalidRequest` and `lebro.ErrDecisionUnsupportedCapability`
+  failures.

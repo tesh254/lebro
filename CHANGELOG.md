@@ -12,6 +12,76 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- BYOK decision models. A new `lebro.DecisionModel` contract evaluates
+  application state against named questions and returns typed answers:
+  `NoulQuestion` for a probability, `ChoiceQuestion` for a selected option and
+  its distribution, and `ScoreQuestion` for an ordered level. The surface sits
+  beside `Model.Generate` instead of inside it, so existing generative clients
+  need no change. New root types include `DecisionRequest`,
+  `DecisionResponse`, `DecisionCapabilities`, `DecisionImage`,
+  `DecisionUsage`, `DecisionGate`, and the `DecisionError` taxonomy with
+  `ErrDecision*` sentinels. `ScoreAnswer` keeps a selected level and a
+  probability-weighted expected level apart, and a provider-reported
+  confidence or distribution is only surfaced when the provider actually
+  reported one, so a value is never fabricated. `DecisionGate.Noul` turns a
+  binary answer into a deterministic `select`, `review`, or `escalate`
+  recommendation and never authorizes an action on the application's behalf.
+
+  The answer contract carries what a provider needs to be understood without
+  being re-interpreted. `RefusalAnswer` is a first-class answer: a provider
+  that declines a question said so, which is not a false answer and not a
+  failure to reach the provider. `PredicateQuestion` and `PredicateAnswer` are
+  aliases for the binary judgment, so a provider's own name for it needs no
+  second meaning. Every reported confidence carries the metric it was
+  computed with (`DecisionConfidenceMetric`), because two providers report a
+  confidence in the same range and mean different things by it;
+  `DecisionGate.ConfidenceMetric` binds a threshold to the measure it was
+  written against, and an answer that reports a different measure never
+  selects. `DecisionUncertainty` describes the distribution and the
+  confidence of each question kind separately, so an adapter no longer
+  claims a confidence for a kind its provider does not report one for.
+  `DecisionResponse` separates the requested model from the resolved one and
+  reports the upstream provider when a gateway names it. `DecisionTopProbability`,
+  `DecisionTopTwoMargin`, and `ScoreAnswer.ExpectedIndex` compute derived
+  quantities from a reported distribution without ever replacing a reported
+  value.
+
+  The new `decisions` package adapts three System One providers:
+  `decisions.NewTypeSafe` (TypeSafe Jev), `decisions.NewFastino` (Fastino
+  GLiDE), and `decisions.NewSubQ` (SubQ Snap-preview), and the OpenAI
+  Decisions API: `decisions.NewOpenAI`. The OpenAI endpoint is a different
+  protocol, with array-shaped questions and answers, a message-list input,
+  and a refusal on any question, so it has its own request and response codec
+  and shares only the transport. Each provider is configured
+  with its own endpoint, credential, model, HTTP client, timeout, and retry
+  policy, and every credential is redacted from errors, logs, and fixtures.
+  The same package exposes the generic form, `decisions.NewSystemOne`, for
+  providers whose System One wire schema matches this adapter: the endpoint,
+  the credential placement, the model, the score field names, the
+  capabilities, the retryable statuses, and the image style are all supplied
+  as data, so a provider with no named adapter is reachable by configuration.
+  A provider with a different wire contract needs its own adapter. The named
+  constructors and the generic one return the same `*decisions.SystemOneModel`.
+  Retries are bounded, honor `Retry-After`, and never switch providers.
+  Capabilities belong to a model rather than to an adapter:
+  `SystemOneConfig.Profiles` binds each model the adapter may serve to the
+  contract it was verified against, `DecisionModel.CapabilitiesFor` reports
+  it, and a request that names a model with no profile is rejected rather
+  than answered under another model's rules. A reported distribution must
+  cover every requested outcome and add up to one, and
+  `SystemOneConfig.DistributionTolerance` covers a provider that rounds.
+  SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are
+  encoded as one line of base64 at the HTTP boundary only, at most four images
+  of at most 4 MiB each and 8 MiB in total, and an unsupported or over-limit
+  image fails locally without a request. The decision surface is additive and
+  requires no store migration. Opt-in live runs against a real provider use
+  `LEBRO_TYPESAFE_API_KEY`, `LEBRO_FASTINO_API_KEY`, or
+  `LEBRO_SUBQ_API_KEY` and are skipped without it. See `docs/decisions.md` for
+  the contract and the provider capability matrix, and
+  `docs/decisions-cloud-handoff.md` for the hosted deployment handoff.
+  `DecisionUsage` carries a total token count for a provider that reports one
+  separately.
+
 - Anthropic-compatible endpoints. `anthropic.Config` adds `AuthToken`
   (Authorization Bearer, as OpenRouter and many gateways expect, as an
   alternative to `APIKey`), `Headers`, `Timeout`, `MaxRetries`, `ProviderID`,

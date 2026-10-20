@@ -32,6 +32,7 @@ channels/                optional messaging channel adapters (inbound webhook, s
 voice/                   optional speech-to-text and text-to-speech integration points
 studio/                  optional local Studio-style developer UI
 evals/                   optional datasets, scorers, and experiment runs
+decisions/               optional BYOK decision adapters (TypeSafe, Fastino, SubQ)
 internal/testkit/        deterministic provider fixtures and contract suites for tests
 examples/                runnable feature-focused examples
 docs/                    installation and release guides
@@ -86,6 +87,11 @@ their selected command. Examples marked **external** need the named service.
 | Canonical messages and model protocol | [Model protocol](#provider-neutral-model-protocol) | [`model-fixtures`](examples/model-fixtures): `go run ./examples/model-fixtures` |
 | OpenAI-compatible model | [Provider adapters](#model-provider-adapters) | [`model-openai`](examples/model-openai): `go run ./examples/model-openai` |
 | Provider routing and fallback | [Provider adapters](#model-provider-adapters) | [`model-routing`](examples/model-routing): `go run ./examples/model-routing` |
+| BYOK decision models | [Decision models](#decision-models) | [`decision-routing`](examples/decision-routing): `go run ./examples/decision-routing` |
+| A decision provider from configuration | [Decision models](#decision-models) | [`decision-provider`](examples/decision-provider): `go run ./examples/decision-provider` |
+| Decision-gated tool execution | [Decision models](#decision-models) | [`decision-guard`](examples/decision-guard): `go run ./examples/decision-guard` |
+| Decision model image input | [Decision models](#decision-models) | [`decision-images`](examples/decision-images): `go run ./examples/decision-images` |
+| Generative and decision models together | [Decision models](#decision-models) | [`decision-compat`](examples/decision-compat): `go run ./examples/decision-compat` |
 | JSON Schema validation | [Tool execution](#schema-backed-tool-execution) | [`schema-validation`](examples/schema-validation): `go run ./examples/schema-validation` |
 | Local schema-backed tools | [Tool execution](#schema-backed-tool-execution) | [`tools-schema`](examples/tools-schema): `go run ./examples/tools-schema` |
 | Input/output processor contracts | [Examples](examples/README.md) | [`processor-contract`](examples/processor-contract): `go run ./examples/processor-contract` |
@@ -484,6 +490,117 @@ Network, authentication, permission, not-found, rate-limit, timeout, and
 malformed-response failures each map to a distinct `lebro.ModelErrorKind`;
 context cancellation is returned as `context.Canceled` so `errors.Is` works
 against it directly.
+
+## Decision models
+
+A decision model evaluates application state against named questions and
+returns typed answers instead of generated text. It is a separate contract
+from `Model`, so an existing generative client needs no change and the two
+compose in one application.
+
+```go
+import "github.com/tesh254/lebro/decisions"
+
+model, err := decisions.NewTypeSafe(decisions.TypeSafeConfig{
+	APIKey: os.Getenv("TYPESAFE_API_KEY"),
+	Model:  "jev-latest",
+})
+if err != nil {
+	panic(err)
+}
+
+response, err := model.Decide(ctx, lebro.DecisionRequest{
+	State: "My card was charged twice for order A-104.",
+	Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+		"is_refund": lebro.NoulQuestion{
+			Instructions: "Does this request qualify for a refund?",
+			Criteria:     &lebro.NoulCriteria{True: "Qualifies", False: "Does not qualify"},
+		},
+		"department": lebro.ChoiceQuestion{
+			Instructions: "Which team should handle this request?",
+			Criteria: map[lebro.DecisionOptionID]lebro.JSONValue{
+				"billing":   "Payment and refund questions",
+				"technical": "Product faults and integrations",
+			},
+		},
+		"urgency": lebro.ScoreQuestion{
+			Instructions: "How urgent is this request?",
+			Criteria:     []lebro.JSONValue{"Can wait", "Handle today"},
+		},
+	},
+})
+if err != nil {
+	panic(err)
+}
+fmt.Println(response.Answers["is_refund"])
+```
+
+The `decisions` package adapts three System One providers and the OpenAI
+Decisions API, each configured with its own endpoint, credential, model, HTTP
+client, timeout, and retry policy: `decisions.NewTypeSafe` (TypeSafe Jev),
+`decisions.NewFastino` (Fastino GLiDE), `decisions.NewSubQ` (SubQ
+Snap-preview), and `decisions.NewOpenAI` (OpenAI Luna). Switching providers
+changes configuration, not application logic.
+
+The same package exposes the generic form, `decisions.NewSystemOne`, which
+builds an adapter from a provider's wire contract alone, so a provider with
+no named adapter is reachable by configuration:
+
+```go
+model, err := decisions.NewSystemOne(decisions.SystemOneConfig{
+    APIKey:     os.Getenv("SOME_SYSTEM_ONE_API_KEY"),
+    BaseURL:    "https://api.example.com",
+    AuthHeader: "X-API-Key",
+    Model:      "some-model",
+    Score:      decisions.SystemOneScoreFields{Weighted: "score"},
+    Capabilities: lebro.DecisionCapabilities{
+        Noul: true, Choice: true, Score: true,
+        MultipleQuestions: true, StructuredState: true,
+        StructuredInstructions: true,
+        MaxQuestions: 8, MaxChoiceOptions: 255, MaxScoreLevels: 10,
+        RetryableStatuses: []int{429, 503},
+        NoulUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityUnavailable,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+        ChoiceUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityRequired,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+        ScoreUncertainty: lebro.DecisionUncertainty{
+            Distribution:    lebro.DecisionAvailabilityRequired,
+            Confidence:      lebro.DecisionAvailabilityRequired,
+            ConfidenceMetric: lebro.DecisionConfidenceTopTwoMargin,
+        },
+    },
+})
+```
+
+The contract keeps the provider's meaning intact. A binary probability stays a
+probability, a selected score level stays separate from the
+probability-weighted value, and a confidence or a distribution appears only
+when the provider actually reported one. A reported confidence carries the
+metric it was computed with, because two providers report a confidence in the
+same range and mean different things by it, and a threshold is only
+comparable with a number written against the same measure. A provider that
+declines a question answers with a refusal, which is distinct from a false
+answer and from a failure. `lebro.DecisionGate` turns an answer into a
+deterministic `select`, `review`, or `escalate` recommendation using
+caller-owned thresholds, and never authorizes an action by itself.
+
+SubQ image inputs are capability-gated: raw PNG, JPEG, or WebP bytes are
+encoded as one line of base64 at the HTTP boundary only, at most four images of
+at most 4 MiB each and 8 MiB in total. An unsupported or over-limit image
+fails locally without a request. Credentials and caller-provided image bytes
+never reach a log, an error, or a metric; the repository's own fixtures use
+synthetic payloads.
+
+See [decision models](docs/decisions.md) for the contract, the provider
+capability matrix, and the provider retention notes, and
+[the Cloud handoff](docs/decisions-cloud-handoff.md) for the hosted
+deployment boundaries.
 
 ## Schema-backed tool execution
 
@@ -2126,6 +2243,30 @@ feature set. The schema-validation example validates both tool input and output:
 
 ```sh
 go run ./examples/schema-validation
+```
+
+The decision-provider example builds a decision provider from its wire
+contract alone, the way an integration would for a provider that has no
+named adapter:
+
+```sh
+go run ./examples/decision-provider
+```
+
+The decision-routing example routes a request, gates an action on a
+confidence threshold, and combines score answers with application-owned
+weights:
+
+```sh
+go run ./examples/decision-routing
+```
+
+The decision-guard example puts a decision in front of a dangerous tool and
+shows that a denial, an uncertain answer, a provider failure, and a tool
+outside the allowlist all leave the handler uncalled:
+
+```sh
+go run ./examples/decision-guard
 ```
 
 The storage-memory example exercises the repository contracts and in-memory
