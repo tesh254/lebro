@@ -361,10 +361,13 @@ func questionUncertainty(capabilities lebro.DecisionCapabilities, question lebro
 	}
 }
 
-// applyConfidence stamps the metric on a reported confidence.
+// applyConfidence reads a reported confidence and the metric that says what
+// it means.
 //
-// A provider that reports a confidence the profile does not describe gets an
-// unknown metric: the number is there and what it means is not known.
+// The metric comes from the profile, which is the only place that knows what
+// the provider's confidence means. A confidence on a kind the profile says
+// the provider never reports is malformed, and so is a missing confidence on
+// a kind it always reports.
 func applyConfidence(id lebro.DecisionQuestionID, uncertainty lebro.DecisionUncertainty, reported *float64) (*float64, lebro.DecisionConfidenceMetric, error) {
 	if uncertainty.Confidence == lebro.DecisionAvailabilityUnavailable {
 		if reported != nil {

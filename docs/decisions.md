@@ -444,6 +444,11 @@ an application has to make to its own users.
   applied policy in the `X-Fastino-Data-Retention` header.
 - **TypeSafe** retention is not verified in this release. Follow the
   provider's own documentation.
+- **OpenAI** documents Zero Data Retention and HIPAA use for eligible
+  customers on the Decisions API, with data residency and regional processing
+  in the United States and Europe. This release did not verify those terms
+  against a live account, so read the tenant's data controls rather than
+  assume them.
 
 See the [Cloud handoff](decisions-cloud-handoff.md) for how a hosted
 deployment is expected to handle this.
@@ -463,14 +468,18 @@ model, err := decisions.NewOpenAI(decisions.OpenAIConfig{
 The protocol differs from the System One one in four ways, and the adapter
 translates each of them:
 
+- **The input is a string or a message list.** A request with no images sends
+  the state as a plain string, and a request with images sends one user
+  message whose content parts carry the text and the inline images.
+
 - **The questions and the answers are arrays.** The adapter sorts the
   question identifiers before it sends them, so the wire order is stable, and
   it maps the answers back by the name each one carries. A duplicate, an
   unknown, or a missing name is a malformed response.
-- **The input is a message list.** A text state is sent as it is, and a
-  structured state is written as JSON under a fixed label, so the model is
-  told what it is reading. That is an adapter transformation and not a claim
-  that the provider processes a structured state natively.
+- **The state is text.** A text state is sent as it is, and a structured
+  state is written as JSON under a fixed label, so the model is told what it
+  is reading. That is an adapter transformation and not a claim that the
+  provider processes a structured state natively.
 - **The binary judgment has no criteria.** The schema has one instruction
   and no place for the true and false descriptions, so the adapter writes
   them into the instructions under a fixed label rather than dropping the

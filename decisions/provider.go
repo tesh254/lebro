@@ -365,6 +365,8 @@ func (c SystemOneConfig) profiles(defaultProfile systemOneProfile) (map[string]s
 		if err := checkSystemOneCapabilities(capabilities); err != nil {
 			return nil, err
 		}
+		capabilities.RetryableStatuses = append([]int(nil), entry.Capabilities.RetryableStatuses...)
+		capabilities.Images.MediaTypes = append([]string(nil), entry.Capabilities.Images.MediaTypes...)
 		profile := defaultProfile
 		profile.model = entry.Model
 		profile.capabilities = capabilities

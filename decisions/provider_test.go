@@ -926,3 +926,47 @@ func TestGenericProviderRetriesTheModelPolicy(t *testing.T) {
 		t.Fatalf("the provider received %d requests, want 3", requests)
 	}
 }
+
+// TestGenericProviderCopiesTheProfileSlices pins that a change to the
+// caller's configuration cannot alter a model's contract after the adapter
+// is built.
+func TestGenericProviderCopiesTheProfileSlices(t *testing.T) {
+	statuses := []int{http.StatusTooManyRequests}
+	mediaTypes := []string{"image/png"}
+	config := genericProviderConfig("https://example.com")
+	config.Profiles = []SystemOneModelProfile{
+		{
+			Model: "other-model",
+			Capabilities: lebro.DecisionCapabilities{
+				Noul: true,
+				NoulUncertainty: lebro.DecisionUncertainty{
+					Distribution: lebro.DecisionAvailabilityUnavailable,
+					Confidence:   lebro.DecisionAvailabilityUnavailable,
+				},
+				Images: lebro.DecisionImageCapabilities{
+					Enabled:    true,
+					MediaTypes: mediaTypes,
+				},
+				RetryableStatuses: statuses,
+			},
+		},
+	}
+	model, err := NewSystemOne(config)
+	if err != nil {
+		t.Fatalf("NewSystemOne() error = %v", err)
+	}
+	// The caller changes the configuration's slices after the adapter is
+	// built.
+	statuses[0] = http.StatusInternalServerError
+	mediaTypes[0] = "image/gif"
+	capabilities, ok := model.CapabilitiesFor("other-model")
+	if !ok {
+		t.Fatal("CapabilitiesFor() = false, want the model to have a profile")
+	}
+	if capabilities.RetryableStatuses[0] != http.StatusTooManyRequests {
+		t.Fatalf("the retryable status = %v, want the one the adapter was built with", capabilities.RetryableStatuses[0])
+	}
+	if capabilities.Images.MediaTypes[0] != "image/png" {
+		t.Fatalf("the image media type = %v, want the one the adapter was built with", capabilities.Images.MediaTypes[0])
+	}
+}

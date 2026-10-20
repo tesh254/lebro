@@ -151,6 +151,7 @@ func NewOpenAI(config OpenAIConfig) (*OpenAIModel, error) {
 			NoulUncertainty: lebro.DecisionUncertainty{
 				Distribution: lebro.DecisionAvailabilityUnavailable,
 				Confidence:   lebro.DecisionAvailabilityUnavailable,
+				Refusal:      true,
 			},
 			// A choice or a score answer carries a distribution and a
 			// confidence on every answer. OpenAI documents that it exposes
@@ -395,9 +396,11 @@ type openAIAnswer struct {
 // carries the option as its value; a score entry carries the level index and
 // the level's label.
 type openAIProbability struct {
-	Value       json.RawMessage `json:"value"`
-	Probability float64         `json:"probability"`
-	Label       string          `json:"label"`
+	Value json.RawMessage `json:"value"`
+	// Probability is a pointer because an entry without one is malformed
+	// and an entry with a zero is a real probability.
+	Probability *float64 `json:"probability"`
+	Label       string   `json:"label"`
 }
 
 // decodeOpenAIResponse decodes the OpenAI Decisions response envelope.
@@ -809,11 +812,17 @@ func mapOpenAIChoiceProbabilities(id lebro.DecisionQuestionID, requested map[leb
 		if _, ok := requested[lebro.DecisionOptionID(option)]; !ok {
 			return nil, fmt.Errorf("lebro: decision question %q returned a probability for option %q, which was not requested", id, option)
 		}
-		if err := checkProbability(entry.Probability); err != nil {
+		if entry.Probability == nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned a distribution entry with no probability", id)
+		}
+		if err := checkProbability(*entry.Probability); err != nil {
 			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
 		}
-		probabilities[lebro.DecisionOptionID(option)] = entry.Probability
-		total += entry.Probability
+		if _, duplicate := probabilities[lebro.DecisionOptionID(option)]; duplicate {
+			return nil, fmt.Errorf("lebro: decision question %q returned two probabilities for option %q", id, option)
+		}
+		probabilities[lebro.DecisionOptionID(option)] = *entry.Probability
+		total += *entry.Probability
 	}
 	for option := range requested {
 		if _, ok := probabilities[option]; !ok {
@@ -869,17 +878,25 @@ func mapOpenAIScoreProbabilities(id lebro.DecisionQuestionID, levels int, report
 	total := 0.0
 	for _, entry := range reported {
 		var level int
-		if err := json.Unmarshal(entry.Value, &level); err != nil {
+		// A null value unmarshals into a zero without an error, so it is
+		// rejected explicitly.
+		if err := json.Unmarshal(entry.Value, &level); err != nil || string(entry.Value) == "null" {
 			return nil, fmt.Errorf("lebro: decision question %q returned a distribution entry that is not a level index", id)
 		}
 		if level < 0 || level >= levels {
 			return nil, fmt.Errorf("lebro: decision question %q returned probability for level %d, outside the requested range", id, level)
 		}
-		if err := checkProbability(entry.Probability); err != nil {
+		if entry.Probability == nil {
+			return nil, fmt.Errorf("lebro: decision question %q returned a distribution entry with no probability", id)
+		}
+		if err := checkProbability(*entry.Probability); err != nil {
 			return nil, fmt.Errorf("lebro: decision question %q: %w", id, err)
 		}
-		probabilities[level] = entry.Probability
-		total += entry.Probability
+		if _, duplicate := probabilities[level]; duplicate {
+			return nil, fmt.Errorf("lebro: decision question %q returned two probabilities for level %d", id, level)
+		}
+		probabilities[level] = *entry.Probability
+		total += *entry.Probability
 	}
 	for level := 0; level < levels; level++ {
 		if _, ok := probabilities[level]; !ok {

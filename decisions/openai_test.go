@@ -2,6 +2,7 @@ package decisions
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -575,8 +576,9 @@ func TestOpenAIEncodesImagesAsDataURLs(t *testing.T) {
 		t.Fatalf("the image part type = %#v, want %q", image["type"], "input_image")
 	}
 	url, _ := image["image_url"].(string)
-	if !strings.HasPrefix(url, "data:image/png;base64,") {
-		t.Fatalf("the image URL = %q, want an inline base64 data URL", url)
+	want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(payload)
+	if url != want {
+		t.Fatalf("the image URL = %q, want %q", url, want)
 	}
 }
 
@@ -871,5 +873,91 @@ func TestOpenAIRejectsAConfidenceOnAPredicate(t *testing.T) {
 	})
 	if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
 		t.Fatalf("Decide() error = %v, want a malformed response failure", err)
+	}
+}
+
+// TestOpenAIMalformedDistributions pins that a malformed distribution is a
+// malformed response: an entry without a probability, a repeated option, and
+// a null level are all rejected.
+func TestOpenAIMalformedDistributions(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "an entry with no probability",
+			body: `{"answers":[{"type":"choice","name":"q","choice":"a","confidence":0.5,"probabilities":[{"value":"a"},{"value":"b","probability":1}]}],"model":"gpt-6-luna"}`,
+			want: "distribution entry with no probability",
+		},
+		{
+			name: "a repeated option",
+			body: `{"answers":[{"type":"choice","name":"q","choice":"a","confidence":0.5,"probabilities":[{"value":"a","probability":0.5},{"value":"a","probability":0.5},{"value":"b","probability":0}]}],"model":"gpt-6-luna"}`,
+			want: "two probabilities for option",
+		},
+		{
+			name: "a null level",
+			body: `{"answers":[{"type":"score","name":"q","score":0,"confidence":0.5,"probabilities":[{"value":null,"probability":1},{"value":1,"probability":0}]}],"model":"gpt-6-luna"}`,
+			want: "not a level index",
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(testCase.body))
+			}))
+			defer server.Close()
+
+			model, err := NewOpenAI(OpenAIConfig{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatalf("NewOpenAI() error = %v", err)
+			}
+			var question lebro.DecisionQuestion = lebro.ChoiceQuestion{
+				Instructions: "Which one?",
+				Criteria:     map[lebro.DecisionOptionID]lebro.JSONValue{"a": "first", "b": "second"},
+			}
+			if testCase.name == "a null level" {
+				question = lebro.ScoreQuestion{
+					Instructions: "How much?",
+					Criteria:     []lebro.JSONValue{"low", "high"},
+				}
+			}
+			_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+				State:     "state",
+				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{"q": question},
+			})
+			if !errors.Is(err, lebro.ErrDecisionMalformedResponse) {
+				t.Fatalf("Decide() error = %v, want a malformed response failure", err)
+			}
+			if !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("Decide() error = %v, want it to mention %q", err, testCase.want)
+			}
+		})
+	}
+}
+
+// TestOpenAIRejectsAnInvalidEndpoint pins that a base URL the adapter
+// cannot use is rejected when the adapter is built.
+func TestOpenAIRejectsAnInvalidEndpoint(t *testing.T) {
+	for _, baseURL := range []string{"://not a url", "/relative", "ftp://example.com", "https://"} {
+		if _, err := NewOpenAI(OpenAIConfig{APIKey: "test-key", BaseURL: baseURL}); err == nil {
+			t.Fatalf("NewOpenAI() error = nil, want the base URL %q to be rejected", baseURL)
+		}
+	}
+}
+
+// TestOpenAICanRefuseAnyQuestion pins that the profile says a question of
+// any kind can be refused, because the endpoint says so.
+func TestOpenAICanRefuseAnyQuestion(t *testing.T) {
+	model, err := NewOpenAI(OpenAIConfig{APIKey: "test-key"})
+	if err != nil {
+		t.Fatalf("NewOpenAI() error = %v", err)
+	}
+	capabilities := model.Capabilities()
+	if !capabilities.NoulUncertainty.Refusal ||
+		!capabilities.ChoiceUncertainty.Refusal ||
+		!capabilities.ScoreUncertainty.Refusal {
+		t.Fatalf("the refusal capability = %#v, want every kind to allow a refusal", capabilities)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -330,5 +331,71 @@ func TestDefaultTimeoutAppliesToACallerClient(t *testing.T) {
 	}
 	if client.timeout != defaultTimeout {
 		t.Fatalf("the adapter timeout = %v, want the default %v", client.timeout, defaultTimeout)
+	}
+}
+
+// TestPointerQuestionsAndNestedStateAreRedacted pins that every form of a
+// request's content is redacted.
+//
+// A pointer question carries the same content as a value question, and a
+// structured state carries its content in its leaves. A provider that names
+// the offending field in its error must not carry that field into the
+// message.
+func TestPointerQuestionsAndNestedStateAreRedacted(t *testing.T) {
+	cases := []struct {
+		name    string
+		message string
+		secrets []string
+	}{
+		{
+			name:    "a nested state field",
+			message: "order_id A-104-secret-order is not a valid order",
+			secrets: []string{"A-104-secret-order"},
+		},
+		{
+			name:    "a pointer question's instructions",
+			message: "the instruction Does this request qualify for a refund? is not accepted",
+			secrets: []string{"Does this request qualify for a refund?"},
+		},
+		{
+			name:    "a pointer question's criteria",
+			message: "the criterion Qualifies for a refund is not accepted",
+			secrets: []string{"Qualifies for a refund"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"detail":{"error_type":"validation_error","message":` + strconv.Quote(testCase.message) + `}}`))
+			}))
+			defer server.Close()
+
+			model, err := NewTypeSafe(TypeSafeConfig{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatalf("NewTypeSafe() error = %v", err)
+			}
+			_, err = model.Decide(context.Background(), lebro.DecisionRequest{
+				State: map[string]any{
+					"order_id": "A-104-secret-order",
+					"amount":   42.5,
+				},
+				Questions: map[lebro.DecisionQuestionID]lebro.DecisionQuestion{
+					"is_refund": &lebro.NoulQuestion{
+						Instructions: "Does this request qualify for a refund?",
+						Criteria:     &lebro.NoulCriteria{True: "Qualifies for a refund", False: "Does not qualify"},
+					},
+				},
+			})
+			if err == nil {
+				t.Fatal("Decide() error = nil, want a provider failure")
+			}
+			for _, secret := range testCase.secrets {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("Decide() error = %v, want %q kept out of the message", err, secret)
+				}
+			}
+		})
 	}
 }

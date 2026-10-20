@@ -1,7 +1,7 @@
 # Cloud handoff: decision models
 
 This is the handoff for the team that operates Lebro Cloud. The library
-release adds a provider-neutral decision contract and three BYOK adapters. The
+release adds a provider-neutral decision contract and four BYOK adapters. The
 Cloud product owns everything around it: tenant membership, encrypted
 credential storage and rotation, provider onboarding, audit and retention
 experience, and the product policy that decides what a judgment may do.
@@ -119,10 +119,11 @@ third-party provider. Cloud must:
 - disclose the provider, the model, and the provider's retention policy
   before the tenant enables it. TypeSafe's retention is not verified in this
   release, so the disclosure has to say so rather than present an unknown
-  policy as documented. OpenAI supports Zero Data Retention and HIPAA use for
-  eligible customers, and residency in the United States and Europe, but the
-  eligibility depends on the account's agreements, so the disclosure has to
-  read the tenant's data controls rather than assume them;
+  policy as documented. OpenAI documents Zero Data Retention and HIPAA use for
+  eligible customers on the Decisions API, with residency in the United States
+  and Europe; this release did not verify those terms against a live account,
+  so the disclosure has to say so and read the tenant's data controls rather
+  than assume them;
 - apply the tenant's data policy to the request before it is sent, and refuse
   to send content the tenant's policy excludes;
 - record the provider retention consequence in the tenant's own audit

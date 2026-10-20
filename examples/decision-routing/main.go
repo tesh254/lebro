@@ -287,7 +287,7 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			probabilities[selected] = 0.7
 			// The confidence is the gap between the two highest
 			// probabilities.
-			confidence := probabilities[selected] - secondHighestChoice(probabilities)
+			confidence := probabilities[selected] - secondHighest(probabilities)
 			answers[id] = lebro.ChoiceAnswer{
 				Choice:           selected,
 				Probabilities:    probabilities,
@@ -320,7 +320,7 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 			selected := levels - 1
 			// The confidence is the gap between the two highest
 			// probabilities.
-			confidence := probabilities[selected] - secondHighestLevel(probabilities)
+			confidence := probabilities[selected] - secondHighest(probabilities)
 			answers[id] = lebro.ScoreAnswer{
 				SelectedLevel:    &selected,
 				ExpectedLevel:    &expected,
@@ -340,29 +340,11 @@ func (m ticketDecisionModel) Decide(_ context.Context, request lebro.DecisionReq
 	}, nil
 }
 
-// secondHighestChoice returns the second largest probability in a choice
-// distribution.
+// secondHighest returns the second largest probability in a distribution.
 //
 // The gap between the two highest probabilities is the measure the stand-in
 // reports as its confidence.
-func secondHighestChoice(probabilities map[lebro.DecisionOptionID]float64) float64 {
-	top := 0.0
-	second := 0.0
-	for _, probability := range probabilities {
-		switch {
-		case probability > top:
-			second = top
-			top = probability
-		case probability > second:
-			second = probability
-		}
-	}
-	return second
-}
-
-// secondHighestLevel returns the second largest probability in a level
-// distribution.
-func secondHighestLevel(probabilities map[int]float64) float64 {
+func secondHighest[K comparable](probabilities map[K]float64) float64 {
 	top := 0.0
 	second := 0.0
 	for _, probability := range probabilities {

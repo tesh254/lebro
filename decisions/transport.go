@@ -72,6 +72,12 @@ func newDecisionClient(provider, baseURL, path, authHeader, authPrefix, apiKey, 
 	if !parsed.IsAbs() {
 		return nil, errors.New("lebro: the base URL must be absolute")
 	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, errors.New("lebro: the base URL must use http or https")
+	}
+	if parsed.Host == "" {
+		return nil, errors.New("lebro: the base URL must name a host")
+	}
 	// The default timeout applies whether or not the caller supplied a
 	// client: a client with no timeout of its own would otherwise let a
 	// request hang until the caller's context ends.
@@ -373,6 +379,31 @@ func (c *decisionClient) newRedactor(request lebro.DecisionRequest, extra func(l
 			for _, description := range typed.Criteria {
 				redactor.addContent(description)
 			}
+		case *lebro.NoulQuestion:
+			if typed == nil {
+				continue
+			}
+			redactor.addContent(typed.Instructions)
+			if typed.Criteria != nil {
+				redactor.addContent(typed.Criteria.True)
+				redactor.addContent(typed.Criteria.False)
+			}
+		case *lebro.ChoiceQuestion:
+			if typed == nil {
+				continue
+			}
+			redactor.addContent(typed.Instructions)
+			for _, description := range typed.Criteria {
+				redactor.addContent(description)
+			}
+		case *lebro.ScoreQuestion:
+			if typed == nil {
+				continue
+			}
+			redactor.addContent(typed.Instructions)
+			for _, description := range typed.Criteria {
+				redactor.addContent(description)
+			}
 		}
 	}
 	if extra != nil {
@@ -386,6 +417,10 @@ func (c *decisionClient) newRedactor(request lebro.DecisionRequest, extra func(l
 }
 
 // addContent records one request value as sensitive.
+//
+// A structured value is recorded whole and leaf by leaf: a provider that
+// echoes one field of the state back would otherwise carry that field into
+// an error message.
 func (r *requestRedactor) addContent(value lebro.JSONValue) {
 	if value == nil {
 		return
@@ -400,6 +435,25 @@ func (r *requestRedactor) addContent(value lebro.JSONValue) {
 		if len(encoded) >= minRedactedSecretLength {
 			r.secrets = append(r.secrets, string(encoded))
 		}
+	}
+	r.addLeaves(value)
+}
+
+// addLeaves records every string inside a structured value.
+func (r *requestRedactor) addLeaves(value lebro.JSONValue) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, item := range typed {
+			r.addContent(item)
+		}
+	case []any:
+		for _, item := range typed {
+			r.addContent(item)
+		}
+	default:
+		// A number, a boolean, or a named map or slice type. A named
+		// collection is not a JSON value the redactor can walk, and the
+		// whole value is recorded above.
 	}
 }
 

@@ -370,7 +370,7 @@ type guardDecisionModel struct {
 }
 
 // confidence is the metric the stand-in reports: the distance of the
-// probability from one half.
+// probability from one half, doubled so that it runs from zero to one.
 //
 // The stand-in computes it rather than carrying a number of its own, so the
 // metric it names is one its numbers really mean.
@@ -386,8 +386,8 @@ func (guardDecisionModel) Capabilities() lebro.DecisionCapabilities {
 		NoulUncertainty: lebro.DecisionUncertainty{
 			Distribution: lebro.DecisionAvailabilityUnavailable,
 			Confidence:   lebro.DecisionAvailabilityRequired,
-			// The stand-in reports a number without documenting what it
-			// means, so the metric says exactly that.
+			// The metric is the one confidence() computes, so the gate
+			// binds its threshold to a measure the numbers mean.
 			ConfidenceMetric: lebro.DecisionConfidenceDistanceFromHalf,
 		},
 	}
