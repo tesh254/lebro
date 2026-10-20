@@ -465,7 +465,7 @@ model, err := decisions.NewOpenAI(decisions.OpenAIConfig{
 })
 ```
 
-The protocol differs from the System One one in four ways, and the adapter
+The protocol differs from the System One one in five ways, and the adapter
 translates each of them:
 
 - **The input is a string or a message list.** A request with no images sends

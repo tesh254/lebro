@@ -896,6 +896,11 @@ func TestOpenAIMalformedDistributions(t *testing.T) {
 			want: "two probabilities for option",
 		},
 		{
+			name: "a null option",
+			body: `{"answers":[{"type":"choice","name":"q","choice":"a","confidence":0.5,"probabilities":[{"value":null,"probability":1},{"value":"b","probability":0}]}],"model":"gpt-6-luna"}`,
+			want: "not an option",
+		},
+		{
 			name: "a null level",
 			body: `{"answers":[{"type":"score","name":"q","score":0,"confidence":0.5,"probabilities":[{"value":null,"probability":1},{"value":1,"probability":0}]}],"model":"gpt-6-luna"}`,
 			want: "not a level index",

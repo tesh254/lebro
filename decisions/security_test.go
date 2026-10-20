@@ -391,6 +391,10 @@ func TestPointerQuestionsAndNestedStateAreRedacted(t *testing.T) {
 			if err == nil {
 				t.Fatal("Decide() error = nil, want a provider failure")
 			}
+			var decisionErr *lebro.DecisionError
+			if !errors.As(err, &decisionErr) || decisionErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("Decide() error = %v, want a 400 provider failure", err)
+			}
 			for _, secret := range testCase.secrets {
 				if strings.Contains(err.Error(), secret) {
 					t.Fatalf("Decide() error = %v, want %q kept out of the message", err, secret)

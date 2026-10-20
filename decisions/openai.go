@@ -806,7 +806,9 @@ func mapOpenAIChoiceProbabilities(id lebro.DecisionQuestionID, requested map[leb
 	total := 0.0
 	for _, entry := range reported {
 		var option string
-		if err := json.Unmarshal(entry.Value, &option); err != nil {
+		// A null value unmarshals into an empty string without an error,
+		// so it is rejected explicitly.
+		if err := json.Unmarshal(entry.Value, &option); err != nil || string(entry.Value) == "null" {
 			return nil, fmt.Errorf("lebro: decision question %q returned a distribution entry that is not an option", id)
 		}
 		if _, ok := requested[lebro.DecisionOptionID(option)]; !ok {
