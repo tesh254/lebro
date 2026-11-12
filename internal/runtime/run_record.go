@@ -26,7 +26,8 @@ const (
 	// RunEventDelta is emitted for each text, reasoning, tool-call, or
 	// structured-output delta produced by a streaming model call. Multiple deltas
 	// may be emitted between RunEventModelStarted and RunEventModelFinished for a
-	// single call.
+	// single call. Approval continuations using the non-streaming run path
+	// emit the completed response as a single delta before tool events.
 	RunEventDelta RunEventType = "model_delta"
 	// RunEventToolRequested is emitted when the model requests tool calls,
 	// once per individual tool call.

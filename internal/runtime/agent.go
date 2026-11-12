@@ -664,6 +664,12 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			return result, agentErr
 		}
 
+		// Approval continuations use Run rather than RunStream. Emit their
+		// completed model content before tool events so listeners see the
+		// continuation in execution order.
+		if input.resumeStartStep > 0 && (response.Message.Content != "" || !response.Message.Reasoning.IsZero()) {
+			emitter.emitDelta(runID, step, stepID, StreamDelta{Text: response.Message.Content, Reasoning: response.Message.Reasoning})
+		}
 		emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, nil)
 
 		transcript = append(transcript, cloneMessage(response.Message))

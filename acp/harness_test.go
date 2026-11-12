@@ -227,6 +227,14 @@ func (c *clientFuncs) SessionUpdate(ctx context.Context, params acp.SessionNotif
 func (c *clientFuncs) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	select {
 	case optionID := <-c.log.allow:
+		if optionID == "delayed-allow" {
+			select {
+			case <-time.After(50 * time.Millisecond):
+				optionID = "allow"
+			case <-ctx.Done():
+				return acp.RequestPermissionResponse{}, ctx.Err()
+			}
+		}
 		if optionID == "" {
 			return acp.RequestPermissionResponse{}, acp.NewRequestCancelled(nil)
 		}

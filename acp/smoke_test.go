@@ -71,11 +71,6 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 			"clientInfo": map[string]any{"name": "smoke", "version": "0"},
 		},
 	})
-	// request id 1: session/new
-	send(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "session/new",
-		"params": map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}},
-	})
 	reader := bufio.NewReader(stdout)
 	deadline := time.Now().Add(60 * time.Second)
 	readLine := func() (string, bool) {
@@ -122,6 +117,11 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 			continue
 		}
 		switch {
+		case msg.ID != nil && *msg.ID == 0 && msg.Result != nil && msg.Method == "":
+			send(map[string]any{
+				"jsonrpc": "2.0", "id": 1, "method": "session/new",
+				"params": map[string]any{"cwd": t.TempDir(), "mcpServers": []any{}},
+			})
 		case msg.ID != nil && *msg.ID == 1 && msg.Result != nil && msg.Method == "":
 			var res struct {
 				SessionID string `json:"sessionId"`
@@ -139,6 +139,16 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 		case msg.ID != nil && *msg.ID == 2 && msg.Error != nil:
 			t.Fatalf("prompt errored: %s", line)
 		case msg.ID != nil && *msg.ID == 2 && msg.Result != nil:
+			send(map[string]any{
+				"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+				"params": map[string]any{
+					"sessionId": sessionID,
+					"prompt":    []any{map[string]any{"type": "text", "text": "what happened?"}},
+				},
+			})
+		case msg.ID != nil && *msg.ID == 3 && msg.Error != nil:
+			t.Fatalf("second prompt errored: %s", line)
+		case msg.ID != nil && *msg.ID == 3 && msg.Result != nil:
 			promptReplied = true
 		case msg.Method == "session/request_permission":
 			permissionAnswered = true

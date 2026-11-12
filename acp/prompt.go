@@ -58,7 +58,7 @@ func (s *Server) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Prom
 		ThreadID: sess.thread,
 		Messages: messages,
 	}
-	agent := s.agent()
+	agent := sess.agent
 	stream, err := agent.RunStream(ctx, input)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -83,15 +83,7 @@ func (s *Server) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Prom
 	// Present each persisted approval request and resume it before handling
 	// any subsequent suspension in this turn.
 	for waitErr == nil && ctx.Err() == nil && result.Status == lebro.RunStatusSuspended && result.ToolApproval != nil {
-		previousMessages := len(result.Messages)
-		resumed, resumeErr := s.resumeSuspended(ctx, result)
-		if len(resumed.Messages) >= previousMessages {
-			for _, message := range resumed.Messages[previousMessages:] {
-				if message.Role == lebro.RoleAssistant && message.Content != "" {
-					bridge.send(acp.UpdateAgentMessageText(message.Content))
-				}
-			}
-		}
+		resumed, resumeErr := s.resumeSuspended(ctx, sess.agent, result)
 		result, waitErr = resumed, resumeErr
 	}
 
@@ -148,7 +140,7 @@ func promptMessages(blocks []acp.ContentBlock) ([]lebro.Message, error) {
 }
 
 // resumeSuspended presents the persisted request and resumes its decision.
-func (s *Server) resumeSuspended(ctx context.Context, suspended lebro.RunResult) (lebro.RunResult, error) {
+func (s *Server) resumeSuspended(ctx context.Context, agent *lebro.Agent, suspended lebro.RunResult) (lebro.RunResult, error) {
 	bridge := s.permissionBridge()
 	if bridge == nil {
 		return suspended, nil
@@ -163,7 +155,6 @@ func (s *Server) resumeSuspended(ctx context.Context, suspended lebro.RunResult)
 		Reason:    reason,
 		DecidedAt: time.Now(),
 	}
-	agent := s.agent()
 	if agent == nil {
 		return suspended, nil
 	}

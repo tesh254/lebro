@@ -51,7 +51,8 @@ type Server struct {
 	perms    *permissionBridge
 
 	// connection is set once the server starts serving.
-	connection *acp.AgentSideConnection
+	connection  *acp.AgentSideConnection
+	initialized bool
 }
 
 // NewServer validates the configuration and returns a ready server.
@@ -95,7 +96,8 @@ func (s *Server) ExposeAgent() error {
 	if s.exposedAgent() {
 		return errors.New("acp: an agent is already exposed")
 	}
-	agent, err := s.buildAgentLocked()
+	s.perms = newPermissionBridge(s, s.config.AgentConfig.ToolApprovalPolicy)
+	agent, err := s.buildAgentLocked(*s.config.AgentConfig)
 	if err != nil {
 		return err
 	}
@@ -107,20 +109,22 @@ func (s *Server) ExposeAgent() error {
 // permission bridge wraps the configured approval policy (nil means every
 // model-requested call requires ACP approval), and the event bridge is bound
 // per turn inside the listener fan-out.
-func (s *Server) buildAgentLocked() (*lebro.Agent, error) {
-	cfg := *s.config.AgentConfig
+func (s *Server) buildAgentLocked(cfg lebro.AgentConfig) (*lebro.Agent, error) {
 	// The turn listener is registered per prompt via the session bridge; the
 	// agent-level listener fans out to it.
 	cfg.Listener = listenerFunc(func(event lebro.RunEvent) {
 		s.mu.Lock()
 		sess := s.activeBridgeTarget(event)
+		var bridge *eventBridge
+		if sess != nil {
+			bridge = sess.bridge
+		}
 		s.mu.Unlock()
-		if sess == nil {
+		if bridge == nil {
 			return
 		}
-		sess.bridge.OnRunEvent(event)
+		bridge.OnRunEvent(event)
 	})
-	s.perms = newPermissionBridge(s, s.config.AgentConfig.ToolApprovalPolicy)
 	cfg.ToolApprovalPolicy = s.perms
 	return lebro.NewAgent(cfg)
 }
@@ -164,6 +168,9 @@ func (fn listenerFunc) OnRunEvent(event lebro.RunEvent) { fn(event) }
 // the client disconnects. Protocol messages own stdout; server diagnostics go
 // to the configured logger.
 func (s *Server) RunStdio(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	if !s.exposedAgent() {
 		s.mu.Unlock()
@@ -176,9 +183,18 @@ func (s *Server) RunStdio(ctx context.Context) error {
 	conn := acp.NewAgentSideConnection(s, os.Stdout, os.Stdin)
 	s.connection = conn
 	s.mu.Unlock()
+	closed := s.watchConnection(conn)
 
-	<-conn.Done()
-	return nil
+	select {
+	case <-conn.Done():
+		<-closed
+		return nil
+	case <-ctx.Done():
+		_ = os.Stdin.Close()
+		<-conn.Done()
+		<-closed
+		return ctx.Err()
+	}
 }
 
 // ServeForTest wires the server to arbitrary reader and writer pipes. It is
@@ -191,6 +207,7 @@ func (s *Server) ServeForTest(output io.Writer, input io.Reader) *acp.AgentSideC
 	defer s.mu.Unlock()
 	conn := acp.NewAgentSideConnection(s, output, input)
 	s.connection = conn
+	s.watchConnection(conn)
 	return conn
 }
 
@@ -202,12 +219,14 @@ var _ acp.Agent = (*Server)(nil)
 // session is one ACP session: an opaque protocol ID mapped to a lebro thread
 // and the active turn, if any.
 type session struct {
-	id      string
-	thread  lebro.ThreadID
-	running bool
-	bridge  *eventBridge
-	cancel  context.CancelFunc
-	turn    int
+	id       string
+	thread   lebro.ThreadID
+	running  bool
+	bridge   *eventBridge
+	cancel   context.CancelFunc
+	turn     int
+	agent    *lebro.Agent
+	closeMCP func()
 }
 
 // SetAgentConnection implements the SDK's connection-aware hook so the server
@@ -225,6 +244,9 @@ func (s *Server) conn() *acp.AgentSideConnection {
 }
 
 func (s *Server) Initialize(ctx context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
+	s.mu.Lock()
+	s.initialized = true
+	s.mu.Unlock()
 	// Negotiate the client's version when we support it; otherwise answer
 	// with the latest version we support and let the client disconnect.
 	version := params.ProtocolVersion
@@ -257,12 +279,11 @@ func (s *Server) Logout(ctx context.Context, params acp.LogoutRequest) (acp.Logo
 }
 
 func (s *Server) NewSession(ctx context.Context, params acp.NewSessionRequest) (acp.NewSessionResponse, error) {
-	// Client-provided MCP servers launch processes; treating them as
-	// untrusted means rejecting them outright.
-	if len(params.McpServers) > 0 {
-		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{
-			"error": "mcpServers are not supported by this agent",
-		})
+	s.mu.Lock()
+	initialized := s.initialized
+	s.mu.Unlock()
+	if !initialized {
+		return acp.NewSessionResponse{}, acp.NewInvalidRequest(map[string]any{"error": "initialize must complete first"})
 	}
 	if len(params.AdditionalDirectories) > 0 {
 		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{
@@ -273,8 +294,28 @@ func (s *Server) NewSession(ctx context.Context, params acp.NewSessionRequest) (
 	if err != nil {
 		return acp.NewSessionResponse{}, acp.NewInternalError(map[string]any{"error": err.Error()})
 	}
-	sess := &session{id: id, thread: lebro.ThreadID("acp-" + id)}
+	agent, closeMCP, err := s.sessionAgent(ctx, params)
+	if err != nil {
+		return acp.NewSessionResponse{}, acp.NewInvalidParams(map[string]any{"error": err.Error()})
+	}
+	if err := ctx.Err(); err != nil {
+		closeMCP()
+		return acp.NewSessionResponse{}, err
+	}
+	sess := &session{id: id, thread: lebro.ThreadID("acp-" + id), agent: agent, closeMCP: closeMCP}
 	s.mu.Lock()
+	if s.connection == nil {
+		s.mu.Unlock()
+		closeMCP()
+		return acp.NewSessionResponse{}, acp.NewInternalError(map[string]any{"error": "connection unavailable"})
+	}
+	select {
+	case <-s.connection.Done():
+		s.mu.Unlock()
+		closeMCP()
+		return acp.NewSessionResponse{}, acp.NewInternalError(map[string]any{"error": "connection closed"})
+	default:
+	}
 	s.sessions[id] = sess
 	s.mu.Unlock()
 	return acp.NewSessionResponse{SessionId: acp.SessionId(id)}, nil

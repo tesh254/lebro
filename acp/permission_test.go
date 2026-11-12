@@ -1,12 +1,44 @@
 package acp_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/tesh254/lebro"
 )
+
+func TestResumedTextPrecedesNextToolCall(t *testing.T) {
+	second := lebro.ModelToolCall{ID: "call-second", ToolID: "acp_test.protected", Arguments: json.RawMessage(`{"value":"second"}`)}
+	response := lebro.ModelResponse{
+		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "before second tool", ToolCalls: mustToolCalls(second)},
+		FinishReason: lebro.FinishReasonToolCalls,
+	}
+	h := newHarness(t, toolCallResponse(), response, textResponse("finished"))
+	h.model.scripted = true
+	h.initialize(t.Context())
+	session := h.newSession(t.Context())
+	h.events.allow <- "allow"
+	h.events.allow <- "allow"
+	h.mustPrompt(t.Context(), session, "run both")
+	updates := h.events.snapshot()
+	textIndex, toolIndex := -1, -1
+	for i, event := range updates {
+		if chunk := event.Update.AgentMessageChunk; chunk != nil && chunk.Content.Text != nil && chunk.Content.Text.Text == "before second tool" {
+			textIndex = i
+		}
+		if call := event.Update.ToolCall; call != nil && call.ToolCallId == "call-second" {
+			toolIndex = i
+		}
+	}
+	if textIndex < 0 || toolIndex <= textIndex {
+		t.Fatalf("continuation text index %d, second tool index %d", textIndex, toolIndex)
+	}
+	if count := h.tool.executionCount(); count != 2 {
+		t.Fatalf("tool executions = %d, want 2", count)
+	}
+}
 
 // approvalHarness is a harness whose agent suspends on the protected tool.
 func approvalHarness(t *testing.T, steps ...lebro.ModelResponse) *harness {
@@ -135,17 +167,6 @@ func TestUnknownOptionIsNotApproval(t *testing.T) {
 func TestApprovalExpiryFailsClosed(t *testing.T) {
 	t.Parallel()
 	// Wrap the harness with a policy carrying a tiny TTL.
-	h := newHarness(t,
-		toolCallResponse(),
-		textResponse("acknowledged"),
-	)
-	// Rebuild the server with a short-TTL policy by constructing a second
-	// server over the same pipes is complex; instead use the harness's
-	// exposed server default policy (nil wrapped) with the runtime's own
-	// TTL resolution: the nil wrapped policy sets no TTL, so expiry must be
-	// exercised via a dedicated policy harness below.
-	_ = h
-
 	h2 := newExpiryHarness(t,
 		toolCallResponse(),
 		textResponse("acknowledged"),
@@ -155,7 +176,6 @@ func TestApprovalExpiryFailsClosed(t *testing.T) {
 
 	// Hold the client's permission response past the TTL.
 	h2.events.allow <- "delayed-allow"
-	time.Sleep(50 * time.Millisecond) // decision deliberately after expiry
 
 	_, err := h2.prompt(t.Context(), session, "transfer please")
 	if err == nil {

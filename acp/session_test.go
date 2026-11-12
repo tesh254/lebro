@@ -10,6 +10,15 @@ import (
 	"github.com/tesh254/lebro"
 )
 
+func TestNewSessionRequiresInitialize(t *testing.T) {
+	h := newHarness(t, textResponse("hello"))
+	_, err := h.client.NewSession(t.Context(), acp.NewSessionRequest{Cwd: "/tmp", McpServers: []acp.McpServer{}})
+	reqErr, ok := asRequestError(err)
+	if !ok || reqErr.Code != -32600 {
+		t.Fatalf("new session before initialize: got %v, want invalid request", err)
+	}
+}
+
 // TestInitializeNegotiatesBaselineCapabilities verifies version negotiation
 // and that only baseline capabilities are advertised.
 func TestInitializeNegotiatesBaselineCapabilities(t *testing.T) {

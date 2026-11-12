@@ -22,7 +22,8 @@ type streamingFixtureModel struct {
 	gate    chan struct{}
 	blocked bool
 	// onCall, when set, observes each model call for debugging.
-	onCall func(call int, messages []lebro.Message)
+	onCall   func(call int, request lebro.ModelRequest)
+	scripted bool
 }
 
 func newStreamingModel(steps ...lebro.ModelResponse) *streamingFixtureModel {
@@ -33,6 +34,16 @@ func (m *streamingFixtureModel) Model() string { return "acp-fixture" }
 
 // Generate falls back to a single complete response.
 func (m *streamingFixtureModel) Generate(ctx context.Context, request lebro.ModelRequest) (lebro.ModelResponse, error) {
+	if m.scripted {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.calls >= len(m.steps) {
+			return lebro.ModelResponse{}, fmt.Errorf("acp test: fixture model exhausted after %d calls", m.calls)
+		}
+		response := m.steps[m.calls]
+		m.calls++
+		return response, nil
+	}
 	pieces, err := m.streamAll(ctx, request)
 	if err != nil {
 		return lebro.ModelResponse{}, err
@@ -102,7 +113,7 @@ func (m *streamingFixtureModel) streamAll(_ context.Context, request lebro.Model
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.onCall != nil {
-		m.onCall(m.calls, request.Messages)
+		m.onCall(m.calls, request)
 	}
 
 	var response lebro.ModelResponse

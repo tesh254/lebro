@@ -190,6 +190,24 @@ func NewToolRegistry(compiler SchemaCompiler) (*ToolRegistry, error) {
 	return &ToolRegistry{compiler: compiler, tools: make(map[ToolID]*RegisteredTool)}, nil
 }
 
+// CloneWithCompiler returns an independent registry containing the same
+// immutable execution boundaries, using compiler for future registrations.
+func (r *ToolRegistry) CloneWithCompiler(compiler SchemaCompiler) (*ToolRegistry, error) {
+	clone, err := NewToolRegistry(compiler)
+	if err != nil {
+		return nil, err
+	}
+	if r == nil {
+		return clone, nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for id, tool := range r.tools {
+		clone.tools[id] = tool
+	}
+	return clone, nil
+}
+
 // Register validates and compiles a tool definition before publishing it.
 // Existing stable IDs cannot be replaced implicitly.
 func (r *ToolRegistry) Register(tool Tool) error {

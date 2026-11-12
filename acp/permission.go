@@ -50,8 +50,7 @@ func (p *permissionBridge) requestPermission(ctx context.Context, request *lebro
 	}
 	title := toolTitle(request.ToolID, request.ToolCallID)
 	kind := toolKind(request.ToolID)
-	var arguments any
-	if err := json.Unmarshal(request.Arguments, &arguments); err != nil {
+	if !json.Valid(request.Arguments) {
 		return false, "invalid persisted arguments"
 	}
 	response, err := conn.RequestPermission(ctx, acp.RequestPermissionRequest{
@@ -59,7 +58,7 @@ func (p *permissionBridge) requestPermission(ctx context.Context, request *lebro
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallId: acp.ToolCallId(request.ToolCallID),
 			Title:      acp.Ptr(title), Kind: acp.Ptr(kind),
-			Status: acp.Ptr(acp.ToolCallStatusPending), RawInput: arguments,
+			Status: acp.Ptr(acp.ToolCallStatusPending), RawInput: json.RawMessage(request.Arguments),
 		},
 		Options: []acp.PermissionOption{
 			{OptionId: "allow", Name: "Allow once", Kind: acp.PermissionOptionKindAllowOnce},

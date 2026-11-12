@@ -1,12 +1,11 @@
 // Package acp exposes configured lebro agents to ACP-compatible editors over
 // the Agent Client Protocol v1, built on github.com/coder/acp-go-sdk.
 //
-// The adapter is optional and isolated: importing it does not affect lebro
-// applications that never use it, and the root package never imports it.
+// The adapter is optional, and the root package never imports it.
 //
 // # What is supported
 //
-// The server implements the ACP v1 baseline: initialize with protocol version
+// The server implements ACP v1 initialization with protocol version
 // and capability negotiation, session/new, session/prompt, session/cancel, and
 // session/update notifications. Prompt content accepts text and resource_link
 // blocks — the v1 baseline every agent must support. resource_link blocks are
@@ -14,8 +13,8 @@
 // referenced URI, so a link grants no file or network access by itself.
 //
 // Agent output streams through ACP updates in event order: agent text as
-// agent_message_chunk, reasoning as agent_thought_chunk (only when the agent's
-// model streams it), tool calls as tool_call/tool_call_update with stable IDs
+// agent_message_chunk, reasoning as agent_thought_chunk, tool calls as
+// tool_call/tool_call_update with stable IDs
 // derived from the model's tool-call IDs, and terminal outcomes as stop
 // reasons: end_turn, refusal, and cancelled.
 //
@@ -24,10 +23,9 @@
 // The server advertises no optional capabilities: loadSession is false, and no
 // image, audio, embeddedContext, filesystem, terminal, MCP-transport, or
 // session-resume capabilities are sent. Clients must not send image, audio, or
-// resource blocks; they are rejected with an invalid-params error rather than
-// silently ignored. session/new rejects non-empty mcpServers lists for the
-// same reason: connecting to client-provided MCP servers would execute
-// untrusted commands. session/new also rejects additionalDirectories.
+// resource blocks; they are rejected with an invalid-params error. Stdio MCP
+// servers are started for the requesting session. HTTP and SSE MCP transports
+// and additionalDirectories are rejected.
 //
 // # Sessions map to lebro threads
 //
@@ -57,10 +55,10 @@
 //
 // Everything arriving over the protocol is untrusted. Session IDs select only
 // sessions this connection created; unknown IDs return resource-not-found.
-// Working directories are accepted but never used for filesystem access.
-// Client-provided MCP configuration is rejected. Tool arguments reach the
-// model only through the agent's own configured tools and approval policy;
-// the bridge adds no grant of its own. Approval decisions carry only an
+// Client-provided MCP commands execute locally in the requested working
+// directory with the supplied environment. Connect only trusted ACP clients.
+// Discovered tools are scoped to their session and follow the configured
+// tool approval policy. Approval decisions carry only an
 // outcome; they cannot rewrite the reviewed request.
 //
 // The adapter uses github.com/coder/acp-go-sdk for ACP framing and types.
