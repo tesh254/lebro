@@ -19,10 +19,10 @@ import (
 
 // protectedTool records executions; tests assert at-most-once semantics.
 type protectedTool struct {
-	mu         sync.Mutex
-	disabled   bool
-	executions int
-	lastArgs   string
+	mu            sync.Mutex
+	disabled      bool
+	executions    int
+	lastArgsField string
 }
 
 func (t *protectedTool) Definition() lebro.ToolDefinition {
@@ -40,7 +40,7 @@ func (t *protectedTool) Execute(_ context.Context, input json.RawMessage) (json.
 		return nil, fmt.Errorf("acp test: handler executed while disabled")
 	}
 	t.executions++
-	t.lastArgs = string(input)
+	t.lastArgsField = string(input)
 	return json.RawMessage(`{"executed":true}`), nil
 }
 
@@ -49,6 +49,13 @@ func (t *protectedTool) executionCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.executions
+}
+
+// lastArgs returns the most recent handler input.
+func (t *protectedTool) lastArgs() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastArgsField
 }
 
 // harness wires an in-process ACP client to a served lebro agent over io
@@ -200,6 +207,41 @@ func (l *updateLog) toolCalls() [][2]string {
 				status = string(*u.Update.ToolCallUpdate.Status)
 			}
 			out = append(out, [2]string{string(u.Update.ToolCallUpdate.ToolCallId), status})
+		}
+	}
+	return out
+}
+
+// toolCallUpdate pairs one tool-call update with its session.
+type toolCallUpdate struct {
+	sessionID string
+	id        string
+	status    string
+}
+
+// updatesByToolCall returns every tool-call update with its owning session.
+func (l *updateLog) updatesByToolCall() []toolCallUpdate {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []toolCallUpdate
+	for _, u := range l.updates {
+		switch {
+		case u.Update.ToolCall != nil:
+			out = append(out, toolCallUpdate{
+				sessionID: u.SessionID,
+				id:        string(u.Update.ToolCall.ToolCallId),
+				status:    string(u.Update.ToolCall.Status),
+			})
+		case u.Update.ToolCallUpdate != nil:
+			status := ""
+			if u.Update.ToolCallUpdate.Status != nil {
+				status = string(*u.Update.ToolCallUpdate.Status)
+			}
+			out = append(out, toolCallUpdate{
+				sessionID: u.SessionID,
+				id:        string(u.Update.ToolCallUpdate.ToolCallId),
+				status:    status,
+			})
 		}
 	}
 	return out

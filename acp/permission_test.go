@@ -69,9 +69,19 @@ func TestApprovedToolExecutesOnceAndAgentContinues(t *testing.T) {
 		t.Fatalf("stop reason = %q", response.StopReason)
 	}
 
-	// The tool executed exactly once.
+	// The tool executed exactly once with the reviewed arguments.
 	if calls := h.tool.executionCount(); calls != 1 {
 		t.Fatalf("tool executions = %d, want 1", calls)
+	}
+	// The executed arguments match the approved persisted call.
+	var executed struct {
+		Value string `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(h.tool.lastArgs()), &executed); err != nil {
+		t.Fatalf("decode executed arguments: %v", err)
+	}
+	if executed.Value != "reviewed" {
+		t.Fatalf("executed arguments = %s, want the reviewed value", h.tool.lastArgs())
 	}
 	// The tool call was presented with a stable ID through its lifecycle:
 	// pending -> in_progress -> completed, all with the same ID.
@@ -85,6 +95,12 @@ func TestApprovedToolExecutesOnceAndAgentContinues(t *testing.T) {
 	}
 	if calls[0][1] != "pending" || calls[1][1] != "in_progress" || calls[2][1] != "completed" {
 		t.Fatalf("unexpected status sequence: %v", calls)
+	}
+	// Every update in the lifecycle carries the same stable ID.
+	for i := 1; i < 3; i++ {
+		if calls[i][0] != id {
+			t.Fatalf("tool update %d id = %q, want stable %q", i, calls[i][0], id)
+		}
 	}
 	// The second model call happened (agent continued after the tool).
 	waitFor(t, waitTimeout, func() bool {
@@ -215,5 +231,64 @@ func TestDisconnectDuringPermissionDoesNotExecute(t *testing.T) {
 	}
 	if calls := h.tool.executionCount(); calls != 0 {
 		t.Fatalf("tool executions = %d, want 0", calls)
+	}
+}
+
+// TestCancelledApprovalIsDeniedNotStranded asserts a session cancel while an
+// approval is pending records a terminal denial for the persisted request —
+// it must not stay pending and resumable — and emits a failed tool-call
+// update so the client never sees the call stuck in pending.
+func TestCancelledApprovalIsDeniedNotStranded(t *testing.T) {
+	t.Parallel()
+	h := approvalHarness(t,
+		toolCallResponse(),
+	)
+	h.initialize(t.Context())
+	session := h.newSession(t.Context())
+
+	done := make(chan struct{})
+	var response acp.PromptResponse
+	var err error
+	go func() {
+		defer close(done)
+		response, err = h.prompt(t.Context(), session, "transfer please")
+	}()
+	waitFor(t, waitTimeout, func() bool {
+		return len(h.events.toolCalls()) > 0
+	})
+
+	if err := h.client.Cancel(t.Context(), acp.CancelNotification{SessionId: session}); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(waitTimeout):
+		t.Fatal("prompt did not terminate after cancel")
+	}
+	if err != nil {
+		t.Fatalf("cancelled prompt returned error: %v", err)
+	}
+	if response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stop reason = %q, want cancelled", response.StopReason)
+	}
+	if calls := h.tool.executionCount(); calls != 0 {
+		t.Fatalf("tool executions = %d, want 0", calls)
+	}
+	// The presented call must end in a terminal failed state: the adapter
+	// closed the persisted approval when the turn ended.
+	calls := h.events.updatesByToolCall()
+	if len(calls) == 0 {
+		t.Fatal("no tool-call updates recorded")
+	}
+	// The presented call must end in a terminal failed state: the adapter
+	// closed the persisted approval when the turn ended.
+	var sawFailed bool
+	for _, call := range calls {
+		if call.status == "failed" {
+			sawFailed = true
+		}
+	}
+	if !sawFailed {
+		t.Fatalf("tool-call updates never reached failed after cancel: %v", calls)
 	}
 }

@@ -40,7 +40,7 @@ func (s *Server) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Prom
 	sess.cancel = cancel
 	sess.turn++
 	runID := lebro.RunID(fmt.Sprintf("acp-%s-%d", sess.id, sess.turn))
-	bridge := newEventBridge(s, sess, string(runID))
+	bridge := newEventBridge(s, sess, string(runID), ctx)
 	sess.bridge = bridge
 	s.mu.Unlock()
 
@@ -81,8 +81,17 @@ func (s *Server) Prompt(ctx context.Context, params acp.PromptRequest) (acp.Prom
 	<-drained
 
 	// Present each persisted approval request and resume it before handling
-	// any subsequent suspension in this turn.
-	for waitErr == nil && ctx.Err() == nil && result.Status == lebro.RunStatusSuspended && result.ToolApproval != nil {
+	// any subsequent suspension in this turn. A cancelled turn or dropped
+	// connection still owes the persisted request a terminal decision, so
+	// the loop records a denial with a non-cancelable cleanup context
+	// instead of leaving the approval stranded in its pending state.
+	for waitErr == nil && result.Status == lebro.RunStatusSuspended && result.ToolApproval != nil {
+		if ctx.Err() != nil {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+			result, waitErr = s.denySuspended(cleanupCtx, sess.agent, result, "acp session ended before approval")
+			cleanupCancel()
+			break
+		}
 		resumed, resumeErr := s.resumeSuspended(ctx, sess.agent, result)
 		result, waitErr = resumed, resumeErr
 	}
@@ -147,13 +156,16 @@ func (s *Server) resumeSuspended(ctx context.Context, agent *lebro.Agent, suspen
 	}
 	request := suspended.ToolApproval
 	approved, reason := bridge.requestPermission(ctx, request)
+	if !approved {
+		s.failToolCall(request)
+	}
 	resume := lebro.ToolApprovalDecision{
 		RunID:     request.RunID,
 		RequestID: request.ID,
 		Approved:  approved,
 		Decider:   "acp-client",
 		Reason:    reason,
-		DecidedAt: time.Now(),
+		DecidedAt: s.agentClock().Now(),
 	}
 	if agent == nil {
 		return suspended, nil
@@ -162,10 +174,76 @@ func (s *Server) resumeSuspended(ctx context.Context, agent *lebro.Agent, suspen
 	if err != nil {
 		// Denied, expired, stale, and uncertain are terminal runtime
 		// failures for the run; surface them as protocol errors with the
-		// result's terminal state intact.
+		// result's terminal state intact. The presented call must not stay
+		// pending in the client: denied and expired decisions emit their
+		// own failed update below, and stale or uncertain ones are equally
+		// terminal for this turn.
+		s.failToolCall(request)
 		return result, sdkError(err)
 	}
 	return result, nil
+}
+
+// denySuspended records a denial for a persisted approval whose presenting
+// turn was cancelled or disconnected. The runtime treats the request as
+// failed, so it cannot be resumed later, and the handler never runs. The
+// context is a short non-cancelable derivation maintained by the caller.
+func (s *Server) denySuspended(ctx context.Context, agent *lebro.Agent, suspended lebro.RunResult, reason string) (lebro.RunResult, error) {
+	request := suspended.ToolApproval
+	s.failToolCall(request)
+	if agent == nil {
+		return suspended, nil
+	}
+	resume := lebro.ToolApprovalDecision{
+		RunID:     request.RunID,
+		RequestID: request.ID,
+		Approved:  false,
+		Decider:   "acp-server",
+		Reason:    reason,
+		DecidedAt: s.agentClock().Now(),
+	}
+	result, err := agent.ResumeToolApproval(ctx, resume)
+	if err != nil {
+		// A denied decision is the expected cleanup outcome; the runtime
+		// reports it as a ToolApprovalError. Any other failure means the
+		// terminal transition did not land (for example a store conflict
+		// after a concurrent decision), which is worth a diagnostic.
+		var approvalErr *lebro.ToolApprovalError
+		if !errors.As(err, &approvalErr) {
+			s.logger.Debug("acp: approval cleanup failed", "run", request.RunID, "request", request.ID, "error", err)
+		}
+	}
+	return result, nil
+}
+
+// agentClock returns the exposed agent's configured clock so decision
+// timestamps agree with the runtime's expiry checks even when tests inject a
+// fixed clock.
+func (s *Server) agentClock() lebro.Clock {
+	if agent := s.agent(); agent != nil {
+		if clock := agent.Clock(); clock != nil {
+			return clock
+		}
+	}
+	return lebro.SystemClock
+}
+
+// failToolCall emits a terminal failed update for a presented tool call whose
+// approval was rejected, expired, cancelled, or otherwise ended without
+// execution, so the client never sees the call stuck in pending after the
+// turn has ended. It uses the connection's context rather than the bridge's
+// prompt context: on cancellation that context is already done, and a
+// still-connected client should still observe the terminal status. When the
+// connection itself is gone the write fails and is logged as a diagnostic.
+func (s *Server) failToolCall(request *lebro.ToolApprovalRequest) {
+	bridge := s.activeBridge(string(request.RunID))
+	if bridge == nil {
+		return
+	}
+	bridge.sendWith(s.serveContext(), acp.UpdateToolCall(
+		acp.ToolCallId(request.ToolCallID),
+		acp.WithUpdateStatus(acp.ToolCallStatusFailed),
+	))
 }
 
 // unknownSession builds the ACP resource-not-found error for a session that
@@ -190,3 +268,7 @@ func sdkError(err error) *acp.RequestError {
 	}
 	return acp.NewInternalError(map[string]any{"error": err.Error()})
 }
+
+// cleanupTimeout bounds the non-cancelable approval cleanup that records a
+// denial after cancellation or disconnect.
+const cleanupTimeout = 5 * time.Second

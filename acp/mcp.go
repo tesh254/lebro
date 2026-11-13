@@ -95,8 +95,18 @@ func (s *Server) sessionAgent(ctx context.Context, params acpsdk.NewSessionReque
 // watchConnection closes all session-owned MCP processes after disconnect.
 func (s *Server) watchConnection(conn *acpsdk.AgentSideConnection) <-chan struct{} {
 	closed := make(chan struct{})
+	// Called with s.mu held; read the previous connection context directly.
+	parent := s.serveCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	serveCtx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	s.serveCtx = serveCtx
 	go func() {
-		defer close(closed)
+		defer func() {
+			cancel()
+			close(closed)
+		}()
 		<-conn.Done()
 		s.mu.Lock()
 		sessions := s.sessions
@@ -112,4 +122,11 @@ func (s *Server) watchConnection(conn *acpsdk.AgentSideConnection) <-chan struct
 		}
 	}()
 	return closed
+}
+
+// serveContext returns the active connection's context.
+func (s *Server) serveContext() context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serveCtx
 }

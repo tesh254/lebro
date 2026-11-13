@@ -9,13 +9,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"os/signal"
-	"sync"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/tesh254/lebro"
@@ -39,32 +39,32 @@ func (refundTool) Execute(_ context.Context, input json.RawMessage) (json.RawMes
 	return json.RawMessage(`{"status":"refunded"}`), nil
 }
 
-// demoModel scripts a refund request followed by a confirmation turn. In a
-// real deployment this is a provider model; the ACP adapter is model-neutral.
-type demoModel struct {
-	mu   sync.Mutex
-	step int
-}
+// demoModel scripts a refund request followed by a confirmation turn. It is
+// history-driven rather than call-count-driven: it requests the refund tool
+// until the transcript contains a tool result, and only then confirms the
+// refund, so a second session or a follow-up after a rejection can never
+// report an issued refund without an approved tool execution. In a real
+// deployment this is a provider model; the ACP adapter is model-neutral.
+type demoModel struct{}
 
-func (m *demoModel) Generate(_ context.Context, _ lebro.ModelRequest) (lebro.ModelResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.step++
-	if m.step == 1 {
-		calls, err := lebro.NewModelToolCalls(lebro.ModelToolCall{
-			ID:        "refund-1",
-			ToolID:    "payments.refund",
-			Arguments: json.RawMessage(`{"order_id":"A-1024","amount":42}`),
-		})
-		if err != nil {
-			return lebro.ModelResponse{}, err
+func (m *demoModel) Generate(_ context.Context, request lebro.ModelRequest) (lebro.ModelResponse, error) {
+	for _, msg := range request.Messages {
+		if msg.Role == lebro.RoleTool {
+			return lebro.ModelResponse{
+				Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "The refund for order A-1024 was approved and issued."},
+				FinishReason: lebro.FinishReasonStop,
+			}, nil
 		}
-		return lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: calls}, FinishReason: lebro.FinishReasonToolCalls}, nil
 	}
-	return lebro.ModelResponse{
-		Message:      lebro.Message{Role: lebro.RoleAssistant, Content: "The refund was approved and issued."},
-		FinishReason: lebro.FinishReasonStop,
-	}, nil
+	calls, err := lebro.NewModelToolCalls(lebro.ModelToolCall{
+		ID:        "refund-1",
+		ToolID:    "payments.refund",
+		Arguments: json.RawMessage(`{"order_id":"A-1024","amount":42}`),
+	})
+	if err != nil {
+		return lebro.ModelResponse{}, err
+	}
+	return lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: calls}, FinishReason: lebro.FinishReasonToolCalls}, nil
 }
 
 func main() {
@@ -124,7 +124,8 @@ func run(stdout, stderr io.Writer, verbose bool) error {
 		// Closing stdin ends the serving loop.
 		_ = os.Stdin.Close()
 	}()
-	if err := server.RunStdio(ctx); err != nil {
+	// An interrupt is an orderly shutdown, not an error.
+	if err := server.RunStdio(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	_ = acpsdk.ProtocolVersionNumber // keep the SDK import meaningful for readers

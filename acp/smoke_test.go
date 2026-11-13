@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/tesh254/lebro"
 )
 
 // TestExampleACPAgentSmoke runs the examples/acp-agent binary over real stdio
@@ -40,14 +38,16 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_, _ = cmd.Process.Wait()
-	})
+	// Register the logging cleanup first so it runs after the kill/wait
+	// cleanup: the child must be dead and reaped before the buffer is read.
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("agent stderr: %s", stderrBuf.String())
 		}
+	})
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
 	})
 
 	send := func(v map[string]any) {
@@ -94,6 +94,7 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 	sessionID := ""
 	permissionAnswered := false
 	promptReplied := false
+	updateText := ""
 	// Read messages; respond to session/new, permission request; stop at the
 	// prompt response.
 	for time.Now().Before(deadline) {
@@ -150,6 +151,25 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 			t.Fatalf("second prompt errored: %s", line)
 		case msg.ID != nil && *msg.ID == 3 && msg.Result != nil:
 			promptReplied = true
+		case msg.Method == "session/update":
+			// The example model answers the first turn with the pending
+			// refund request and the second turn with its confirmation;
+			// capture the text so a fresh-thread regression (second turn
+			// answering without history) fails.
+			var note struct {
+				Params struct {
+					Update struct {
+						SessionUpdate string `json:"sessionUpdate"`
+						Content       struct {
+							Type string `json:"type"`
+							Text string `json:"text"`
+						} `json:"content"`
+					} `json:"update"`
+				} `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(line), &note); err == nil && note.Params.Update.SessionUpdate == "agent_message_chunk" && note.Params.Update.Content.Text != "" {
+				updateText += note.Params.Update.Content.Text
+			}
 		case msg.Method == "session/request_permission":
 			permissionAnswered = true
 			var req struct {
@@ -187,6 +207,11 @@ func TestExampleACPAgentSmoke(t *testing.T) {
 	if !promptReplied {
 		t.Fatal("agent never replied to the prompt")
 	}
-	_ = strings.TrimSpace
-	_ = lebro.RoleUser
+	// The second turn must observe the first turn's context: the example
+	// agent's demo model only confirms the refund after the transcript
+	// contains a tool result, so a session that dropped its history would
+	// request the refund again instead of confirming it.
+	if !strings.Contains(updateText, "approved and issued") {
+		t.Fatalf("second turn did not observe session history; updates = %q", updateText)
+	}
 }

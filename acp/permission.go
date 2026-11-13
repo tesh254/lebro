@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/coder/acp-go-sdk"
 	"github.com/tesh254/lebro"
@@ -22,10 +23,17 @@ func newPermissionBridge(server *Server, wrapped lebro.ToolApprovalPolicy) *perm
 
 func (p *permissionBridge) EvaluateToolApproval(ctx context.Context, invocation lebro.ToolApprovalInvocation) (lebro.ToolApprovalResolution, error) {
 	resolution := lebro.ToolApprovalResolution{Outcome: lebro.ToolApprovalRequire}
-	if p.wrapped != nil {
+	// The runtime's policy contract treats a typed-nil wrapper as absent;
+	// mirror that here so a typed-nil policy cannot panic ACP runs.
+	if p.wrapped != nil && !isNilPolicy(p.wrapped) {
 		wrappedResolution, err := p.wrapped.EvaluateToolApproval(ctx, invocation)
 		if err != nil {
 			return lebro.ToolApprovalResolution{}, err
+		}
+		// The runtime resolves an empty outcome to allow; preserve that
+		// default-allow behavior instead of rejecting the zero value.
+		if wrappedResolution.Outcome == "" {
+			wrappedResolution.Outcome = lebro.ToolApprovalAllow
 		}
 		switch wrappedResolution.Outcome {
 		case lebro.ToolApprovalAllow:
@@ -39,6 +47,18 @@ func (p *permissionBridge) EvaluateToolApproval(ctx context.Context, invocation 
 		}
 	}
 	return resolution, nil
+}
+
+// isNilPolicy reports whether a non-nil interface value carries a nil
+// concrete policy, matching the runtime's isNilInterface detection.
+func isNilPolicy(policy lebro.ToolApprovalPolicy) bool {
+	value := reflect.ValueOf(policy)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // requestPermission presents the persisted request and returns the decision.

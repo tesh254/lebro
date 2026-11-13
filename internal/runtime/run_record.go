@@ -27,7 +27,7 @@ const (
 	// structured-output delta produced by a streaming model call. Multiple deltas
 	// may be emitted between RunEventModelStarted and RunEventModelFinished for a
 	// single call. Approval continuations using the non-streaming run path
-	// emit the completed response as a single delta before tool events.
+	// emit non-empty text or reasoning as a single delta before tool events.
 	RunEventDelta RunEventType = "model_delta"
 	// RunEventToolRequested is emitted when the model requests tool calls,
 	// once per individual tool call.
@@ -221,6 +221,10 @@ func validateSuppliedRunID(id RunID) error {
 type defaultClock struct{}
 
 func (defaultClock) Now() time.Time { return time.Now() }
+
+// SystemClock is the wall-clock Clock used by agents built without an
+// explicit Clock configuration.
+var SystemClock Clock = defaultClock{}
 
 // sequentialIDSource generates monotonic run and step IDs using a mutex. Run
 // IDs are formatted as "agent-run-NNNN" and step IDs as "step-NNN" to stay

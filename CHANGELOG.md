@@ -14,7 +14,11 @@ All notable changes to this project are documented in this file.
 
 - Add the optional ACP stdio agent adapter and an example with session
   history, streamed updates, cancellation, durable tool approval, and
-  session-scoped client-provided stdio MCP servers.
+  session-scoped client-provided stdio MCP servers. Approval continuations
+  route their completed content through the stream-delta processor pipeline,
+  the adapter timestamps approval decisions from the agent's configured clock
+  (`Agent.Clock`, `lebro.SystemClock`), and a cancelled turn or dropped
+  connection records a terminal denial for any pending persisted approval.
 
 - BYOK decision models. A new `lebro.DecisionModel` contract evaluates
   application state against named questions and returns typed answers:

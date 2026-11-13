@@ -41,10 +41,16 @@ func (inspectText) Execute(_ context.Context, input json.RawMessage) (json.RawMe
 }
 
 func newServer(apiKey, modelName, baseURL string) (*acp.Server, error) {
-	if strings.TrimSpace(apiKey) == "" {
+	// Environment values can arrive with surrounding whitespace from shell
+	// profiles; normalize before validating so padded values do not fail at
+	// request time.
+	apiKey = strings.TrimSpace(apiKey)
+	modelName = strings.TrimSpace(modelName)
+	baseURL = strings.TrimSpace(baseURL)
+	if apiKey == "" {
 		return nil, errors.New("OPENROUTER_API_KEY is required")
 	}
-	if strings.TrimSpace(modelName) == "" {
+	if modelName == "" {
 		return nil, errors.New("OPENROUTER_MODEL is required")
 	}
 	if baseURL == "" {

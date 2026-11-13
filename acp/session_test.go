@@ -165,13 +165,19 @@ func TestUnsupportedContentRejected(t *testing.T) {
 // without the server reading the URI.
 func TestResourceLinkPassedAsText(t *testing.T) {
 	t.Parallel()
+	var requests []lebro.ModelRequest
 	h := newHarness(t,
 		textResponse("link noted"),
 		textResponse("done"),
 	)
+	h.model.onCall = func(_ int, request lebro.ModelRequest) {
+		requests = append(requests, request)
+	}
 	h.initialize(t.Context())
 	session := h.newSession(t.Context())
 
+	// The URI points at a real file: reading it would be unintended I/O the
+	// adapter must never perform.
 	response, err := h.client.Prompt(t.Context(), acp.PromptRequest{
 		SessionId: session,
 		Prompt: []acp.ContentBlock{
@@ -185,16 +191,31 @@ func TestResourceLinkPassedAsText(t *testing.T) {
 	if response.StopReason != acp.StopReasonEndTurn {
 		t.Fatalf("stop reason = %q", response.StopReason)
 	}
+	// The model request carries the canonical descriptive text, including
+	// the URI, and nothing that would require reading the link.
+	if len(requests) == 0 {
+		t.Fatal("model never received a request")
+	}
+	last := requests[len(requests)-1]
+	var user string
+	for _, msg := range last.Messages {
+		if msg.Role == lebro.RoleUser {
+			user = msg.Content
+		}
+	}
+	want := "see [resource link: notes.md (file:///etc/notes.md)]"
+	if user != want {
+		t.Fatalf("user message = %q, want %q", user, want)
+	}
 }
 
 // TestSessionIsolationMapsDistinctThreads asserts two sessions keep separate
 // transcript contexts.
 func TestSessionIsolationMapsDistinctThreads(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t,
-		textResponse("a1"), textResponse("a2"),
-		textResponse("b1"), textResponse("b2"),
-	)
+	// No scripted steps: the content-driven fixture echoes the transcript
+	// size, which grows independently per session.
+	h := newHarness(t)
 	h.initialize(t.Context())
 	sessA := h.newSession(t.Context())
 	sessB := h.newSession(t.Context())
@@ -204,11 +225,21 @@ func TestSessionIsolationMapsDistinctThreads(t *testing.T) {
 	h.mustPrompt(t.Context(), sessA, "alpha two")
 	h.mustPrompt(t.Context(), sessB, "beta two")
 
-	// Both sessions completed: the fixture echo verifies each second turn
-	// saw exactly its own session's first turn.
-	waitFor(t, waitTimeout, func() bool {
-		return len(h.events.snapshot()) >= 2
-	})
+	// Each session's second turn echoes its own transcript size: 3 prior
+	// messages (first user + assistant reply + second user). A session that
+	// observed the other session's transcript would report a different
+	// count, so any cross-session leak fails here.
+	texts := map[string]string{} // session id -> concatenated updates
+	for _, u := range h.events.snapshot() {
+		if u.Update.AgentMessageChunk != nil && u.Update.AgentMessageChunk.Content.Text != nil {
+			texts[u.SessionID] += u.Update.AgentMessageChunk.Content.Text.Text
+		}
+	}
+	for _, sess := range []acp.SessionId{sessA, sessB} {
+		if got := texts[string(sess)]; !contains(got, "saw 3 prior messages") {
+			t.Fatalf("session %s did not isolate its transcript; updates = %q", sess, got)
+		}
+	}
 }
 
 // TestMalformedPromptRejected asserts an empty prompt is invalid params.

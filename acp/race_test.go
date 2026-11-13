@@ -1,11 +1,12 @@
 package acp_test
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/coder/acp-go-sdk"
-	"github.com/tesh254/lebro"
 	"go.uber.org/goleak"
 )
 
@@ -16,15 +17,15 @@ func TestMain(m *testing.M) {
 
 // TestConcurrentSessionsStreamWithoutCorruption runs prompts on several
 // sessions at once and asserts every session's updates carry only its own
-// session ID — the transport-level guarantee that concurrent activity cannot
-// interleave message bytes.
+// session ID and only its own transcript profile. Each session runs a
+// different number of turns, so the fixture's per-turn transcript echo gives
+// every session a distinct expected sequence: a session that receives another
+// session's stream shows an echo from a turn it never ran. It uses a SQLite
+// store because the memory store's whole-state optimistic transactions
+// conflict when concurrent runs persist at once.
 func TestConcurrentSessionsStreamWithoutCorruption(t *testing.T) {
 	t.Parallel()
-	steps := []lebro.ModelResponse{}
-	for i := 0; i < 4; i++ {
-		steps = append(steps, textResponse("reply"))
-	}
-	h := newHarness(t, steps...)
+	h := newHarnessWithStore(t, newSQLiteTestStore(t))
 
 	h.initialize(t.Context())
 	const sessions = 4
@@ -39,7 +40,13 @@ func TestConcurrentSessionsStreamWithoutCorruption(t *testing.T) {
 		wg.Add(1)
 		go func(i int, id acp.SessionId) {
 			defer wg.Done()
-			_, errs[i] = h.prompt(t.Context(), id, "hello")
+			// Session i runs i+1 turns, sequentially within the session.
+			for turn := 0; turn <= i; turn++ {
+				if _, err := h.prompt(t.Context(), id, "hello"); err != nil {
+					errs[i] = err
+					return
+				}
+			}
 		}(i, id)
 	}
 	wg.Wait()
@@ -49,14 +56,36 @@ func TestConcurrentSessionsStreamWithoutCorruption(t *testing.T) {
 		}
 	}
 
-	// Every recorded update must belong to a session this client created.
+	// Every recorded update must belong to a session this client created,
+	// and each session's text must match its own turn profile: turn k of any
+	// session echoes "saw {2k-1} prior messages", so session i (i+1 turns)
+	// must contain echoes 1 through 2i+1 and nothing beyond.
 	valid := make(map[string]bool)
 	for _, id := range ids {
 		valid[string(id)] = true
 	}
+	perSession := make(map[string]string) // session id -> concatenated text
 	for _, u := range h.events.snapshot() {
 		if !valid[u.SessionID] {
 			t.Fatalf("update for unknown session %q leaked across sessions", u.SessionID)
+		}
+		if u.Update.AgentMessageChunk != nil && u.Update.AgentMessageChunk.Content.Text != nil {
+			perSession[u.SessionID] += u.Update.AgentMessageChunk.Content.Text.Text
+		}
+	}
+	for i, id := range ids {
+		text := perSession[string(id)]
+		for turn := 1; turn <= i+1; turn++ {
+			want := fmt.Sprintf("saw %d prior messages", 2*turn-1)
+			if !strings.Contains(text, want) {
+				t.Fatalf("session %d missing its own turn %d echo %q; text = %q", i, turn, want, text)
+			}
+		}
+		for turn := i + 2; turn <= sessions; turn++ {
+			leaked := fmt.Sprintf("saw %d prior messages", 2*turn-1)
+			if strings.Contains(text, leaked) {
+				t.Fatalf("session %d received another session's update %q; text = %q", i, leaked, text)
+			}
 		}
 	}
 }
@@ -96,14 +125,37 @@ func TestStableToolCallIDsAcrossConcurrentTurns(t *testing.T) {
 		t.Fatalf("tool executions = %d, want 2", got)
 	}
 	// Both sessions observed a full pending -> in_progress -> completed
-	// lifecycle for the same model tool-call ID.
-	lifecycles := map[string][]string{}
-	for _, call := range h.events.toolCalls() {
-		lifecycles[call[0]] = append(lifecycles[call[0]], call[1])
+	// lifecycle for the same model tool-call ID, each within its own session.
+	// The fixture reuses the ID across sessions, so attribution is by
+	// session, not by call ID.
+	type lifecycle struct {
+		statuses []string
 	}
-	for id, statuses := range lifecycles {
+	lifecycles := map[string]*lifecycle{} // session id -> updates
+	for _, u := range h.events.updatesByToolCall() {
+		if lifecycles[u.sessionID] == nil {
+			lifecycles[u.sessionID] = &lifecycle{}
+		}
+		lifecycles[u.sessionID].statuses = append(lifecycles[u.sessionID].statuses, u.status)
+	}
+	if len(lifecycles) != 2 {
+		t.Fatalf("expected 2 sessions with tool-call updates, got %v", lifecycles)
+	}
+	for sess, lc := range lifecycles {
+		statuses := lc.statuses
 		if len(statuses) < 3 || statuses[0] != "pending" || statuses[len(statuses)-1] != "completed" {
-			t.Fatalf("tool call %s lifecycle incomplete: %v", id, statuses)
+			t.Fatalf("session %s tool call lifecycle incomplete: %v", sess, statuses)
+		}
+		// The in_progress state must be present between pending and
+		// completed; the adapter must not skip it.
+		inProgress := false
+		for _, status := range statuses[1 : len(statuses)-1] {
+			if status == "in_progress" {
+				inProgress = true
+			}
+		}
+		if !inProgress {
+			t.Fatalf("session %s tool call lifecycle missing in_progress: %v", sess, statuses)
 		}
 	}
 }

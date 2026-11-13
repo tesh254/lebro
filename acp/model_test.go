@@ -124,11 +124,13 @@ func (m *streamingFixtureModel) streamAll(_ context.Context, request lebro.Model
 		response = m.steps[m.calls]
 		m.calls++
 		// Later calls echo the transcript size so multi-turn context is
-		// visible.
+		// visible, preserving any scripted tool calls alongside the echo.
 		if m.calls > 1 {
+			calls := response.Message.ToolCalls
 			response.Message = lebro.Message{
-				Role:    lebro.RoleAssistant,
-				Content: fmt.Sprintf("saw %d prior messages", len(request.Messages)-1),
+				Role:      lebro.RoleAssistant,
+				Content:   fmt.Sprintf("saw %d prior messages", len(request.Messages)-1),
+				ToolCalls: calls,
 			}
 		}
 	} else {
@@ -166,6 +168,7 @@ func (m *streamingFixtureModel) streamAll(_ context.Context, request lebro.Model
 
 	var pieces []streamPiece
 	content := response.Message.Content
+	calls := response.Message.ToolCalls.Values()
 	switch {
 	case content != "":
 		// Split the text into two chunks to exercise ordered streaming.
@@ -180,11 +183,25 @@ func (m *streamingFixtureModel) streamAll(_ context.Context, request lebro.Model
 			Parts:  []lebro.StreamContentPart{{Kind: lebro.StreamContentPartText, Text: content[half:]}},
 			Result: lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant, Content: content}, FinishReason: lebro.FinishReasonStop},
 		})
-	case len(response.Message.ToolCalls.Values()) > 0:
+		// A response may pair text with tool calls: emit the whole-call
+		// deltas after the text so mixed responses keep their order, then
+		// the terminal delta.
+		for _, call := range calls {
+			calls := mustToolCalls(call)
+			pieces = append(pieces, streamPiece{
+				Result: lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: calls}, FinishReason: lebro.FinishReasonToolCalls},
+			})
+		}
+		if len(calls) > 0 {
+			pieces = append(pieces, streamPiece{
+				Result: lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant}, FinishReason: lebro.FinishReasonToolCalls},
+			})
+		}
+	case len(calls) > 0:
 		// One whole-call delta per tool call, then a terminal delta carrying
 		// the finish reason. The terminal delta has no parts so the runtime
 		// validates the aggregated response cleanly.
-		for _, call := range response.Message.ToolCalls.Values() {
+		for _, call := range calls {
 			calls := mustToolCalls(call)
 			pieces = append(pieces, streamPiece{
 				Result: lebro.ModelResponse{Message: lebro.Message{Role: lebro.RoleAssistant, ToolCalls: calls}, FinishReason: lebro.FinishReasonToolCalls},

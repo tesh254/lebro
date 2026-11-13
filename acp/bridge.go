@@ -22,6 +22,10 @@ type eventBridge struct {
 	server *Server
 	sess   *session
 	runID  string
+	// ctx is the active prompt's context, cancelled when the turn is
+	// cancelled or the connection drops, so a blocked protocol write can
+	// never pin the run or prompt cleanup after either happens.
+	ctx context.Context
 
 	mu       sync.Mutex
 	toolMeta map[string]toolMeta // tool call ID -> presented metadata
@@ -34,11 +38,12 @@ type toolMeta struct {
 	kind  acp.ToolKind
 }
 
-func newEventBridge(server *Server, sess *session, runID string) *eventBridge {
+func newEventBridge(server *Server, sess *session, runID string, ctx context.Context) *eventBridge {
 	return &eventBridge{
 		server:   server,
 		sess:     sess,
 		runID:    runID,
+		ctx:      ctx,
 		toolMeta: make(map[string]toolMeta),
 	}
 }
@@ -67,13 +72,23 @@ func (b *eventBridge) OnRunEvent(event lebro.RunEvent) {
 	}
 }
 
-// send delivers one update; failures are diagnostics, not run failures.
+// send delivers one update on the bridge's prompt context; failures are
+// diagnostics, not run failures. The write uses the prompt's context so
+// cancellation or disconnect unblocks a wedged protocol write instead of
+// stalling the run and prompt cleanup.
 func (b *eventBridge) send(update acp.SessionUpdate) {
+	b.sendWith(b.ctx, update)
+}
+
+// sendWith delivers one update on an explicit context. Terminal updates that
+// outlive the prompt — a failed status after cancellation or disconnect —
+// pass the caller's context so a still-connected client observes them.
+func (b *eventBridge) sendWith(ctx context.Context, update acp.SessionUpdate) {
 	conn := b.server.conn()
 	if conn == nil {
 		return
 	}
-	err := conn.SessionUpdate(context.Background(), acp.SessionNotification{
+	err := conn.SessionUpdate(ctx, acp.SessionNotification{
 		SessionId: acp.SessionId(b.sess.id),
 		Update:    update,
 	})

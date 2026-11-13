@@ -49,6 +49,9 @@ type Server struct {
 	sessions map[string]*session
 	turns    map[string]int
 	perms    *permissionBridge
+	// serveCtx is the active connection's context, set when serving starts
+	// and cancelled when that connection ends.
+	serveCtx context.Context
 
 	// connection is set once the server starts serving.
 	connection  *acp.AgentSideConnection
@@ -114,11 +117,7 @@ func (s *Server) buildAgentLocked(cfg lebro.AgentConfig) (*lebro.Agent, error) {
 	// agent-level listener fans out to it.
 	cfg.Listener = listenerFunc(func(event lebro.RunEvent) {
 		s.mu.Lock()
-		sess := s.activeBridgeTarget(event)
-		var bridge *eventBridge
-		if sess != nil {
-			bridge = sess.bridge
-		}
+		bridge := s.activeBridgeForRun(string(event.RunID))
 		s.mu.Unlock()
 		if bridge == nil {
 			return
@@ -136,15 +135,31 @@ func (s *Server) permissionBridge() *permissionBridge {
 	return s.perms
 }
 
-// activeBridgeTarget returns the session whose current turn owns the event's
-// run ID, or nil when the event belongs to no active turn.
-func (s *Server) activeBridgeTarget(event lebro.RunEvent) *session {
+// activeSessionForRun returns the session whose running turn owns a run ID.
+func (s *Server) activeSessionForRun(runID string) *session {
 	for _, sess := range s.sessions {
-		if sess.running && sess.bridge != nil && sess.bridge.runID == string(event.RunID) {
+		if sess.running && sess.bridge != nil && sess.bridge.runID == runID {
 			return sess
 		}
 	}
 	return nil
+}
+
+// activeBridgeForRun returns the bridge whose turn owns a run ID, or nil.
+func (s *Server) activeBridgeForRun(runID string) *eventBridge {
+	if sess := s.activeSessionForRun(runID); sess != nil {
+		return sess.bridge
+	}
+	return nil
+}
+
+// activeBridge returns the event bridge whose turn owns a run ID, even after
+// the prompt goroutine has finished; terminal approval cleanups use it to
+// route failed tool-call updates to the right session.
+func (s *Server) activeBridge(runID string) *eventBridge {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.activeBridgeForRun(runID)
 }
 
 func (s *Server) exposedAgent() bool { return s.exposed != nil }
@@ -201,14 +216,31 @@ func (s *Server) RunStdio(ctx context.Context) error {
 // exported for the package's tests and for embedding hosts that own their own
 // transport; production agents should use RunStdio. The connection starts
 // immediately and Done() closes when the peer disconnects. Protocol output
-// goes to output; callers own both pipes' lifecycle.
+// goes to output; callers own both pipes' lifecycle. A server serves one
+// connection at a time: a second call replaces the live connection, so its
+// sessions are dropped and its in-flight turns are cancelled.
 func (s *Server) ServeForTest(output io.Writer, input io.Reader) *acp.AgentSideConnection {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.connection != nil {
+		s.stopServingLocked()
+	}
 	conn := acp.NewAgentSideConnection(s, output, input)
 	s.connection = conn
 	s.watchConnection(conn)
 	return conn
+}
+
+// stopServingLocked cancels the active turns of a connection being replaced.
+// The old connection's watcher goroutine clears its own session map when it
+// observes the disconnect; cancelling here keeps the new connection from
+// inheriting another transport's runs.
+func (s *Server) stopServingLocked() {
+	for _, sess := range s.sessions {
+		if sess.cancel != nil {
+			sess.cancel()
+		}
+	}
 }
 
 // Compile-time check that Server implements the SDK agent surface. The
