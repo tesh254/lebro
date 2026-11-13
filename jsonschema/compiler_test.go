@@ -330,3 +330,20 @@ func TestCompiledSchemaSupportsConcurrentValidation(t *testing.T) {
 	}
 	waitGroup.Wait()
 }
+
+func TestMCPCompilerValidatesDraft7Semantics(t *testing.T) {
+	schema := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"}},"dependencies":{"a":["b"]}}`)
+	compiled, err := lebrojsonschema.NewMCPCompiler().Compile(schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := compiled.Validate(json.RawMessage(`{"a":1}`)); got == nil {
+		t.Fatal("draft-07 dependency was not enforced")
+	}
+	if got := compiled.Validate(json.RawMessage(`{"a":1,"b":2}`)); got != nil {
+		t.Fatalf("valid input rejected: %v", got)
+	}
+	if _, err := lebrojsonschema.NewCompiler().Compile(schema); err == nil {
+		t.Fatal("default compiler unexpectedly accepted draft-07")
+	}
+}

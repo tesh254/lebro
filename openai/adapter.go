@@ -148,6 +148,10 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	if err := request.Validate(); err != nil {
 		return lebro.ModelResponse{}, m.invalidRequest(err.Error(), err)
 	}
+	request, toolNames, err := mapToolNames(request)
+	if err != nil {
+		return lebro.ModelResponse{}, m.invalidRequest(err.Error(), err)
+	}
 
 	body, err := m.buildRequestBody(request)
 	if err != nil {
@@ -192,6 +196,18 @@ func (m *Model) Generate(ctx context.Context, request lebro.ModelRequest) (lebro
 	response, err := m.mapResponse(request, parsed)
 	if err != nil {
 		return lebro.ModelResponse{}, m.malformedResponse(err.Error(), err)
+	}
+	calls := response.Message.ToolCalls.Values()
+	for i := range calls {
+		if id, ok := toolNames[string(calls[i].ToolID)]; ok {
+			calls[i].ToolID = id
+		}
+	}
+	if len(calls) > 0 {
+		response.Message.ToolCalls, err = lebro.NewModelToolCalls(calls...)
+		if err != nil {
+			return lebro.ModelResponse{}, m.malformedResponse(err.Error(), err)
+		}
 	}
 	if err := response.Validate(); err != nil {
 		return lebro.ModelResponse{}, m.malformedResponse(err.Error(), err)
@@ -829,6 +845,10 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 	if err := request.Validate(); err != nil {
 		return nil, m.invalidRequest(err.Error(), err)
 	}
+	request, toolNames, err := mapToolNames(request)
+	if err != nil {
+		return nil, m.invalidRequest(err.Error(), err)
+	}
 
 	body, err := m.buildStreamingRequestBody(request)
 	if err != nil {
@@ -904,7 +924,7 @@ func (m *Model) Stream(ctx context.Context, request lebro.ModelRequest) (lebro.S
 	}
 
 	reader := newSSEStreamReader(resp, ctx, cancel, m, request.OutputSchema)
-	return reader, nil
+	return &toolNameReader{StreamReader: reader, names: toolNames}, nil
 }
 
 func (m *Model) buildStreamingRequestBody(request lebro.ModelRequest) ([]byte, error) {

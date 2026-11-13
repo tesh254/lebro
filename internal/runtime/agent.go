@@ -464,6 +464,18 @@ func (a *Agent) Definition() WorkflowDefinition {
 	}
 }
 
+// Clock returns the agent's configured clock, matching the one used for run
+// events and approval expiry checks. The system clock is returned when the
+// agent was built without an explicit Clock. Integrations that timestamp
+// decisions (for example an approval UI bridge) should take the time from
+// here so their decisions agree with the runtime's expiry logic.
+func (a *Agent) Clock() Clock {
+	if a == nil || a.clock == nil {
+		return SystemClock
+	}
+	return a.clock
+}
+
 // Run executes the bounded agent loop and returns a complete non-streaming
 // run result. The run honors context cancellation, enforces MaxSteps and
 // optional Deadline, and appends every model response and tool result to the
@@ -664,6 +676,32 @@ func (a *Agent) Run(ctx context.Context, input RunInput) (RunResult, error) {
 			return result, agentErr
 		}
 
+		// Approval continuations use Run rather than RunStream. Emit their
+		// completed model content before tool events so listeners see the
+		// continuation in execution order. The synthetic delta goes through
+		// the same processor pipeline as streaming deltas, so a configured
+		// reasoning redactor also governs the resumed path; the transformed
+		// projection replaces the response content so private reasoning is
+		// neither emitted nor persisted.
+		if input.resumeStartStep > 0 && (response.Message.Content != "" || !response.Message.Reasoning.IsZero()) {
+			delta := StreamDelta{Text: response.Message.Content, Reasoning: response.Message.Reasoning}
+			decision, processErr := a.process(runCtx, emitter, runID, step, stepID, ProcessorContext{Phase: ProcessorPhaseStreamDelta, ThreadID: input.ThreadID, Metadata: metadata, Delta: delta})
+			if processErr != nil {
+				if processorCancelled(processErr) {
+					emitter.terminal(runID, step, stepID, RunEventCancelled, RunStatusCancelled, processErr)
+					return a.cancelledWithAttempts(runID, transcript, metadata, step, processErr, allAttempts)
+				}
+				agentErr := processorAgentError(step, processErr)
+				emitter.terminal(runID, step, stepID, RunEventFailed, RunStatusFailed, agentErr)
+				return a.failWithAttemptsResult(runID, metadata, step, transcript, agentErr, allAttempts), agentErr
+			}
+			delta = *decision.Delta
+			if delta.Text != "" || !delta.Reasoning.IsZero() {
+				emitter.emitDelta(runID, step, stepID, delta)
+				response.Message.Content = delta.Text
+				response.Message.Reasoning = delta.Reasoning
+			}
+		}
 		emitter.emitModelFinished(runID, step, stepID, modelStart, response.FinishReason, response.Usage, response.Accounting, nil)
 
 		transcript = append(transcript, cloneMessage(response.Message))

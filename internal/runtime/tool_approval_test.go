@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -601,4 +602,112 @@ func TestAgentToolApprovalResumeCancellationIsCancelled(t *testing.T) {
 	if record.Status != RunStatusCancelled || record.Failure == nil || record.Failure.Kind != WorkflowErrorCancelled {
 		t.Fatalf("persisted run = %#v", record)
 	}
+}
+
+// redactReasoningProcessor rewrites every reasoning projection, standing in
+// for a privacy redactor configured on the agent.
+type redactReasoningProcessor struct{}
+
+func (redactReasoningProcessor) Name() string { return "test-reasoning-redactor" }
+
+func (redactReasoningProcessor) ProcessStreamDelta(_ context.Context, request ProcessorStreamDeltaRequest) (ProcessorStreamDeltaResult, error) {
+	delta := request.Delta
+	if !delta.Reasoning.IsZero() {
+		delta.Reasoning = ModelReasoning{Text: "[redacted]"}
+	}
+	return ProcessorStreamDeltaResult{Decision: ProcessorDecision{Kind: ProcessorTransform}, Delta: delta}, nil
+}
+
+// TestAgentToolApprovalResumeRoutesDeltaThroughProcessors asserts the
+// resumed run's synthetic content delta goes through the processor pipeline,
+// so a configured reasoning redactor also governs the approval continuation
+// path instead of private reasoning bypassing it.
+func TestAgentToolApprovalResumeRoutesDeltaThroughProcessors(t *testing.T) {
+	ctx := context.Background()
+	registry, handler := newAgentTestRegistry(t)
+	handler.execute = func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return json.RawMessage(`{}`), nil
+	}
+	recorder := NewRunRecorder()
+	store := NewMemoryStore()
+	// The model is shared so the restarted agent continues the script from
+	// the persisted run's position instead of replaying the tool call. The
+	// continuation carries private reasoning that the configured redactor
+	// must rewrite before it is emitted or persisted.
+	model := newScriptedModel(
+		toolCallResponse(ModelToolCall{ID: "call-redact", ToolID: "lookup", Arguments: json.RawMessage(`{}`)}),
+		scriptedResponse{response: ModelResponse{
+			Message: Message{
+				Role:      RoleAssistant,
+				Content:   "continuation complete",
+				Reasoning: ModelReasoning{Text: "secret chain of thought"},
+			},
+			FinishReason: FinishReasonStop,
+		}},
+	)
+	agents := make([]*Agent, 0, 2)
+	newAgent := func() *Agent {
+		agent, err := NewAgent(AgentConfig{
+			Definition:         AgentDefinition{ID: "redacted-approval", Tools: []ToolID{"lookup"}},
+			Model:              model,
+			Tools:              registry,
+			Store:              store,
+			Listener:           recorder,
+			Processors:         mustProcessorPipeline(t, redactReasoningProcessor{}),
+			ToolApprovalPolicy: ToolApprovalPolicyFunc(approvalPolicyRequire),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		agents = append(agents, agent)
+		return agent
+	}
+
+	first := newAgent()
+	suspended, err := first.Run(ctx, RunInput{RunID: "redact-approval-run", Messages: []Message{{Role: RoleUser, Content: "write"}}})
+	if err != nil || suspended.ToolApproval == nil {
+		t.Fatalf("suspended = %#v, err = %v", suspended, err)
+	}
+	restarted := newAgent()
+	final, err := restarted.ResumeToolApproval(ctx, ToolApprovalDecision{RunID: suspended.ID, RequestID: suspended.ToolApproval.ID, Approved: true, DecidedAt: time.Now().UTC()})
+	if err != nil || final.Status != RunStatusSucceeded {
+		t.Fatalf("final = %#v, err = %v", final, err)
+	}
+
+	// The resumed continuation's reasoning must be emitted only in its
+	// redacted form: without the processor routing, the raw reasoning would
+	// reach the listener as a delta.
+	const private = "secret chain of thought"
+	for _, event := range recorder.Events() {
+		if event.Type != RunEventDelta {
+			continue
+		}
+		if strings.Contains(event.DeltaReasoning.Text, private) || strings.Contains(event.DeltaText, private) {
+			t.Fatalf("resumed delta leaked private reasoning: %q", event.DeltaReasoning.Text)
+		}
+	}
+	redacted := false
+	for _, event := range recorder.Events() {
+		if event.Type == RunEventDelta && event.DeltaReasoning.Text == "[redacted]" {
+			redacted = true
+		}
+	}
+	if !redacted {
+		t.Fatal("resumed continuation emitted no redacted reasoning delta; processor pipeline not applied")
+	}
+	// The persisted transcript carries the transformed projection, not the
+	// private reasoning.
+	last := final.Messages[len(final.Messages)-1]
+	if strings.Contains(last.Reasoning.Text, private) {
+		t.Fatalf("persisted continuation reasoning = %q, want redacted", last.Reasoning.Text)
+	}
+}
+
+func mustProcessorPipeline(t *testing.T, processors ...Processor) ProcessorPipeline {
+	t.Helper()
+	pipeline, err := NewProcessorPipeline(processors...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pipeline
 }

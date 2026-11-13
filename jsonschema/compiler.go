@@ -22,7 +22,7 @@ const schemaResource = "urn:lebro:json-schema"
 // Compiler compiles JSON Schema Draft 2020-12 documents. External references
 // are intentionally not loaded; local references and standard metaschemas are
 // supported without network or filesystem access.
-type Compiler struct{}
+type Compiler struct{ allowDraft7 bool }
 
 var _ lebro.SchemaCompiler = Compiler{}
 
@@ -31,9 +31,16 @@ func NewCompiler() Compiler {
 	return Compiler{}
 }
 
+// NewMCPCompiler also accepts explicitly declared JSON Schema Draft 7,
+// which is used by existing MCP servers. Schemas without a dialect continue
+// to use Draft 2020-12.
+func NewMCPCompiler() Compiler {
+	return Compiler{allowDraft7: true}
+}
+
 // Compile parses, checks, and compiles a JSON Schema document. The method is
 // safe for concurrent use by multiple callers.
-func (Compiler) Compile(raw json.RawMessage) (lebro.CompiledSchema, error) {
+func (c Compiler) Compile(raw json.RawMessage) (lebro.CompiledSchema, error) {
 	if len(raw) == 0 {
 		return nil, &lebro.SchemaError{Message: "schema must not be empty"}
 	}
@@ -42,7 +49,7 @@ func (Compiler) Compile(raw json.RawMessage) (lebro.CompiledSchema, error) {
 	if err != nil {
 		return nil, &lebro.SchemaError{Message: "schema must be valid JSON"}
 	}
-	if err := validateDialect(document); err != nil {
+	if err := validateDialect(document, c.allowDraft7); err != nil {
 		return nil, err
 	}
 
@@ -78,7 +85,7 @@ func (s compiledSchema) Validate(raw json.RawMessage) *lebro.ValidationError {
 	return nil
 }
 
-func validateDialect(document any) error {
+func validateDialect(document any, allowDraft7 bool) error {
 	object, ok := document.(map[string]any)
 	if !ok {
 		return nil
@@ -90,6 +97,9 @@ func validateDialect(document any) error {
 	dialectString, ok := dialect.(string)
 	if !ok {
 		return &lebro.SchemaError{Path: "/$schema", Message: "$schema must be a string"}
+	}
+	if allowDraft7 && strings.TrimSuffix(dialectString, "#") == "http://json-schema.org/draft-07/schema" {
+		return nil
 	}
 	if strings.TrimSuffix(dialectString, "#") != lebro.JSONSchemaDraft202012 {
 		return &lebro.SchemaError{Path: "/$schema", Message: "unsupported dialect " + strconvQuote(dialectString)}
